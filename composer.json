@@ -1,0 +1,52 @@
+{
+  "name": "ernestdefoe/importer",
+  "description": "Importer / converter for Flarum 2 — migrate a forum into Flarum from phpBB, vBulletin (3/4/5), XenForo, MyBB, SMF, Vanilla, NodeBB, Invision, Discourse or Convoro. Web-based in the admin, runs in the background in batches with a live progress bar.",
+  "keywords": ["flarum", "flarum-extension", "import", "importer", "migration", "converter", "phpbb", "xenforo", "vbulletin", "discourse"],
+  "type": "flarum-extension",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "ernestdefoe",
+      "email": "ernestdefoe@gmail.com"
+    }
+  ],
+  "homepage": "https://github.com/ernestdefoe/importer",
+  "support": {
+    "issues": "https://github.com/ernestdefoe/importer/issues",
+    "source": "https://github.com/ernestdefoe/importer"
+  },
+  "require": {
+    "php": "^8.3",
+    "flarum/core": "^2.0",
+    "league/html-to-markdown": "^5.1",
+    "league/commonmark": "^2.4"
+  },
+  "autoload": {
+    "psr-4": {
+      "ErnestDefoe\\Importer\\": "src/"
+    }
+  },
+  "extra": {
+    "flarum-extension": {
+      "title": "Importer",
+      "category": "feature",
+      "icon": {
+        "name": "fas fa-file-import",
+        "backgroundColor": "#5b5bd6",
+        "color": "#fff"
+      },
+      "optional-dependencies": [
+        "flarum/tags"
+      ]
+    },
+    "flarum-cli": {
+      "modules": {
+        "js": true,
+        "css": true,
+        "locale": true
+      }
+    }
+  },
+  "minimum-stability": "beta",
+  "prefer-stable": true
+}

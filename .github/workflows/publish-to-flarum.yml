@@ -1,0 +1,145 @@
+name: Post release to Flarum support site
+
+on:
+  release:
+    types: [published]
+  # Manual / force-repost: pick a tag (or leave blank to take the latest
+  # published release on the repo). The workflow resolves the release
+  # via the API, so it works the same for both triggers.
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to post (leave blank to use the latest published release).'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      # Resolve the release once. This makes the rest of the workflow
+      # independent of the trigger — it reads RELEASE_TAG / RELEASE_BODY
+      # / RELEASE_URL / RELEASE_NAME from $GITHUB_ENV regardless of how
+      # the run was started.
+      - name: Resolve release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          tag="${EVENT_TAG:-${INPUT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            release_json=$(gh api "repos/${GH_REPO}/releases/latest")
+          else
+            release_json=$(gh api "repos/${GH_REPO}/releases/tags/${tag}")
+          fi
+
+          echo "RELEASE_TAG=$(echo "$release_json" | jq -r '.tag_name')"   >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=$(echo "$release_json" | jq -r '.name // .tag_name')" >> "$GITHUB_ENV"
+          echo "RELEASE_URL=$(echo "$release_json" | jq -r '.html_url')"  >> "$GITHUB_ENV"
+
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            printf 'RELEASE_BODY<<%s\n' "$delim"
+            echo "$release_json" | jq -r '.body // ""'
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_ENV"
+
+      # Build a usable changelog. If the release body has real content,
+      # use it as-is. If it's empty or one of the known release-drafter
+      # placeholders ("No changes", "No changes made.", a lone
+      # "Full Changelog" link, etc.), fall back to enumerating commits
+      # between the previous tag and this one via the compare API.
+      - name: Build changelog
+        id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          stripped=$(printf '%s\n' "${RELEASE_BODY:-}" \
+            | sed -E '/^\s*$/d' \
+            | sed -E '/^##[[:space:]]+What.s Changed[[:space:]]*$/Id' \
+            | sed -E '/^\*[[:space:]]*No changes[[:space:]]*$/Id' \
+            | sed -E '/^No changes( made)?\.?[[:space:]]*$/Id' \
+            | sed -E '/^\*\*Full Changelog\*\*:.*/d' \
+            | sed -E '/^Full Changelog:.*/d')
+
+          if [ -n "$stripped" ]; then
+            echo "Release body has content — using it as-is."
+            body="$RELEASE_BODY"
+          else
+            echo "Release body is empty/placeholder — building from commits."
+
+            previous_tag=$(gh api "repos/${GH_REPO}/tags?per_page=100" \
+              --jq '[.[] | select(.name != env.RELEASE_TAG) | .name][0] // empty')
+
+            if [ -z "$previous_tag" ]; then
+              echo "No previous tag — treating as initial release."
+              body="_Initial release._"
+            else
+              echo "Comparing ${previous_tag}...${RELEASE_TAG}"
+              changelog=$(gh api --paginate \
+                "repos/${GH_REPO}/compare/${previous_tag}...${RELEASE_TAG}" \
+                --jq '[.commits[]
+                       | select((.parents | length) < 2)
+                       | "- " + (.commit.message | split("\n")[0])
+                      ] | .[:60] | join("\n")')
+
+              if [ -z "$changelog" ]; then
+                body="_No commits between ${previous_tag} and ${RELEASE_TAG}._"
+              else
+                body=$(printf '## What'"'"'s Changed\n\n%s\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                  "$changelog" "$GH_REPO" "$previous_tag" "$RELEASE_TAG")
+              fi
+            fi
+          fi
+
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            printf 'body<<%s\n' "$delim"
+            printf '%s\n' "$body"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post reply to support discussion
+        env:
+          FLARUM_FORUM_URL: ${{ vars.FLARUM_FORUM_URL }}
+          FLARUM_DISCUSSION_ID: ${{ vars.FLARUM_DISCUSSION_ID }}
+          FLARUM_API_KEY: ${{ secrets.FLARUM_API_KEY }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          POST_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FLARUM_FORUM_URL}" ] || [ -z "${FLARUM_DISCUSSION_ID}" ] || [ -z "${FLARUM_API_KEY}" ]; then
+            echo "Missing FLARUM_FORUM_URL / FLARUM_DISCUSSION_ID / FLARUM_API_KEY — set repo variables and secret." >&2
+            exit 1
+          fi
+
+          CONTENT=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n' \
+            "$REPO_NAME" "$RELEASE_TAG" "${POST_BODY:-_No release notes provided._}" "$RELEASE_URL")
+
+          PAYLOAD=$(jq -n \
+            --arg content "$CONTENT" \
+            --arg did "$FLARUM_DISCUSSION_ID" \
+            '{data:{type:"posts",attributes:{content:$content},relationships:{discussion:{data:{type:"discussions",id:$did}}}}}')
+
+          HTTP_CODE=$(curl -sS -o /tmp/flarum-resp.json -w '%{http_code}' \
+            -X POST "${FLARUM_FORUM_URL%/}/api/posts" \
+            -H "Authorization: Token ${FLARUM_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          echo "Flarum responded with HTTP $HTTP_CODE"
+          cat /tmp/flarum-resp.json
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            exit 1
+          fi

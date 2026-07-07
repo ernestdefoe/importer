@@ -1,0 +1,112 @@
+.ImporterPage {
+  margin-top: 20px;
+
+  &-intro h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+  }
+
+  &-modes {
+    display: flex;
+    gap: 6px;
+    margin: 14px 0 2px;
+
+    button.is-active {
+      background: var(--control-bg);
+      color: var(--text-color);
+      font-weight: 600;
+    }
+  }
+
+  &-conn {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 14px 0;
+  }
+
+  &-upload {
+    margin: 12px 0;
+  }
+
+  &-field {
+    margin-bottom: 0;
+    flex: 1 1 180px;
+
+    label {
+      font-size: 13px;
+    }
+  }
+
+  &-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  &-result {
+    margin-top: 14px;
+  }
+
+  &-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 8px;
+  }
+
+  &-count {
+    text-transform: capitalize;
+
+    b {
+      color: var(--primary-color);
+    }
+  }
+
+  &-note {
+    margin-top: 12px;
+  }
+
+  &-progress {
+    margin-top: 18px;
+    padding: 16px 18px;
+    border: 1px solid var(--control-bg);
+    border-radius: 8px;
+    background: var(--body-bg);
+  }
+
+  &-progressHead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  &-pct {
+    font-weight: 700;
+    color: var(--primary-color);
+  }
+
+  &-bar {
+    height: 10px;
+    background: var(--control-bg);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 10px 0;
+  }
+
+  &-barFill {
+    height: 100%;
+    background: var(--primary-color);
+    border-radius: 6px;
+    transition: width 0.4s ease;
+
+    &.is-failed {
+      background: var(--alert-error-color, #d83e3e);
+    }
+  }
+
+  &-status {
+    margin: 4px 0 0;
+    color: var(--muted-color);
+  }
+}

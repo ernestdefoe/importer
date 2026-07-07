@@ -1,0 +1,27 @@
+{
+  "private": true,
+  "name": "@ernestdefoe/importer",
+  "version": "0.1.0",
+  "description": "Web-based forum importer / converter for Flarum 2",
+  "dependencies": {},
+  "devDependencies": {
+    "flarum-tsconfig": "^2.0.0",
+    "flarum-webpack-config": "^3.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "webpack": "^5.0.0",
+    "webpack-cli": "^5.0.0"
+  },
+  "scripts": {
+    "dev": "webpack --mode development --watch",
+    "build": "webpack --mode production",
+    "format": "prettier --write src",
+    "check-typings": "tsc --noEmit --project tsconfig.json"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "es5",
+    "printWidth": 100,
+    "tabWidth": 2
+  }
+}

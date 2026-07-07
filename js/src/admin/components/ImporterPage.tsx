@@ -205,7 +205,7 @@ export default class ImporterPage extends Component {
             : m('.ImporterPage-upload', [
                 m('.Form-group', [
                   m('label', t('dump_file')),
-                  m('input.FormControl', { type: 'file', accept: '.sql,.sql.gz,.gz,.sqlite,.sqlite3,.db', onchange: (e: any) => (this.file = e.target.files[0] || null) }),
+                  m('input.FormControl.ImporterPage-file', { type: 'file', accept: '.sql,.sql.gz,.gz,.sqlite,.sqlite3,.db', onchange: (e: any) => (this.file = e.target.files[0] || null) }),
                   m('p.helpText', t('dump_help')),
                 ]),
                 src.needsPrefix && this.field('prefix', t('prefix'), 'text', '160px'),

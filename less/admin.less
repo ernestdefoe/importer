@@ -7,14 +7,39 @@
   }
 
   &-modes {
-    display: flex;
-    gap: 6px;
+    display: inline-flex;
+    gap: 0;
     margin: 14px 0 2px;
+    padding: 3px;
+    background: var(--control-bg);
+    border-radius: 8px;
+  }
 
-    button.is-active {
-      background: var(--control-bg);
+  &-mode {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--muted-color);
+    font-weight: 600;
+    font-size: 14px;
+    padding: 7px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+
+    i {
+      margin-right: 7px;
+      opacity: 0.85;
+    }
+
+    &:hover {
       color: var(--text-color);
-      font-weight: 600;
+    }
+
+    &.is-active {
+      background: var(--body-bg);
+      color: var(--text-color);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
     }
   }
 

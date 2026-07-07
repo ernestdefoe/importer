@@ -186,11 +186,11 @@ export default class ImporterPage extends Component {
             ),
           ]),
 
-          // mode tabs (upload is mysqldump-only, so hidden for Redis/PostgreSQL sources)
+          // mode toggle (upload is mysqldump-only, so hidden for Redis/PostgreSQL sources)
           !src.noUpload &&
-            m('.ImporterPage-modes', [
-              m('button', { type: 'button', className: 'Button Button--text' + (this.mode === 'connect' ? ' is-active' : ''), onclick: () => this.setMode('connect') }, t('mode_connect')),
-              m('button', { type: 'button', className: 'Button Button--text' + (this.mode === 'upload' ? ' is-active' : ''), onclick: () => this.setMode('upload') }, t('mode_upload')),
+            m('.ImporterPage-modes', { role: 'tablist' }, [
+              m('button', { type: 'button', role: 'tab', 'aria-selected': this.mode === 'connect', className: 'ImporterPage-mode' + (this.mode === 'connect' ? ' is-active' : ''), onclick: () => this.setMode('connect') }, [m('i.fas.fa-database'), t('mode_connect')]),
+              m('button', { type: 'button', role: 'tab', 'aria-selected': this.mode === 'upload', className: 'ImporterPage-mode' + (this.mode === 'upload' ? ' is-active' : ''), onclick: () => this.setMode('upload') }, [m('i.fas.fa-file-arrow-up'), t('mode_upload')]),
             ]),
 
           this.mode === 'connect'

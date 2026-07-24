@@ -200,9 +200,14 @@ class NodebbImporter
                     $topicMap = $ctx->mapGet('topic', $tids);
                     $userMap = $ctx->mapGet('user', $uids);
                     $mainMap = $ctx->mapGet('main', $pids);
-                    $db = Dst::db();
-                    $counts = $touched = [];
+                    $touched = [];
                     $n = 0;
+                    // NodeBB orders posts by pid, not by topic, so one batch can span
+                    // dozens of discussions. Fetch every starting post number in a
+                    // single grouped query instead of one MAX() per discussion.
+                    $counts = self::maxPostNumbers(array_values(array_unique(array_filter(
+                        array_map(fn ($pid) => $topicMap[(string) ($hashes[$pid]['tid'] ?? '')] ?? null, $pids)
+                    ))));
                     foreach ($pids as $pid) {
                         $post = $hashes[$pid];
                         if (! $post || ($post['deleted'] ?? '0') === '1' || isset($mainMap[(string) $pid])) {
@@ -212,9 +217,7 @@ class NodebbImporter
                         if (! $did) {
                             continue;
                         }
-                        if (! isset($counts[$did])) {
-                            $counts[$did] = (int) ($db->table('posts')->where('discussion_id', $did)->max('number') ?? 0);
-                        }
+                        $counts[$did] ??= 0;
                         try {
                             Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, Src::markdown($post['content'] ?? '') ?: '<p></p>', self::ts($post['timestamp'] ?? null));
                             $n++;
@@ -231,5 +234,28 @@ class NodebbImporter
                 }
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Highest existing post `number` for each of the given discussions, in one
+     * grouped query. Discussions with no posts yet are simply absent from the
+     * result (callers default them to 0).
+     *
+     * @param  array<int>  $discussionIds
+     * @return array<int,int>
+     */
+    private static function maxPostNumbers(array $discussionIds): array
+    {
+        if (! $discussionIds) {
+            return [];
+        }
+
+        return Dst::db()->table('posts')
+            ->whereIn('discussion_id', $discussionIds)
+            ->groupBy('discussion_id')
+            ->selectRaw('discussion_id, MAX(number) AS max_number')
+            ->pluck('max_number', 'discussion_id')
+            ->map(fn ($n) => (int) $n)
+            ->all();
     }
 }

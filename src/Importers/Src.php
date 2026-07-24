@@ -3,7 +3,6 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**

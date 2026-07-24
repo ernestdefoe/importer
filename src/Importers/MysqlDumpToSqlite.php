@@ -12,10 +12,25 @@ namespace ErnestDefoe\Importer\Importers;
  * data matters, so keys/constraints are dropped and column types collapse to
  * SQLite affinities. MySQL string escapes (\' \\ \n …) are re-escaped to SQLite
  * form so text/quotes/newlines survive intact. Ported from the Convoro suite.
+ *
+ * Known limitations — this is a pragmatic tokenizer, not a full MySQL parser:
+ *  • Stored routines/triggers using DELIMITER blocks are ignored (harmless: we
+ *    only execute CREATE TABLE and INSERT INTO).
+ *  • Conditional comments (`/*!40014 … *\/`) are skipped wholesale, so any
+ *    statement hidden inside one is not applied.
+ *  • Charset introducers (`_binary'…'`, `_utf8mb4'…'`) are stripped; the literal
+ *    itself is imported as text.
+ *  • Hex/bit literals (`0x…`, `b'…'`) pass through untranslated. SQLite reads
+ *    `0x…` as an integer, so binary columns dumped in hex may not round-trip.
+ * A row-batch that fails to apply is skipped rather than aborting the run, and
+ * the count is returned as `skipped` so callers can warn about partial data.
  */
 class MysqlDumpToSqlite
 {
-    /** @return array{tables:int, rows:int} */
+    /** Runtime connection name for the scratch SQLite file. */
+    public const CONN = 'importer_dump';
+
+    /** @return array{tables:int, rows:int, skipped:int} */
     public static function convert(string $dumpPath, string $sqlitePath): array
     {
         $in = self::open($dumpPath);
@@ -24,37 +39,67 @@ class MysqlDumpToSqlite
         }
 
         @unlink($sqlitePath);
-        $pdo = new \PDO('sqlite:' . $sqlitePath);
-        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-        $pdo->exec('PRAGMA journal_mode=OFF');
-        $pdo->exec('PRAGMA synchronous=OFF');
+        // Laravel's SQLite connector refuses to open a path that doesn't exist
+        // (unlike a bare PDO DSN, which creates it), so seed an empty file first.
+        if (@touch($sqlitePath) === false) {
+            throw new \RuntimeException('Could not create a scratch database at ' . $sqlitePath);
+        }
+
+        // Go through Flarum's DatabaseManager rather than a bare PDO handle, so
+        // the connection is managed (and can be purged/closed) like every other.
+        /** @var \Illuminate\Contracts\Config\Repository $config */
+        $config = resolve('config');
+        $config->set('database.connections.' . self::CONN, [
+            'driver' => 'sqlite',
+            'database' => $sqlitePath,
+            'prefix' => '',
+            'foreign_key_constraints' => false,
+        ]);
+        /** @var \Illuminate\Database\DatabaseManager $manager */
+        $manager = resolve('db');
+        $manager->purge(self::CONN);
+        $conn = $manager->connection(self::CONN);
+        $conn->disableQueryLog(); // a big dump would otherwise balloon memory
+
+        $conn->unprepared('PRAGMA journal_mode=OFF');
+        $conn->unprepared('PRAGMA synchronous=OFF');
 
         $tables = 0;
         $rows = 0;
-        $pdo->beginTransaction();
-        foreach (self::statements($in) as $stmt) {
-            $head = ltrim($stmt);
-            if (stripos($head, 'CREATE TABLE') === 0) {
-                if ($sql = self::translateCreate($stmt)) {
-                    $pdo->exec('DROP TABLE IF EXISTS ' . self::quoteIdent(self::tableOf($stmt)));
-                    $pdo->exec($sql);
-                    $tables++;
-                }
-            } elseif (stripos($head, 'INSERT INTO') === 0) {
-                try {
-                    $pdo->exec(self::translateInsert($stmt));
-                    $rows++;
-                } catch (\Throwable) {
-                    // skip a malformed row-batch rather than abort the whole import
+        $skipped = 0;
+        $conn->beginTransaction();
+        try {
+            foreach (self::statements($in) as $stmt) {
+                $head = ltrim($stmt);
+                if (stripos($head, 'CREATE TABLE') === 0) {
+                    if ($sql = self::translateCreate($stmt)) {
+                        $conn->unprepared('DROP TABLE IF EXISTS ' . self::quoteIdent(self::tableOf($stmt)));
+                        $conn->unprepared($sql);
+                        $tables++;
+                    }
+                } elseif (stripos($head, 'INSERT INTO') === 0) {
+                    try {
+                        $conn->unprepared(self::translateInsert($stmt));
+                        $rows++;
+                    } catch (\Throwable) {
+                        // skip a malformed row-batch rather than abort the whole import
+                        $skipped++;
+                    }
                 }
             }
-        }
-        $pdo->commit();
-        if (is_resource($in)) {
-            gzclose($in);
+            $conn->commit();
+        } catch (\Throwable $e) {
+            $conn->rollBack();
+            throw $e;
+        } finally {
+            if (is_resource($in)) {
+                gzclose($in);
+            }
+            // Release the file handle so the scratch DB can be reopened/removed.
+            $manager->purge(self::CONN);
         }
 
-        return ['tables' => $tables, 'rows' => $rows];
+        return ['tables' => $tables, 'rows' => $rows, 'skipped' => $skipped];
     }
 
     /** gz-aware open (gzopen reads plain files transparently too). */
@@ -209,6 +254,10 @@ class MysqlDumpToSqlite
                 } elseif ($ch === "'") {
                     $inStr = true;
                     $out .= "'";
+                } elseif ($ch === '_' && preg_match('/\G_[a-zA-Z0-9]+(?=\')/', $stmt, $m, 0, $i)) {
+                    // Charset introducer (_binary'…', _utf8mb4'…'). SQLite has no
+                    // equivalent and would choke, so drop it and keep the literal.
+                    $i += strlen($m[0]) - 1;
                 } else {
                     $out .= $ch;
                 }

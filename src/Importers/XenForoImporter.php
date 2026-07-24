@@ -62,7 +62,16 @@ class XenForoImporter
                     $pw = [];
                     if (count($rows) && $conn->getSchemaBuilder()->hasTable('xf_user_authenticate')) {
                         foreach ($conn->table('xf_user_authenticate')->whereIn('user_id', $rows->pluck('user_id')->all())->get(['user_id', 'data']) as $a) {
-                            $arr = @unserialize((string) $a->data);
+                            // allowed_classes:false — never instantiate objects from a
+                            // foreign dump (a crafted payload could otherwise trigger
+                            // a POP chain). Caught rather than silenced with @ so a
+                            // corrupt row is skipped instead of aborting the import,
+                            // even where warnings are escalated to exceptions.
+                            try {
+                                $arr = unserialize((string) $a->data, ['allowed_classes' => false]);
+                            } catch (\Throwable) {
+                                $arr = false;
+                            }
                             if (is_array($arr) && ! empty($arr['hash']) && is_string($arr['hash'])) {
                                 $pw[$a->user_id] = $arr['hash'];
                             }

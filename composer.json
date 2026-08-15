@@ -1,7 +1,7 @@
 {
   "name": "ernestdefoe/importer",
-  "description": "Importer / converter for Flarum 2 — migrate a forum into Flarum from phpBB, vBulletin (3/4/5), XenForo, MyBB, SMF, Vanilla, NodeBB, Invision, Discourse or Convoro. Web-based in the admin, runs in the background in batches with a live progress bar.",
-  "keywords": ["flarum", "flarum-extension", "import", "importer", "migration", "converter", "phpbb", "xenforo", "vbulletin", "discourse"],
+  "description": "Importer / converter for Flarum 2 — migrate a forum into Flarum from phpBB, vBulletin (3/4/5), XenForo, MyBB, SMF, Vanilla, NodeBB, Invision, Discourse, Web Wiz Forums or Convoro. Web-based in the admin, runs in the background in batches with a live progress bar.",
+  "keywords": ["flarum", "flarum-extension", "import", "importer", "migration", "converter", "phpbb", "xenforo", "vbulletin", "discourse", "webwiz"],
   "type": "flarum-extension",
   "license": "MIT",
   "authors": [

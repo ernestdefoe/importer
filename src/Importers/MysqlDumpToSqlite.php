@@ -70,6 +70,7 @@ class MysqlDumpToSqlite
         $conn->beginTransaction();
         try {
             foreach (self::statements($in) as $stmt) {
+                $stmt = self::normaliseTsql($stmt);
                 $head = ltrim($stmt);
                 if (stripos($head, 'CREATE TABLE') === 0) {
                     if ($sql = self::translateCreate($stmt)) {
@@ -102,6 +103,116 @@ class MysqlDumpToSqlite
         return ['tables' => $tables, 'rows' => $rows, 'skipped' => $skipped];
     }
 
+    /**
+     * Fold Microsoft SQL Server (T-SQL) script syntax into the MySQL-ish shape
+     * the rest of this class understands. Needed because Web Wiz Forums and
+     * other ASP forums run on SQL Server, and the usual export is SSMS's
+     * "Generate Scripts → schema and data".
+     *
+     * Handled: [bracketed] identifiers, the [dbo]. schema prefix, and the N''
+     * unicode-literal prefix. Statements outside CREATE TABLE / INSERT INTO
+     * (SET, ALTER, USE, GO) are already ignored by the dispatch loop.
+     *
+     * A no-op for MySQL dumps: none of these patterns occur there, and
+     * anything inside a string literal is left alone.
+     */
+    private static function normaliseTsql(string $stmt): string
+    {
+        // Cheap bail-out so ordinary mysqldumps don't pay for any of this.
+        if (! str_contains($stmt, '[') && stripos($stmt, "N'") === false) {
+            return $stmt;
+        }
+
+        // 🚨 SSMS emits "INSERT [dbo].[tbl] (...) VALUES (...)" with NO "INTO".
+        // Both the dispatch loop and SQLite itself require INTO, so without
+        // this the schema imports and every row is silently dropped.
+        $stmt = preg_replace('/^\s*INSERT\s+(?!INTO\b)/i', 'INSERT INTO ', $stmt, 1) ?? $stmt;
+
+        $out = '';
+        $len = strlen($stmt);
+        $inStr = false;
+        $inTick = false;
+
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $stmt[$i];
+
+            // Inside a literal, copy verbatim — a '[' or "N'" in post content
+            // must not be rewritten.
+            if ($inStr) {
+                $out .= $ch;
+                if ($ch === "'") {
+                    // '' is an escaped quote in T-SQL, not the end of the string.
+                    if ($i + 1 < $len && $stmt[$i + 1] === "'") {
+                        $out .= $stmt[++$i];
+                    } else {
+                        $inStr = false;
+                    }
+                }
+
+                continue;
+            }
+
+            if ($inTick) {
+                $out .= $ch;
+                if ($ch === '`') {
+                    $inTick = false;
+                }
+
+                continue;
+            }
+
+            if ($ch === '`') {
+                $inTick = true;
+                $out .= $ch;
+
+                continue;
+            }
+
+            // N'…' → '…' (unicode literal prefix). Only when the N is a
+            // standalone token, so a column named `N` or a word ending in N
+            // is untouched.
+            if (($ch === 'N' || $ch === 'n')
+                && $i + 1 < $len && $stmt[$i + 1] === "'"
+                && ($i === 0 || preg_match('/[^A-Za-z0-9_]/', $stmt[$i - 1]) === 1)) {
+                continue; // drop the N; the next iteration opens the string
+            }
+
+            if ($ch === "'") {
+                $inStr = true;
+                $out .= $ch;
+
+                continue;
+            }
+
+            // [ident] → `ident`, and drop a [dbo]. / dbo. schema qualifier.
+            if ($ch === '[') {
+                $end = strpos($stmt, ']', $i);
+                if ($end === false) {
+                    $out .= $ch;
+
+                    continue;
+                }
+                $ident = substr($stmt, $i + 1, $end - $i - 1);
+                $i = $end;
+
+                // Skip a schema qualifier so [dbo].[tblAuthor] becomes `tblAuthor`.
+                if (strcasecmp($ident, 'dbo') === 0 && ($stmt[$i + 1] ?? '') === '.') {
+                    $i++;
+
+                    continue;
+                }
+
+                $out .= '`' . str_replace('`', '', $ident) . '`';
+
+                continue;
+            }
+
+            $out .= $ch;
+        }
+
+        return $out;
+    }
+
     /** gz-aware open (gzopen reads plain files transparently too). */
     private static function open(string $path)
     {
@@ -117,6 +228,20 @@ class MysqlDumpToSqlite
         $esc = false;
 
         while (($line = gzgets($fh)) !== false) {
+            // T-SQL batch separator. SSMS scripts frequently omit the trailing
+            // semicolon and rely on GO alone, so without this the whole file
+            // buffers into one unusable statement. Only valid outside a
+            // literal, hence the $inStr/$inTick guard.
+            if (! $inStr && ! $inTick && strcasecmp(trim($line), 'GO') === 0) {
+                $s = trim($buf);
+                if ($s !== '') {
+                    yield $s;
+                }
+                $buf = '';
+
+                continue;
+            }
+
             if ($buf === '') {
                 $l = ltrim($line);
                 if ($l === '' || str_starts_with($l, '--') || str_starts_with($l, '#')) {

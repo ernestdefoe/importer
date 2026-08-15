@@ -24,6 +24,7 @@ class Registry
             'invision' => InvisionImporter::class,
             'discourse' => DiscourseImporter::class,
             'convoro' => ConvoroImporter::class,
+            'webwiz' => WebWizImporter::class,
         ];
     }
 
@@ -41,6 +42,9 @@ class Registry
             'invision' => ['label' => 'Invision Community (IP.Board)', 'driver' => 'mysql', 'prefix' => ''],
             'discourse' => ['label' => 'Discourse (PostgreSQL)', 'driver' => 'pgsql', 'prefix' => ''],
             'convoro' => ['label' => 'Convoro', 'driver' => 'mysql', 'prefix' => ''],
+            // Web Wiz runs on SQL Server. A direct connection needs pdo_sqlsrv,
+            // which most hosts lack — the file-upload route is the usual path.
+            'webwiz' => ['label' => 'Web Wiz Forums (SQL Server)', 'driver' => 'sqlsrv', 'prefix' => 'tbl'],
         ];
     }
 

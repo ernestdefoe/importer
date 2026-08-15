@@ -28,6 +28,9 @@ const SOURCES: Record<string, Source> = {
   convoro: { label: 'Convoro', driver: 'mysql', port: '3306' },
   discourse: { label: 'Discourse (PostgreSQL)', driver: 'pgsql', port: '5432', noUpload: true },
   nodebb: { label: 'NodeBB (Redis)', driver: 'redis', port: '6379', noUsername: true, noUpload: true },
+  // Upload stays enabled: a direct connection needs pdo_sqlsrv, which most
+  // hosts don't have, so uploading an export is the usual route here.
+  webwiz: { label: 'Web Wiz Forums (SQL Server)', driver: 'sqlsrv', prefix: 'tbl', needsPrefix: true, port: '1433' },
 };
 
 /**

@@ -31,6 +31,32 @@ class Src
                 'prefix' => '',
                 'foreign_key_constraints' => false,
             ];
+        } elseif ($driver === 'sqlsrv') {
+            // Microsoft SQL Server — the backing store for ASP forums such as
+            // Web Wiz. pdo_sqlsrv is absent on most shared LAMP hosting, so
+            // say so plainly rather than letting PDO throw "could not find
+            // driver": the fix is a different import route, not a config typo.
+            if (! in_array('sqlsrv', \PDO::getAvailableDrivers(), true)) {
+                throw new \RuntimeException(
+                    'This server cannot connect to SQL Server directly: the PHP extension pdo_sqlsrv is not installed. '
+                    . 'Export the source database to a dump or CSV and use the file-upload import instead.'
+                );
+            }
+
+            $conf = [
+                'driver' => 'sqlsrv',
+                'host' => $cfg['host'] ?: '127.0.0.1',
+                'port' => (int) ($cfg['port'] ?: 1433),
+                'database' => $cfg['database'] ?? '',
+                'username' => $cfg['username'] ?? '',
+                'password' => $cfg['password'] ?? '',
+                'charset' => 'utf8',
+                'prefix' => '',
+                // Older SQL Server instances commonly present a self-signed
+                // cert; without this the driver refuses the handshake.
+                'trust_server_certificate' => true,
+                'options' => [\PDO::ATTR_TIMEOUT => 8],
+            ];
         } else {
             $driver = $driver === 'pgsql' ? 'pgsql' : 'mysql';
             $conf = [

@@ -31,6 +31,7 @@ class RunImportCommand extends AbstractCommand
             ->addOption('username', null, InputOption::VALUE_REQUIRED, 'DB username', 'root')
             ->addOption('password', null, InputOption::VALUE_REQUIRED, 'DB password', '')
             ->addOption('prefix', null, InputOption::VALUE_REQUIRED, 'Source table prefix', '')
+            ->addOption('avatar-path', null, InputOption::VALUE_REQUIRED, 'Local filesystem path to the source forum\'s avatar directory (vBulletin customavatars/, etc.) — only needed when avatars aren\'t stored as DB blobs.', '')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.');
     }
 
@@ -52,6 +53,7 @@ class RunImportCommand extends AbstractCommand
             'username' => (string) $this->input->getOption('username'),
             'password' => (string) $this->input->getOption('password'),
             'prefix' => (string) $this->input->getOption('prefix'),
+            'avatar_path' => (string) $this->input->getOption('avatar-path'),
         ];
 
         try {

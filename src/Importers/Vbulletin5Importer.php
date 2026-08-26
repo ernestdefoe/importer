@@ -30,6 +30,29 @@ class Vbulletin5Importer
     }
 
     /**
+     * Flarum core group id (1 = Admin, 4 = Mod) for a vBulletin user, or 0 for
+     * no mapping. Checks both the primary group (`usergroupid`) and every
+     * secondary group (`membergroupids`, comma-separated) — a vBulletin user
+     * commonly keeps "Member" as their primary group with "Moderator" only as
+     * a secondary one, so the primary id alone misses real moderators/admins.
+     * vBulletin system group ids are stable across installs: 6 = Administrators,
+     * 5 = Super Moderators, 7 = Moderators.
+     */
+    private static function coreGroupFor(int $primaryGroupId, string $secondaryGroupIds = ''): int
+    {
+        $ids = array_filter(array_map('intval', explode(',', $secondaryGroupIds)));
+        $ids[] = $primaryGroupId;
+        if (in_array(6, $ids, true)) {
+            return 1; // Admin
+        }
+        if (in_array(5, $ids, true) || in_array(7, $ids, true)) {
+            return 4; // Mod
+        }
+
+        return 0;
+    }
+
+    /**
      * Real sub-forums, excluding vBulletin's system pseudo-channels (Visitor
      * Messages, Private Messages, Albums, Reports, Infractions, Articles,
      * Social Groups, the Homepage node itself, …). Without this, every
@@ -92,6 +115,7 @@ class Vbulletin5Importer
                 ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
                 : 0,
             'posts' => $textTypeIds ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
+            'avatars' => $sb->hasTable($p . 'customavatar') ? (int) $conn->table($p . 'customavatar')->count() : 0,
         ]];
     }
 
@@ -145,8 +169,15 @@ class Vbulletin5Importer
                             continue;
                         }
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
+                        $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
                         try {
-                            $map[$u->userid] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null));
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen);
+                            $map[$u->userid] = $uid;
+                            // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
+                            // groups map onto Flarum's built-in Admin/Mod groups. Everything else
+                            // (custom titles, awaiting-confirmation states, banned, …) has no
+                            // Flarum equivalent and is intentionally left alone.
+                            Dst::assignCoreGroup($uid, self::coreGroupFor((int) ($u->usergroupid ?? 0), (string) ($u->membergroupids ?? '')));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -155,6 +186,44 @@ class Vbulletin5Importer
                     $ctx->mapPut('user', $map);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['users' => $n, 'skipped' => $skip]];
+                }
+            ),
+
+            // Custom (uploaded) avatars. vBulletin 5 stores the image bytes
+            // either as a BLOB in `customavatar.filedata`, or — if the admin
+            // configured file-based storage (the common case) — only the
+            // filename there, with the actual bytes on disk. When the blob
+            // is empty and --avatar-path/`avatar_path` config points at that
+            // directory, we read the file `customavatar.filename` names.
+            // vBulletin "preset gallery" avatars (mo_vb3_avatar) aren't user
+            // uploads and have no per-user image data, so they're skipped.
+            new Phase('avatars', 'Importing avatars…',
+                fn () => 0,
+                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
+                    $conn = $ctx->src();
+                    if (! $conn->getSchemaBuilder()->hasTable($p . 'customavatar')) {
+                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    $avatarDir = rtrim((string) ($cfg['avatar_path'] ?? ''), '/');
+                    $rows = $conn->table($p . 'customavatar')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get(['userid', 'filedata', 'filename']);
+                    $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
+                    $n = $skip = 0;
+                    foreach ($rows as $row) {
+                        $cursor = $row->userid;
+                        $uid = $userMap[(string) $row->userid] ?? null;
+                        $bytes = (string) ($row->filedata ?? '');
+                        if ($bytes === '' && $avatarDir !== '' && ($row->filename ?? '')) {
+                            $path = $avatarDir . '/' . basename((string) $row->filename);
+                            $bytes = is_file($path) ? (@file_get_contents($path) ?: '') : '';
+                        }
+                        if ($uid && Dst::avatar((int) $uid, $bytes)) {
+                            $n++;
+                        } else {
+                            $skip++;
+                        }
+                    }
+
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['avatars' => $n, 'skipped' => $skip]];
                 }
             ),
 

@@ -13,9 +13,14 @@ namespace ErnestDefoe\Importer\Importers;
 class Bbcode
 {
     /**
-     * @param  array{uid?:string,escaped?:bool}  $opts
-     *   uid      phpBB stores tags as [b:uid]…[/b:uid] — strip the suffix.
-     *   escaped  phpBB stores post_text HTML-escaped — decode before re-escaping.
+     * @param  array{uid?:string,escaped?:bool,attachment?:\Closure}  $opts
+     *   uid         phpBB stores tags as [b:uid]…[/b:uid] — strip the suffix.
+     *   escaped     phpBB stores post_text HTML-escaped — decode before re-escaping.
+     *   attachment  fn(string $sourceId): ?array{url:string,filename:string,isImage:bool} —
+     *               resolves a source attachment id (e.g. vBulletin's
+     *               [ATTACH]123[/ATTACH] or [ATTACH=JSON]{"data-attachmentid":"123"}[/ATTACH])
+     *               to an already-rehosted file. Returning null renders the reference
+     *               as plain text instead of a broken link/image.
      */
     public static function toHtml(?string $text, array $opts = []): string
     {
@@ -41,6 +46,40 @@ class Bbcode
             $codes[$key] = '<pre><code>' . trim($m[1]) . '</code></pre>';
 
             return $key;
+        }, $t);
+
+        // vBulletin attachment references — [ATTACH=JSON]{"data-attachmentid":"123",…}[/ATTACH]
+        // or the older [ATTACH]123[/ATTACH]. Resolved via the caller-supplied callback
+        // (which knows how to look the id up in the source forum's own DB); left as
+        // plain text if no resolver was given or it can't find a match, rather than
+        // ever leaking the raw JSON/id into the post.
+        $t = preg_replace_callback('#\[ATTACH(?:=JSON)?\](.*?)\[/ATTACH\]#is', function ($m) use ($opts) {
+            $resolver = $opts['attachment'] ?? null;
+            if (! $resolver) {
+                return '';
+            }
+            $raw = trim($m[1]);
+            $srcId = null;
+            $decoded = json_decode(html_entity_decode($raw, ENT_QUOTES | ENT_HTML5, 'UTF-8'), true);
+            if (is_array($decoded) && isset($decoded['data-attachmentid'])) {
+                $srcId = (string) $decoded['data-attachmentid'];
+            } elseif (preg_match('/^\d+$/', $raw)) {
+                $srcId = $raw;
+            }
+            if ($srcId === null) {
+                return '';
+            }
+            $found = $resolver($srcId);
+            if (! $found || empty($found['url'])) {
+                return '';
+            }
+            $url = htmlspecialchars($found['url'], ENT_QUOTES);
+            if (! empty($found['isImage'])) {
+                return '<img src="' . $url . '" alt="">';
+            }
+            $label = htmlspecialchars($found['filename'] ?? $found['url'], ENT_QUOTES);
+
+            return '<a href="' . $url . '" rel="nofollow noopener" target="_blank">' . $label . '</a>';
         }, $t);
 
         // Inline formatting (repeat a few times for simple nesting).

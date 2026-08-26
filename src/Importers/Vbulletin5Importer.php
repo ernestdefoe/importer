@@ -29,19 +29,192 @@ class Vbulletin5Importer
         return [$channel, $text];
     }
 
-    /** @return int[] */
-    private static function channelNodeIds($conn, string $p, array $channelTypeIds): array
+    /**
+     * Flarum core group id (1 = Admin, 4 = Mod) for a vBulletin user, or 0 for
+     * no mapping. Checks both the primary group (`usergroupid`) and every
+     * secondary group (`membergroupids`, comma-separated) — a vBulletin user
+     * commonly keeps "Member" as their primary group with "Moderator" only as
+     * a secondary one, so the primary id alone misses real moderators/admins.
+     * vBulletin system group ids are stable across installs: 6 = Administrators,
+     * 5 = Super Moderators, 7 = Moderators.
+     */
+    private static function coreGroupFor(int $primaryGroupId, string $secondaryGroupIds = ''): int
     {
-        return $channelTypeIds
-            ? $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all()
-            : [];
+        $ids = array_filter(array_map('intval', explode(',', $secondaryGroupIds)));
+        $ids[] = $primaryGroupId;
+        if (in_array(6, $ids, true)) {
+            return 1; // Admin
+        }
+        if (in_array(5, $ids, true) || in_array(7, $ids, true)) {
+            return 4; // Mod
+        }
+
+        return 0;
     }
 
-    private static function body(?string $raw, ?string $htmlstate): string
+    /**
+     * Flatten vBulletin's forum tree onto Flarum's 2-level tag model
+     * (`is_primary` + one level of `parent_id`). vBulletin sub-forums often
+     * nest 3-4 levels deep (e.g. Forum → Buurten → Belfort → Villapark);
+     * Flarum's tags UI only renders a primary tag and its direct children,
+     * so anything past depth 2 is re-parented onto its depth-1 ancestor with
+     * the intermediate path folded into the tag's own name — e.g. depth-4
+     * "Villapark" under depth-2 "Buurten" becomes secondary tag
+     * "Villapark (Buurten)" directly under the depth-1 primary tag, rather
+     * than silently losing which neighbourhood group it belonged to.
+     *
+     * The root container itself (e.g. the "Forum" node vB5 routes to the
+     * bare "forum" prefix — matched by {@see channelNodeIds()} alongside its
+     * real children, but it has no topics of its own) is auto-detected as
+     * the one node whose parent isn't itself part of the given set, and is
+     * omitted from the returned placement entirely so the caller can skip
+     * creating a pointless empty tag for it.
+     *
+     * @param  array<int,object{nodeid:int,parentid:int,title:string}>  $nodes  every forum node, order doesn't matter
+     * @return array<int,array{parentSrcId:int|null,namePrefix:string}>  keyed by nodeid, root omitted
+     */
+    private static function tagPlacement(array $nodes): array
+    {
+        $byId = [];
+        foreach ($nodes as $n) {
+            $byId[$n->nodeid] = $n;
+        }
+        // A node is a root if its own parent isn't part of the given set (e.g.
+        // vBulletin's "Forum" container, whose parent is the Homepage node,
+        // which channelNodeIds() excludes as a system pseudo-channel).
+        $rootIds = [];
+        foreach ($nodes as $n) {
+            if (! isset($byId[$n->parentid])) {
+                $rootIds[$n->nodeid] = true;
+            }
+        }
+
+        $placement = [];
+        foreach ($nodes as $n) {
+            if (isset($rootIds[$n->nodeid])) {
+                continue; // the root itself: no tag, just a hierarchy anchor
+            }
+            if (isset($rootIds[$n->parentid])) {
+                // Direct child of a root = depth-1 = primary tag.
+                $placement[$n->nodeid] = ['parentSrcId' => null, 'namePrefix' => ''];
+
+                continue;
+            }
+            // Walk up, collecting ancestors (nearest first), until we reach the
+            // depth-1 node (the one whose own parent is a root).
+            $chain = [];
+            $cur = $n;
+            $guard = 0;
+            while ($cur && ! isset($rootIds[$cur->parentid]) && $guard++ < 50) {
+                $parent = $byId[$cur->parentid] ?? null;
+                if (! $parent) {
+                    break;
+                }
+                $chain[] = $parent;
+                $cur = $parent;
+            }
+            // $chain is now [nearest ancestor, ..., depth-1 ancestor] (or empty if $n is itself depth-1).
+            if (! $chain) {
+                $placement[$n->nodeid] = ['parentSrcId' => null, 'namePrefix' => ''];
+
+                continue;
+            }
+            $depth1 = end($chain);
+            // Everything between depth-1 and this node (exclusive of both) folds into the name.
+            $between = array_slice($chain, 0, -1);
+            $prefixParts = array_reverse(array_map(fn ($a) => trim((string) $a->title), $between));
+            $placement[$n->nodeid] = [
+                'parentSrcId' => (int) $depth1->nodeid,
+                'namePrefix' => $prefixParts ? implode(' / ', array_filter($prefixParts)) : '',
+            ];
+        }
+
+        return $placement;
+    }
+
+    /**
+     * Real sub-forums, excluding vBulletin's system pseudo-channels (Visitor
+     * Messages, Private Messages, Albums, Reports, Infractions, Articles,
+     * Social Groups, the Homepage node itself, …). Without this, every
+     * profile-wall "Visitor Message" node gets imported as a titleless
+     * discussion.
+     *
+     * vB5's route cache reliably tags every real forum with a route whose
+     * prefix starts with "forum" ("forum" itself, or "forum/…" for
+     * sub-forums); system channels route to "special/…", "articles",
+     * "social-groups/…", "homepage", etc. When the route table is missing
+     * (unusual custom installs) we fall back to the unfiltered set rather
+     * than importing nothing.
+     *
+     * @return int[]
+     */
+    private static function channelNodeIds($conn, string $p, array $channelTypeIds): array
+    {
+        if (! $channelTypeIds) {
+            return [];
+        }
+        $ids = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all();
+
+        if (! $conn->getSchemaBuilder()->hasTable($p . 'routenew')) {
+            return $ids;
+        }
+        $forumIds = $conn->table($p . 'routenew')
+            ->where('class', 'vB5_Route_Channel')
+            ->where(function ($q) {
+                $q->where('prefix', 'forum')->orWhere('prefix', 'like', 'forum/%');
+            })
+            ->pluck('contentid')->map(fn ($v) => (int) $v)->unique()->all();
+
+        return $forumIds ? array_values(array_intersect($ids, $forumIds)) : $ids;
+    }
+
+    private static function body(?string $raw, ?string $htmlstate, ?\Closure $attachmentResolver = null): string
     {
         $raw = (string) $raw;
 
-        return $htmlstate === 'on' ? Src::sanitizeHtml($raw) : Bbcode::toHtml($raw);
+        return $htmlstate === 'on' ? Src::sanitizeHtml($raw) : Bbcode::toHtml($raw, ['attachment' => $attachmentResolver]);
+    }
+
+    /**
+     * Builds a resolver for [ATTACH]/[ATTACH=JSON] BBCode references: given a
+     * vBulletin attachment node id, rehosts the file's bytes (from the
+     * `filedata` BLOB, since vBulletin keeps attachment content in the
+     * database — unlike its avatars, which are commonly file-based) onto
+     * Flarum's own public asset disk and returns its new URL. Results are
+     * cached per source id for the lifetime of one batch since the same
+     * attachment can be referenced from more than one post (quotes).
+     */
+    private static function attachmentResolver($conn, string $p): \Closure
+    {
+        $imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
+        $cache = [];
+
+        return function (string $srcId) use ($conn, $p, $imageExts, &$cache): ?array {
+            if (array_key_exists($srcId, $cache)) {
+                return $cache[$srcId];
+            }
+            if (! ctype_digit($srcId)) {
+                return $cache[$srcId] = null;
+            }
+            $row = $conn->table($p . 'attach')->where('nodeid', (int) $srcId)->first(['filedataid', 'filename']);
+            if (! $row) {
+                return $cache[$srcId] = null;
+            }
+            $file = $conn->table($p . 'filedata')->where('filedataid', $row->filedataid)->first(['filedata', 'extension']);
+            if (! $file || ! $file->filedata) {
+                return $cache[$srcId] = null;
+            }
+            $url = Dst::storeAsset((string) $file->filedata, (string) ($row->filename ?: ('attachment.' . $file->extension)));
+            if (! $url) {
+                return $cache[$srcId] = null;
+            }
+
+            return $cache[$srcId] = [
+                'url' => $url,
+                'filename' => (string) $row->filename,
+                'isImage' => in_array(strtolower((string) $file->extension), $imageExts, true),
+            ];
+        };
     }
 
     public static function test(array $cfg): array
@@ -64,6 +237,7 @@ class Vbulletin5Importer
                 ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
                 : 0,
             'posts' => $textTypeIds ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
+            'avatars' => $sb->hasTable($p . 'customavatar') ? (int) $conn->table($p . 'customavatar')->count() : 0,
         ]];
     }
 
@@ -82,21 +256,59 @@ class Vbulletin5Importer
                     }
                     $conn = $ctx->src();
                     [$channelTypeIds] = self::typeIds($conn, $p);
-                    if (! $channelTypeIds) {
+                    $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
+                    if (! $channelIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    // The whole forum tree is small (rarely more than a few hundred
+                    // nodes) — recomputing placement each batch is cheap and avoids
+                    // needing to persist it across the many short step requests.
+                    $allNodes = $conn->table($p . 'node')->whereIn('nodeid', $channelIds)->get(['nodeid', 'parentid', 'title'])->all();
+                    $placement = self::tagPlacement($allNodes);
+
+                    $rowsRaw = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->whereIn('nodeid', $channelIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    // The tree root (e.g. vBulletin's bare "Forum" container) is
+                    // auto-excluded by tagPlacement() — skip it here too, it has no
+                    // topics and would otherwise become an empty leftover tag. The
+                    // cursor still advances past it below, from $rowsRaw.
+                    $rows = $rowsRaw->filter(fn ($c) => isset($placement[$c->nodeid]));
+                    // Primary (depth-1) tags first within this batch, so their Flarum ids
+                    // exist before a secondary tag needs one as parent_id.
+                    $rowsSorted = $rows->sortBy(fn ($c) => ($placement[$c->nodeid]['parentSrcId'] ?? null) === null ? 0 : 1);
+                    $parentSrcIds = $rowsSorted->map(fn ($c) => $placement[$c->nodeid]['parentSrcId'] ?? null)->filter()->unique()->all();
+                    $parentTagMap = $ctx->mapGet('tag', $parentSrcIds);
+
                     $map = [];
                     $n = 0;
-                    foreach ($rows as $c) {
-                        $cursor = $c->nodeid;
+                    foreach ($rowsRaw as $c) {
+                        $cursor = max($cursor, $c->nodeid);
+                    }
+                    foreach ($rowsSorted as $c) {
+                        $place = $placement[$c->nodeid] ?? ['parentSrcId' => null, 'namePrefix' => ''];
                         $name = trim((string) ($c->title ?? '')) ?: ('Channel ' . $c->nodeid);
-                        $map[$c->nodeid] = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0));
+                        if ($place['namePrefix'] !== '') {
+                            $name .= ' (' . $place['namePrefix'] . ')';
+                        }
+                        $parentTagId = $place['parentSrcId'] !== null
+                            ? ($parentTagMap[(string) $place['parentSrcId']] ?? $map[$place['parentSrcId']] ?? null)
+                            : null;
+                        // Safety net: if the parent tag genuinely can't be resolved (e.g.
+                        // it lands in a later batch because of an out-of-order nodeid),
+                        // fall back to primary rather than creating an orphaned tag with
+                        // a parent_id that doesn't exist.
+                        $isPrimary = $place['parentSrcId'] === null || $parentTagId === null;
+                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0), $isPrimary, $isPrimary ? null : $parentTagId);
+                        $map[$c->nodeid] = $tagId;
+                        if ($place['parentSrcId'] === null) {
+                            // Make this batch's own primary tags resolvable as a parent
+                            // for a secondary tag later in the same batch.
+                            $parentTagMap[(string) $c->nodeid] = $tagId;
+                        }
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rowsRaw), 'done' => count($rowsRaw) < $limit, 'summary' => ['categories' => $n]];
                 }
             ),
 
@@ -117,8 +329,15 @@ class Vbulletin5Importer
                             continue;
                         }
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
+                        $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
                         try {
-                            $map[$u->userid] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null));
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen);
+                            $map[$u->userid] = $uid;
+                            // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
+                            // groups map onto Flarum's built-in Admin/Mod groups. Everything else
+                            // (custom titles, awaiting-confirmation states, banned, …) has no
+                            // Flarum equivalent and is intentionally left alone.
+                            Dst::assignCoreGroup($uid, self::coreGroupFor((int) ($u->usergroupid ?? 0), (string) ($u->membergroupids ?? '')));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -130,16 +349,62 @@ class Vbulletin5Importer
                 }
             ),
 
+            // Custom (uploaded) avatars. vBulletin 5 stores the image bytes
+            // either as a BLOB in `customavatar.filedata`, or — if the admin
+            // configured file-based storage (the common case) — only the
+            // filename there, with the actual bytes on disk. When the blob
+            // is empty and --avatar-path/`avatar_path` config points at that
+            // directory, we read the file `customavatar.filename` names.
+            // vBulletin "preset gallery" avatars (mo_vb3_avatar) aren't user
+            // uploads and have no per-user image data, so they're skipped.
+            new Phase('avatars', 'Importing avatars…',
+                fn () => 0,
+                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
+                    $conn = $ctx->src();
+                    if (! $conn->getSchemaBuilder()->hasTable($p . 'customavatar')) {
+                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    $avatarDir = rtrim((string) ($cfg['avatar_path'] ?? ''), '/');
+                    $rows = $conn->table($p . 'customavatar')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get(['userid', 'filedata', 'filename']);
+                    $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
+                    $n = $skip = 0;
+                    foreach ($rows as $row) {
+                        $cursor = $row->userid;
+                        $uid = $userMap[(string) $row->userid] ?? null;
+                        $bytes = (string) ($row->filedata ?? '');
+                        if ($bytes === '' && $avatarDir !== '' && ($row->filename ?? '')) {
+                            $path = $avatarDir . '/' . basename((string) $row->filename);
+                            $bytes = is_file($path) ? (@file_get_contents($path) ?: '') : '';
+                        }
+                        if ($uid && Dst::avatar((int) $uid, $bytes)) {
+                            $n++;
+                        } else {
+                            $skip++;
+                        }
+                    }
+
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['avatars' => $n, 'skipped' => $skip]];
+                }
+            ),
+
             // Thread starters: Text nodes whose parent is a Channel. The node's own
             // text row is the discussion's first post (#1).
             new Phase('topics', 'Importing topics…',
                 fn () => 0,
-                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
+                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $cfg) {
                     $conn = $ctx->src();
                     [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
                     $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
                     if (! $textTypeIds || ! $channelIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    $maxTopics = (int) ($cfg['max_topics'] ?? 0);
+                    if ($maxTopics > 0) {
+                        $already = (int) Dst::db()->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'topic')->count();
+                        if ($already >= $maxTopics) {
+                            return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                        }
+                        $limit = min($limit, $maxTopics - $already);
                     }
                     $rows = $conn->table($p . 'node')
                         ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
@@ -152,6 +417,7 @@ class Vbulletin5Importer
                         ->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
+                    $attachmentResolver = self::attachmentResolver($conn, $p);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $node) {
@@ -164,7 +430,12 @@ class Vbulletin5Importer
                         if ($hasTags && isset($tagMap[(string) $node->parentid])) {
                             Dst::attachTag($did, $tagMap[(string) $node->parentid]);
                         }
-                        Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
+                        Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
+                        // Finalize immediately: topics with zero replies are never
+                        // visited again by the posts phase, so without this their
+                        // first_post_id/last_post_id/comment_count stay NULL/0 and
+                        // Flarum renders them as an empty "Untitled" discussion.
+                        Dst::finalizeDiscussion($did);
                         $n++;
                     }
                     $ctx->mapPut('topic', $map);
@@ -199,6 +470,7 @@ class Vbulletin5Importer
 
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
+                    $attachmentResolver = self::attachmentResolver($conn, $p);
                     $db = Dst::db();
                     $n = 0;
                     foreach ($rows as $node) {
@@ -215,7 +487,7 @@ class Vbulletin5Importer
                         }
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
+                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;
@@ -231,6 +503,6 @@ class Vbulletin5Importer
                     return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['posts' => $n]];
                 }
             ),
-        ], Phases::tail());
+        ], Phases::tail(), ! empty($cfg['prune_empty_tags']) ? Phases::pruneEmptyTags() : []);
     }
 }

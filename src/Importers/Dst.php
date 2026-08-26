@@ -82,14 +82,14 @@ class Dst
 
     /* ── Tags (categories) ──────────────────────────────────────────────── */
 
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, bool $isPrimary = true, ?int $parentId = null): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
             return (int) $id;
         }
 
-        return (int) $db->table('tags')->insertGetId([
+        $row = [
             'name' => Str::limit($name, 100, ''),
             'slug' => $slug,
             'description' => $desc !== null ? Str::limit(strip_tags($desc), 700, '') : null,
@@ -98,7 +98,15 @@ class Dst
             'is_restricted' => 0,
             'is_hidden' => 0,
             'discussion_count' => 0,
-        ]);
+        ];
+        if (self::hasColumn('tags', 'is_primary')) {
+            $row['is_primary'] = $isPrimary;
+        }
+        if ($parentId !== null && self::hasColumn('tags', 'parent_id')) {
+            $row['parent_id'] = $parentId;
+        }
+
+        return (int) $db->table('tags')->insertGetId($row);
     }
 
     /* ── Users ──────────────────────────────────────────────────────────── */

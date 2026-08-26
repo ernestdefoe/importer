@@ -53,6 +53,86 @@ class Vbulletin5Importer
     }
 
     /**
+     * Flatten vBulletin's forum tree onto Flarum's 2-level tag model
+     * (`is_primary` + one level of `parent_id`). vBulletin sub-forums often
+     * nest 3-4 levels deep (e.g. Forum → Buurten → Belfort → Villapark);
+     * Flarum's tags UI only renders a primary tag and its direct children,
+     * so anything past depth 2 is re-parented onto its depth-1 ancestor with
+     * the intermediate path folded into the tag's own name — e.g. depth-4
+     * "Villapark" under depth-2 "Buurten" becomes secondary tag
+     * "Villapark (Buurten)" directly under the depth-1 primary tag, rather
+     * than silently losing which neighbourhood group it belonged to.
+     *
+     * The root container itself (e.g. the "Forum" node vB5 routes to the
+     * bare "forum" prefix — matched by {@see channelNodeIds()} alongside its
+     * real children, but it has no topics of its own) is auto-detected as
+     * the one node whose parent isn't itself part of the given set, and is
+     * omitted from the returned placement entirely so the caller can skip
+     * creating a pointless empty tag for it.
+     *
+     * @param  array<int,object{nodeid:int,parentid:int,title:string}>  $nodes  every forum node, order doesn't matter
+     * @return array<int,array{parentSrcId:int|null,namePrefix:string}>  keyed by nodeid, root omitted
+     */
+    private static function tagPlacement(array $nodes): array
+    {
+        $byId = [];
+        foreach ($nodes as $n) {
+            $byId[$n->nodeid] = $n;
+        }
+        // A node is a root if its own parent isn't part of the given set (e.g.
+        // vBulletin's "Forum" container, whose parent is the Homepage node,
+        // which channelNodeIds() excludes as a system pseudo-channel).
+        $rootIds = [];
+        foreach ($nodes as $n) {
+            if (! isset($byId[$n->parentid])) {
+                $rootIds[$n->nodeid] = true;
+            }
+        }
+
+        $placement = [];
+        foreach ($nodes as $n) {
+            if (isset($rootIds[$n->nodeid])) {
+                continue; // the root itself: no tag, just a hierarchy anchor
+            }
+            if (isset($rootIds[$n->parentid])) {
+                // Direct child of a root = depth-1 = primary tag.
+                $placement[$n->nodeid] = ['parentSrcId' => null, 'namePrefix' => ''];
+
+                continue;
+            }
+            // Walk up, collecting ancestors (nearest first), until we reach the
+            // depth-1 node (the one whose own parent is a root).
+            $chain = [];
+            $cur = $n;
+            $guard = 0;
+            while ($cur && ! isset($rootIds[$cur->parentid]) && $guard++ < 50) {
+                $parent = $byId[$cur->parentid] ?? null;
+                if (! $parent) {
+                    break;
+                }
+                $chain[] = $parent;
+                $cur = $parent;
+            }
+            // $chain is now [nearest ancestor, ..., depth-1 ancestor] (or empty if $n is itself depth-1).
+            if (! $chain) {
+                $placement[$n->nodeid] = ['parentSrcId' => null, 'namePrefix' => ''];
+
+                continue;
+            }
+            $depth1 = end($chain);
+            // Everything between depth-1 and this node (exclusive of both) folds into the name.
+            $between = array_slice($chain, 0, -1);
+            $prefixParts = array_reverse(array_map(fn ($a) => trim((string) $a->title), $between));
+            $placement[$n->nodeid] = [
+                'parentSrcId' => (int) $depth1->nodeid,
+                'namePrefix' => $prefixParts ? implode(' / ', array_filter($prefixParts)) : '',
+            ];
+        }
+
+        return $placement;
+    }
+
+    /**
      * Real sub-forums, excluding vBulletin's system pseudo-channels (Visitor
      * Messages, Private Messages, Albums, Reports, Infractions, Articles,
      * Social Groups, the Homepage node itself, …). Without this, every
@@ -134,21 +214,59 @@ class Vbulletin5Importer
                     }
                     $conn = $ctx->src();
                     [$channelTypeIds] = self::typeIds($conn, $p);
-                    if (! $channelTypeIds) {
+                    $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
+                    if (! $channelIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    // The whole forum tree is small (rarely more than a few hundred
+                    // nodes) — recomputing placement each batch is cheap and avoids
+                    // needing to persist it across the many short step requests.
+                    $allNodes = $conn->table($p . 'node')->whereIn('nodeid', $channelIds)->get(['nodeid', 'parentid', 'title'])->all();
+                    $placement = self::tagPlacement($allNodes);
+
+                    $rowsRaw = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->whereIn('nodeid', $channelIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    // The tree root (e.g. vBulletin's bare "Forum" container) is
+                    // auto-excluded by tagPlacement() — skip it here too, it has no
+                    // topics and would otherwise become an empty leftover tag. The
+                    // cursor still advances past it below, from $rowsRaw.
+                    $rows = $rowsRaw->filter(fn ($c) => isset($placement[$c->nodeid]));
+                    // Primary (depth-1) tags first within this batch, so their Flarum ids
+                    // exist before a secondary tag needs one as parent_id.
+                    $rowsSorted = $rows->sortBy(fn ($c) => ($placement[$c->nodeid]['parentSrcId'] ?? null) === null ? 0 : 1);
+                    $parentSrcIds = $rowsSorted->map(fn ($c) => $placement[$c->nodeid]['parentSrcId'] ?? null)->filter()->unique()->all();
+                    $parentTagMap = $ctx->mapGet('tag', $parentSrcIds);
+
                     $map = [];
                     $n = 0;
-                    foreach ($rows as $c) {
-                        $cursor = $c->nodeid;
+                    foreach ($rowsRaw as $c) {
+                        $cursor = max($cursor, $c->nodeid);
+                    }
+                    foreach ($rowsSorted as $c) {
+                        $place = $placement[$c->nodeid] ?? ['parentSrcId' => null, 'namePrefix' => ''];
                         $name = trim((string) ($c->title ?? '')) ?: ('Channel ' . $c->nodeid);
-                        $map[$c->nodeid] = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0));
+                        if ($place['namePrefix'] !== '') {
+                            $name .= ' (' . $place['namePrefix'] . ')';
+                        }
+                        $parentTagId = $place['parentSrcId'] !== null
+                            ? ($parentTagMap[(string) $place['parentSrcId']] ?? $map[$place['parentSrcId']] ?? null)
+                            : null;
+                        // Safety net: if the parent tag genuinely can't be resolved (e.g.
+                        // it lands in a later batch because of an out-of-order nodeid),
+                        // fall back to primary rather than creating an orphaned tag with
+                        // a parent_id that doesn't exist.
+                        $isPrimary = $place['parentSrcId'] === null || $parentTagId === null;
+                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0), $isPrimary, $isPrimary ? null : $parentTagId);
+                        $map[$c->nodeid] = $tagId;
+                        if ($place['parentSrcId'] === null) {
+                            // Make this batch's own primary tags resolvable as a parent
+                            // for a secondary tag later in the same batch.
+                            $parentTagMap[(string) $c->nodeid] = $tagId;
+                        }
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rowsRaw), 'done' => count($rowsRaw) < $limit, 'summary' => ['categories' => $n]];
                 }
             ),
 
@@ -333,6 +451,6 @@ class Vbulletin5Importer
                     return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['posts' => $n]];
                 }
             ),
-        ], Phases::tail());
+        ], Phases::tail(), ! empty($cfg['prune_empty_tags']) ? Phases::pruneEmptyTags() : []);
     }
 }

@@ -29,12 +29,40 @@ class Vbulletin5Importer
         return [$channel, $text];
     }
 
-    /** @return int[] */
+    /**
+     * Real sub-forums, excluding vBulletin's system pseudo-channels (Visitor
+     * Messages, Private Messages, Albums, Reports, Infractions, Articles,
+     * Social Groups, the Homepage node itself, …). Without this, every
+     * profile-wall "Visitor Message" node gets imported as a titleless
+     * discussion.
+     *
+     * vB5's route cache reliably tags every real forum with a route whose
+     * prefix starts with "forum" ("forum" itself, or "forum/…" for
+     * sub-forums); system channels route to "special/…", "articles",
+     * "social-groups/…", "homepage", etc. When the route table is missing
+     * (unusual custom installs) we fall back to the unfiltered set rather
+     * than importing nothing.
+     *
+     * @return int[]
+     */
     private static function channelNodeIds($conn, string $p, array $channelTypeIds): array
     {
-        return $channelTypeIds
-            ? $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all()
-            : [];
+        if (! $channelTypeIds) {
+            return [];
+        }
+        $ids = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all();
+
+        if (! $conn->getSchemaBuilder()->hasTable($p . 'routenew')) {
+            return $ids;
+        }
+        $forumIds = $conn->table($p . 'routenew')
+            ->where('class', 'vB5_Route_Channel')
+            ->where(function ($q) {
+                $q->where('prefix', 'forum')->orWhere('prefix', 'like', 'forum/%');
+            })
+            ->pluck('contentid')->map(fn ($v) => (int) $v)->unique()->all();
+
+        return $forumIds ? array_values(array_intersect($ids, $forumIds)) : $ids;
     }
 
     private static function body(?string $raw, ?string $htmlstate): string
@@ -165,6 +193,11 @@ class Vbulletin5Importer
                             Dst::attachTag($did, $tagMap[(string) $node->parentid]);
                         }
                         Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
+                        // Finalize immediately: topics with zero replies are never
+                        // visited again by the posts phase, so without this their
+                        // first_post_id/last_post_id/comment_count stay NULL/0 and
+                        // Flarum renders them as an empty "Untitled" discussion.
+                        Dst::finalizeDiscussion($did);
                         $n++;
                     }
                     $ctx->mapPut('topic', $map);

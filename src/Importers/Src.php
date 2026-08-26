@@ -155,10 +155,19 @@ class Src
         return self::sanitizeHtml('<p>' . nl2br(htmlspecialchars($md, ENT_QUOTES), false) . '</p>');
     }
 
-    /** Unique tag slug from a name + source id. */
+    /**
+     * Unique tag slug from a name + source id. Flarum's `tags.slug` column is
+     * `varchar(100)` — without strict SQL mode, MySQL silently truncates a
+     * longer value, which can eat exactly the trailing `-$sourceId` that made
+     * it unique (seen with vBulletin's folded, breadcrumb-suffixed secondary
+     * tag names). Reserve room for that suffix up front instead.
+     */
     public static function tagSlug(string $name, int $sourceId): string
     {
-        return (Str::slug($name) ?: 'tag') . '-' . $sourceId;
+        $suffix = '-' . $sourceId;
+        $slug = Str::slug($name) ?: 'tag';
+
+        return Str::limit($slug, max(1, 100 - strlen($suffix)), '') . $suffix;
     }
 
     /**

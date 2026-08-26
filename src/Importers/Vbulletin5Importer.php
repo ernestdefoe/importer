@@ -168,11 +168,53 @@ class Vbulletin5Importer
         return $forumIds ? array_values(array_intersect($ids, $forumIds)) : $ids;
     }
 
-    private static function body(?string $raw, ?string $htmlstate): string
+    private static function body(?string $raw, ?string $htmlstate, ?\Closure $attachmentResolver = null): string
     {
         $raw = (string) $raw;
 
-        return $htmlstate === 'on' ? Src::sanitizeHtml($raw) : Bbcode::toHtml($raw);
+        return $htmlstate === 'on' ? Src::sanitizeHtml($raw) : Bbcode::toHtml($raw, ['attachment' => $attachmentResolver]);
+    }
+
+    /**
+     * Builds a resolver for [ATTACH]/[ATTACH=JSON] BBCode references: given a
+     * vBulletin attachment node id, rehosts the file's bytes (from the
+     * `filedata` BLOB, since vBulletin keeps attachment content in the
+     * database — unlike its avatars, which are commonly file-based) onto
+     * Flarum's own public asset disk and returns its new URL. Results are
+     * cached per source id for the lifetime of one batch since the same
+     * attachment can be referenced from more than one post (quotes).
+     */
+    private static function attachmentResolver($conn, string $p): \Closure
+    {
+        $imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
+        $cache = [];
+
+        return function (string $srcId) use ($conn, $p, $imageExts, &$cache): ?array {
+            if (array_key_exists($srcId, $cache)) {
+                return $cache[$srcId];
+            }
+            if (! ctype_digit($srcId)) {
+                return $cache[$srcId] = null;
+            }
+            $row = $conn->table($p . 'attach')->where('nodeid', (int) $srcId)->first(['filedataid', 'filename']);
+            if (! $row) {
+                return $cache[$srcId] = null;
+            }
+            $file = $conn->table($p . 'filedata')->where('filedataid', $row->filedataid)->first(['filedata', 'extension']);
+            if (! $file || ! $file->filedata) {
+                return $cache[$srcId] = null;
+            }
+            $url = Dst::storeAsset((string) $file->filedata, (string) ($row->filename ?: ('attachment.' . $file->extension)));
+            if (! $url) {
+                return $cache[$srcId] = null;
+            }
+
+            return $cache[$srcId] = [
+                'url' => $url,
+                'filename' => (string) $row->filename,
+                'isImage' => in_array(strtolower((string) $file->extension), $imageExts, true),
+            ];
+        };
     }
 
     public static function test(array $cfg): array
@@ -349,12 +391,20 @@ class Vbulletin5Importer
             // text row is the discussion's first post (#1).
             new Phase('topics', 'Importing topics…',
                 fn () => 0,
-                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
+                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $cfg) {
                     $conn = $ctx->src();
                     [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
                     $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
                     if (! $textTypeIds || ! $channelIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    $maxTopics = (int) ($cfg['max_topics'] ?? 0);
+                    if ($maxTopics > 0) {
+                        $already = (int) Dst::db()->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'topic')->count();
+                        if ($already >= $maxTopics) {
+                            return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                        }
+                        $limit = min($limit, $maxTopics - $already);
                     }
                     $rows = $conn->table($p . 'node')
                         ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
@@ -367,6 +417,7 @@ class Vbulletin5Importer
                         ->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
+                    $attachmentResolver = self::attachmentResolver($conn, $p);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $node) {
@@ -379,7 +430,7 @@ class Vbulletin5Importer
                         if ($hasTags && isset($tagMap[(string) $node->parentid])) {
                             Dst::attachTag($did, $tagMap[(string) $node->parentid]);
                         }
-                        Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
+                        Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
                         // Finalize immediately: topics with zero replies are never
                         // visited again by the posts phase, so without this their
                         // first_post_id/last_post_id/comment_count stay NULL/0 and
@@ -419,6 +470,7 @@ class Vbulletin5Importer
 
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
+                    $attachmentResolver = self::attachmentResolver($conn, $p);
                     $db = Dst::db();
                     $n = 0;
                     foreach ($rows as $node) {
@@ -435,7 +487,7 @@ class Vbulletin5Importer
                         }
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
+                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;

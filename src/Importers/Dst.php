@@ -188,6 +188,41 @@ class Dst
         }
     }
 
+    /**
+     * Store arbitrary file bytes (an old forum post's attachment, not an
+     * avatar) onto Flarum's own generic public asset disk (`flarum-assets`,
+     * served from `assets/`) and return its public URL. Used to rehost
+     * embedded images/files a source forum's posts reference, since
+     * Flarum's post content just needs an `<img src>`/link — no upload
+     * extension is required to *display* something already on disk.
+     *
+     * A random filename prefix avoids collisions between posts and hides
+     * the old forum's internal numbering; the original filename is kept as
+     * a suffix (sanitised) purely so a downloaded file looks reasonable.
+     * Best-effort: returns null on empty input or a write failure — one
+     * broken attachment must never abort the import run.
+     */
+    public static function storeAsset(string $binaryData, string $filename): ?string
+    {
+        if ($binaryData === '') {
+            return null;
+        }
+        $ext = pathinfo($filename, PATHINFO_EXTENSION);
+        $ext = preg_match('/^[a-zA-Z0-9]{1,10}$/', $ext) ? '.' . strtolower($ext) : '';
+        $safeName = preg_replace('/[^a-zA-Z0-9_-]+/', '-', pathinfo($filename, PATHINFO_FILENAME));
+        $safeName = trim(Str::limit($safeName ?: 'file', 60, ''), '-');
+        $path = 'attachments/' . Str::random(16) . '-' . $safeName . $ext;
+
+        try {
+            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-assets');
+            $disk->put($path, $binaryData);
+
+            return $disk->url($path);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     /* ── Discussions (topics) ───────────────────────────────────────────── */
 
     public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false): int

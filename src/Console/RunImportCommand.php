@@ -33,6 +33,7 @@ class RunImportCommand extends AbstractCommand
             ->addOption('prefix', null, InputOption::VALUE_REQUIRED, 'Source table prefix', '')
             ->addOption('avatar-path', null, InputOption::VALUE_REQUIRED, 'Local filesystem path to the source forum\'s avatar directory (vBulletin customavatars/, etc.) — only needed when avatars aren\'t stored as DB blobs.', '')
             ->addOption('prune-empty-tags', null, InputOption::VALUE_NONE, 'After import, delete tags this run created that ended up with zero discussions and no children (e.g. an empty vBulletin sub-forum). Never touches pre-existing tags.')
+            ->addOption('max-topics', null, InputOption::VALUE_REQUIRED, 'Import at most this many topics (oldest-id-first) instead of the whole forum — a fast, representative subset for testing a patch or a fresh source connection before committing to a full run.', '')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.');
     }
 
@@ -56,6 +57,7 @@ class RunImportCommand extends AbstractCommand
             'prefix' => (string) $this->input->getOption('prefix'),
             'avatar_path' => (string) $this->input->getOption('avatar-path'),
             'prune_empty_tags' => (bool) $this->input->getOption('prune-empty-tags'),
+            'max_topics' => (string) $this->input->getOption('max-topics'),
         ];
 
         try {

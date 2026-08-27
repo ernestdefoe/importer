@@ -97,12 +97,22 @@ class Src
         return preg_match('/^#?[0-9a-fA-F]{6}$/', $c) ? (str_starts_with($c, '#') ? $c : '#' . $c) : '#5b5bd6';
     }
 
-    /** Copy bcrypt hashes (Flarum uses bcrypt too, so they work straight away); anything else → random (user resets). */
+    /**
+     * Copy hashes PHP's own password_verify() already understands natively —
+     * bcrypt ($2a/$2b/$2y, what Flarum itself uses) and argon2id/argon2i
+     * (vBulletin 5's newer default scheme) — straight across so the
+     * imported account's EXISTING password keeps working with zero
+     * conversion. Any other/unrecognised format (vBulletin's legacy
+     * salted-MD5 scheme, empty, null, …) gets a random bcrypt hash instead:
+     * that account's old password can no longer match anything, so the
+     * user must use "forgot password" — there is no way to convert a
+     * legacy hash without knowing the original plaintext.
+     */
     public static function password(?string $hash): string
     {
         $hash = (string) $hash;
 
-        return preg_match('#^\$2[aby]\$#', $hash) ? $hash : password_hash(Str::random(24), PASSWORD_BCRYPT);
+        return preg_match('#^\$(2[aby]|argon2i(d)?)\$#', $hash) ? $hash : password_hash(Str::random(24), PASSWORD_BCRYPT);
     }
 
     /** Unix timestamp or datetime string → Carbon. */
@@ -155,10 +165,19 @@ class Src
         return self::sanitizeHtml('<p>' . nl2br(htmlspecialchars($md, ENT_QUOTES), false) . '</p>');
     }
 
-    /** Unique tag slug from a name + source id. */
+    /**
+     * Unique tag slug from a name + source id. Flarum's `tags.slug` column is
+     * `varchar(100)` — without strict SQL mode, MySQL silently truncates a
+     * longer value, which can eat exactly the trailing `-$sourceId` that made
+     * it unique (seen with vBulletin's folded, breadcrumb-suffixed secondary
+     * tag names). Reserve room for that suffix up front instead.
+     */
     public static function tagSlug(string $name, int $sourceId): string
     {
-        return (Str::slug($name) ?: 'tag') . '-' . $sourceId;
+        $suffix = '-' . $sourceId;
+        $slug = Str::slug($name) ?: 'tag';
+
+        return Str::limit($slug, max(1, 100 - strlen($suffix)), '') . $suffix;
     }
 
     /**

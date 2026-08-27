@@ -3,9 +3,12 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Flarum\Formatter\Formatter;
+use Flarum\User\AvatarUploader;
+use Flarum\User\User as FlarumUser;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Intervention\Image\ImageManager;
 use League\HTMLToMarkdown\HtmlConverter;
 
 /**
@@ -79,14 +82,14 @@ class Dst
 
     /* ── Tags (categories) ──────────────────────────────────────────────── */
 
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, bool $isPrimary = true, ?int $parentId = null): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
             return (int) $id;
         }
 
-        return (int) $db->table('tags')->insertGetId([
+        $row = [
             'name' => Str::limit($name, 100, ''),
             'slug' => $slug,
             'description' => $desc !== null ? Str::limit(strip_tags($desc), 700, '') : null,
@@ -95,12 +98,20 @@ class Dst
             'is_restricted' => 0,
             'is_hidden' => 0,
             'discussion_count' => 0,
-        ]);
+        ];
+        if (self::hasColumn('tags', 'is_primary')) {
+            $row['is_primary'] = $isPrimary;
+        }
+        if ($parentId !== null && self::hasColumn('tags', 'parent_id')) {
+            $row['parent_id'] = $parentId;
+        }
+
+        return (int) $db->table('tags')->insertGetId($row);
     }
 
     /* ── Users ──────────────────────────────────────────────────────────── */
 
-    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt): int
+    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt, ?Carbon $lastSeenAt = null): int
     {
         $db = self::db();
         $email = mb_strtolower(trim($email));
@@ -122,7 +133,94 @@ class Dst
             'is_email_confirmed' => 1,
             'password' => Src::password($passwordHash),
             'joined_at' => $joinedAt,
+            'last_seen_at' => $lastSeenAt ?? $joinedAt,
         ]);
+    }
+
+    /**
+     * Assign an imported user to Flarum's built-in Admin (1) or Mod (4)
+     * group. Best-effort and idempotent — safe to call even if the group
+     * assignment already exists (e.g. a user matched by email to an
+     * already-imported account). Never assigns Guest (2) or Member (3);
+     * those are Flarum's implicit defaults and don't need a row.
+     */
+    public static function assignCoreGroup(int $userId, int $groupId): void
+    {
+        if (! in_array($groupId, [1, 4], true)) {
+            return;
+        }
+        $db = self::db();
+        $exists = $db->table('group_user')->where('user_id', $userId)->where('group_id', $groupId)->exists();
+        if (! $exists) {
+            $db->table('group_user')->insert(['user_id' => $userId, 'group_id' => $groupId]);
+        }
+    }
+
+    /**
+     * Store raw avatar image bytes for an already-imported user, going through
+     * Flarum's own AvatarUploader so it gets resized/re-encoded and its @2x/@3x
+     * variants generated exactly like a normal upload would.
+     *
+     * Best-effort: skips silently (returns false) on empty/undecodable/corrupt
+     * image data — one bad avatar must never abort an import run. A user who
+     * already has an avatar (e.g. re-running an import) is left untouched.
+     */
+    public static function avatar(int $userId, string $binaryData): bool
+    {
+        if ($binaryData === '') {
+            return false;
+        }
+        /** @var FlarumUser|null $user */
+        $user = FlarumUser::find($userId);
+        if (! $user || $user->getRawOriginal('avatar_url')) {
+            return false;
+        }
+        try {
+            $image = resolve(ImageManager::class)->read($binaryData);
+            resolve(AvatarUploader::class)->upload($user, $image);
+            $user->save();
+
+            return true;
+        } catch (\Throwable) {
+            // Corrupt/unsupported source image (bad GIF, truncated JPEG, …) —
+            // skip this one avatar rather than failing the whole batch.
+            return false;
+        }
+    }
+
+    /**
+     * Store arbitrary file bytes (an old forum post's attachment, not an
+     * avatar) onto Flarum's own generic public asset disk (`flarum-assets`,
+     * served from `assets/`) and return its public URL. Used to rehost
+     * embedded images/files a source forum's posts reference, since
+     * Flarum's post content just needs an `<img src>`/link — no upload
+     * extension is required to *display* something already on disk.
+     *
+     * A random filename prefix avoids collisions between posts and hides
+     * the old forum's internal numbering; the original filename is kept as
+     * a suffix (sanitised) purely so a downloaded file looks reasonable.
+     * Best-effort: returns null on empty input or a write failure — one
+     * broken attachment must never abort the import run.
+     */
+    public static function storeAsset(string $binaryData, string $filename): ?string
+    {
+        if ($binaryData === '') {
+            return null;
+        }
+        $ext = pathinfo($filename, PATHINFO_EXTENSION);
+        $ext = preg_match('/^[a-zA-Z0-9]{1,10}$/', $ext) ? '.' . strtolower($ext) : '';
+        $safeName = preg_replace('/[^a-zA-Z0-9_-]+/', '-', pathinfo($filename, PATHINFO_FILENAME));
+        $safeName = trim(Str::limit($safeName ?: 'file', 60, ''), '-');
+        $path = 'attachments/' . Str::random(16) . '-' . $safeName . $ext;
+
+        try {
+            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-assets');
+            $disk->put($path, $binaryData);
+
+            return $disk->url($path);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /* ── Discussions (topics) ───────────────────────────────────────────── */

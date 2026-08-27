@@ -9,8 +9,22 @@ namespace ErnestDefoe\Importer\Importers;
  *   class 'Channel'                       → a forum (tag)
  *   'Text' whose parent is a Channel      → a thread; its own text.rawtext is post #1
  *   'Text' whose parent is a thread node  → a reply
- * Bodies live in text.rawtext as BBCode (htmlstate='on' means raw HTML). vB tokens
- * aren't portable, so members reset. Delegated to from VbulletinImporter.
+ * Bodies live in text.rawtext as BBCode (htmlstate='on' means raw HTML).
+ *
+ * Passwords: vBulletin 5 stores the actual login credential in `user.token`
+ * (paired with a `user.scheme` label) rather than a dedicated password
+ * column. Modern accounts use `blowfish:*` (bcrypt) or `argon2id:::`, both
+ * of which PHP's own password_verify() understands natively — those hashes
+ * are copied straight into Flarum's password column via Src::password(),
+ * so the account's existing password keeps working unchanged after import.
+ * Older accounts still on vBulletin's legacy salted-MD5 scheme (only
+ * migrated to a modern scheme the next time that account logs in) can't be
+ * converted the same way — a hash can't be reversed back into the
+ * plaintext needed to re-hash it — so those get a random password instead
+ * and the user has to reset it via Flarum's normal "forgot password" flow.
+ * In practice, accounts still stuck on the legacy scheme tend to be ones
+ * that simply haven't been used in a very long time, since vBulletin only
+ * upgrades an account's hash on a successful login.
  */
 class Vbulletin5Importer
 {
@@ -330,8 +344,16 @@ class Vbulletin5Importer
                         }
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
                         $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
+                        // vBulletin 5 stores the login credential itself in `token`
+                        // (a bcrypt/$2y$ or argon2id hash — both understood natively
+                        // by PHP's password_verify(), so Src::password() can copy
+                        // them straight across) alongside a `scheme` label (only
+                        // used here to skip the lookup cost for legacy accounts,
+                        // Src::password() re-derives the same decision from the
+                        // hash's own prefix regardless).
+                        $passwordHash = ($u->scheme ?? '') !== 'legacy' ? ($u->token ?? null) : null;
                         try {
-                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen);
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, $passwordHash, Src::ts($u->joindate ?? null), $lastSeen);
                             $map[$u->userid] = $uid;
                             // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
                             // groups map onto Flarum's built-in Admin/Mod groups. Everything else

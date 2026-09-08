@@ -4,30 +4,87 @@ namespace ErnestDefoe\Importer\Importers;
 
 /**
  * Convoro → Flarum (the reverse of Convoro's own Flarum importer).
- *   categories → tags · users → users · topics → discussions · posts → posts
- * Convoro is a Laravel forum that hashes with bcrypt, so passwords copy straight
- * across and members keep their logins. Post bodies are stored as rendered HTML
- * (body_html), which runs through the normal HTML → Markdown → formatter pipeline.
+ *   categories/forums → tags · users → users · topics → discussions · posts → posts
+ *
+ * Convoro hashes with bcrypt, so passwords copy straight across and members keep
+ * their logins. Post bodies are stored as rendered HTML, which runs through the
+ * normal HTML → Markdown → formatter pipeline.
+ *
+ * 🚨 TWO schemas, and they are not compatible. Convoro 1.x kept forums in
+ * `categories` with a `name`, and a post's HTML in `posts.body_html`. Convoro 2
+ * renamed them to `forums` with a `title`, and `posts.content_html`. Detecting
+ * which is in front of us is the whole of `layout()`, and it matters because
+ * the 1.x-only version failed against Convoro 2 with "this doesn't look like a
+ * Convoro database" — which is the least helpful thing it could have said about
+ * a database that is exactly a Convoro database.
  */
 class ConvoroImporter
 {
+    /**
+     * Which of the two schemas this connection is, as a column map.
+     *
+     * @return array{forums: string, forumTitle: string, topicForum: string, postHtml: string, userName: string}
+     */
+    private static function layout($conn): array
+    {
+        $sb = $conn->getSchemaBuilder();
+
+        /*
+         * 🚨 The member's display name is `username` in Convoro 2 and `name` in
+         * 1.x, and this is checked on the COLUMN rather than inferred from the
+         * schema version — because getting it wrong is silent. `$u->name` on a
+         * Convoro 2 row is simply null, the fallback names everybody `user7`,
+         * and an import that looks like it worked has lost every member's
+         * identity. Seen on a real FBSFB database.
+         */
+        $userName = $sb->hasColumn('users', 'username') ? 'username' : 'name';
+
+        // Convoro 2: forums/title/forum_id/content_html.
+        if ($sb->hasTable('forums')) {
+            return [
+                'forums' => 'forums',
+                'forumTitle' => 'title',
+                'topicForum' => 'forum_id',
+                'postHtml' => $sb->hasColumn('posts', 'content_html') ? 'content_html' : 'body_html',
+                'userName' => $userName,
+            ];
+        }
+
+        // Convoro 1.x.
+        return [
+            'forums' => 'categories',
+            'forumTitle' => 'name',
+            'topicForum' => 'category_id',
+            'postHtml' => 'body_html',
+            'userName' => $userName,
+        ];
+    }
+
     public static function test(array $cfg): array
     {
         $conn = Src::connect($cfg);
         $sb = $conn->getSchemaBuilder();
-        foreach (['users', 'categories', 'topics', 'posts'] as $req) {
+        $at = self::layout($conn);
+
+        foreach (['users', $at['forums'], 'topics', 'posts'] as $req) {
             if (! $sb->hasTable($req)) {
                 throw new \RuntimeException("This doesn't look like a Convoro database (missing “{$req}”).");
             }
         }
-        // Disambiguate from other “users/topics/posts” schemas by Convoro's columns.
-        if (! $sb->hasColumn('posts', 'body_html') || ! $sb->hasColumn('topics', 'is_pinned')) {
+
+        /*
+         * Disambiguate from any other “users/topics/posts” schema by a column
+         * only Convoro has. 🚨 Checked against the layout rather than against a
+         * literal: `body_html` is Convoro 1.x and `content_html` is Convoro 2,
+         * and demanding the 1.x name rejected every Convoro 2 site.
+         */
+        if (! $sb->hasColumn('posts', $at['postHtml']) || ! $sb->hasColumn('topics', 'is_pinned')) {
             throw new \RuntimeException("This database has the right table names but not Convoro's columns — is it really a Convoro forum?");
         }
 
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table('users')->count(),
-            'categories' => (int) $conn->table('categories')->count(),
+            'categories' => (int) $conn->table($at['forums'])->count(),
             'topics' => (int) $conn->table('topics')->count(),
             'posts' => (int) $conn->table('posts')->count(),
         ]];
@@ -37,20 +94,22 @@ class ConvoroImporter
     public static function phases(array $cfg): array
     {
         $hasTags = Dst::hasTags();
+        $at = self::layout(Src::connect($cfg));
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table('categories')->count() : 0,
-                function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
+            new Phase('tags', 'Importing forums…',
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($at['forums'])->count() : 0,
+                function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table('categories')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
+                    $rows = $ctx->src()->table($at['forums'])->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->id;
-                        $map[$c->id] = Dst::tag($c->name ?: 'Category', Src::tagSlug($c->name ?: 'category', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
+                        $name = (string) ($c->{$at['forumTitle']} ?? '');
+                        $map[$c->id] = Dst::tag($name ?: 'Forum', Src::tagSlug($name ?: 'forum', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -61,7 +120,7 @@ class ConvoroImporter
 
             new Phase('users', 'Importing members…',
                 fn () => (int) Src::connect($cfg)->table('users')->count(),
-                function ($cursor, $limit, Ctx $ctx) {
+                function ($cursor, $limit, Ctx $ctx) use ($at) {
                     $rows = $ctx->src()->table('users')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
@@ -74,7 +133,7 @@ class ConvoroImporter
                             continue;
                         }
                         try {
-                            $map[$u->id] = Dst::user(Src::username($u->name ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
+                            $map[$u->id] = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -88,18 +147,18 @@ class ConvoroImporter
 
             new Phase('topics', 'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table('topics')->count(),
-                function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
+                function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     $rows = $ctx->src()->table('topics')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('user_id')->all());
-                    $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('category_id')->all()) : [];
+                    $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck($at['topicForum'])->all()) : [];
                     $map = [];
                     $n = 0;
                     foreach ($rows as $t) {
                         $cursor = $t->id;
                         $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->created_at ?? null), (bool) ($t->is_pinned ?? false), (bool) ($t->is_locked ?? false));
                         $map[$t->id] = $did;
-                        if ($hasTags && isset($tagMap[(string) $t->category_id])) {
-                            Dst::attachTag($did, $tagMap[(string) $t->category_id]);
+                        if ($hasTags && isset($tagMap[(string) $t->{$at['topicForum']}])) {
+                            Dst::attachTag($did, $tagMap[(string) $t->{$at['topicForum']}]);
                         }
                         $n++;
                     }
@@ -118,7 +177,7 @@ class ConvoroImporter
                         ->orderBy('topic_id')->orderBy('id')->limit($lim)->get(),
                     fn ($post) => [
                         'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
-                        'html' => (string) ($post->body_html ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
+                        'html' => (string) ($post->{$at['postHtml']} ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
                     ]
                 )
             ),

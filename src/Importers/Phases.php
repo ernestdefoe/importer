@@ -39,9 +39,43 @@ class Phases
                 function ($cursor, $limit, Ctx $ctx) {
                     if (Dst::hasTags()) {
                         $db = Dst::db();
+                        $ids = $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'tag')->pluck('target_id');
+
+                        /*
+                         * 🚨 The last-posted pointers as well as the count.
+                         *
+                         * Flarum keeps `tags.last_posted_*` current by reacting
+                         * to posts as they arrive; an import writes rows straight
+                         * into the database and nothing ever fires, so every tag
+                         * ended a run claiming no discussions at all while its
+                         * own `discussion_count` beside it said seven.
+                         *
+                         * It fails QUIETLY, which is what makes it worth fixing
+                         * here: nothing errors, the board simply says "No
+                         * discussions yet" on forums that are full of them, and
+                         * it reads as a theme bug rather than an import one.
+                         *
+                         * Correlated subqueries against `discussion_tag`, so this
+                         * stays one statement over the run's tags rather than a
+                         * query per tag on a board with a hundred and fifty.
+                         */
+                        $newest = "SELECT d.id FROM discussion_tag dt
+                                     JOIN discussions d ON d.id = dt.discussion_id
+                                    WHERE dt.tag_id = tags.id
+                                      AND d.is_private = 0
+                                      AND d.hidden_at IS NULL
+                                      AND d.comment_count > 0
+                                 ORDER BY d.last_posted_at DESC
+                                    LIMIT 1";
+
                         $db->table('tags')
-                            ->whereIn('id', $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'tag')->pluck('target_id'))
-                            ->update(['discussion_count' => $db->raw('(SELECT COUNT(*) FROM discussion_tag WHERE discussion_tag.tag_id = tags.id)')]);
+                            ->whereIn('id', $ids)
+                            ->update([
+                                'discussion_count' => $db->raw('(SELECT COUNT(*) FROM discussion_tag WHERE discussion_tag.tag_id = tags.id)'),
+                                'last_posted_discussion_id' => $db->raw("({$newest})"),
+                                'last_posted_at' => $db->raw("(SELECT d.last_posted_at FROM discussions d WHERE d.id = ({$newest}))"),
+                                'last_posted_user_id' => $db->raw("(SELECT d.last_posted_user_id FROM discussions d WHERE d.id = ({$newest}))"),
+                            ]);
                     }
 
                     return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];

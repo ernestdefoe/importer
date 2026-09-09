@@ -127,6 +127,142 @@ class Dst
 
     /* ── Discussions (topics) ───────────────────────────────────────────── */
 
+    /**
+     * Fetch a member's avatar from the old board and store it on this one.
+     *
+     * 🚨 Copied, never linked. Pointing at the old site's URL leaves every
+     * avatar on the board dependent on a host that is about to be switched
+     * off — which is precisely the migration this runs during. The image is
+     * fetched once and lives here afterwards.
+     *
+     * Best effort by design: an avatar that 404s is a member with no picture,
+     * not a failed import. Nothing here may throw.
+     */
+    public static function avatar(int $userId, ?string $source, string $assetsBase = ''): bool
+    {
+        $source = trim((string) $source);
+
+        if ($source === '' || $userId <= 0) {
+            return false;
+        }
+
+        // Relative paths need the old board's origin; absolute ones carry it.
+        if (! preg_match('#^https?://#i', $source)) {
+            if ($assetsBase === '') {
+                return false;
+            }
+
+            $source = rtrim($assetsBase, '/').'/'.ltrim($source, '/');
+        }
+
+        try {
+            $ctx = stream_context_create(['http' => [
+                'header' => "User-Agent: curl/8.5.0\r\n",
+                'timeout' => 15,
+                'follow_location' => 1,
+                'max_redirects' => 3,
+            ]]);
+
+            $bytes = @file_get_contents($source, false, $ctx);
+
+            // 3MB ceiling: an avatar is rendered at 96px and a board being
+            // migrated is not the place to discover somebody uploaded a
+            // twenty-megabyte PNG.
+            if ($bytes === false || strlen($bytes) < 64 || strlen($bytes) > 3_000_000) {
+                return false;
+            }
+
+            $info = @getimagesizefromstring($bytes);
+
+            if ($info === false) {
+                return false;
+            }
+
+            $ext = match ($info['mime'] ?? '') {
+                'image/png' => 'png',
+                'image/jpeg' => 'jpg',
+                'image/gif' => 'gif',
+                'image/webp' => 'webp',
+                default => null,
+            };
+
+            if ($ext === null) {
+                return false;
+            }
+
+            $name = Str::random(20).'.'.$ext;
+
+            /*
+             * The `flarum-avatars` disk, the same one core writes to, so the
+             * files land where core expects and are served by the same URL
+             * generator rather than a path guessed here.
+             */
+            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-avatars');
+            $disk->put($name, $bytes);
+
+            self::db()->table('users')->where('id', $userId)->update(['avatar_url' => $name]);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Give a tag the cover image its forum had, when tag-covers is installed.
+     *
+     * 🚨 Silently does nothing without that extension, rather than failing.
+     * A cover is decoration; an import that aborts because the board has no
+     * way to store one has its priorities backwards.
+     */
+    public static function tagCover(int $tagId, ?string $source, string $assetsBase = ''): bool
+    {
+        $source = trim((string) $source);
+
+        if ($source === '' || $tagId <= 0) {
+            return false;
+        }
+
+        if (! class_exists('\\Ernestdefoe\\TagCovers\\CoverStore')) {
+            return false;
+        }
+
+        if (! preg_match('#^https?://#i', $source)) {
+            if ($assetsBase === '') {
+                return false;
+            }
+
+            $source = rtrim($assetsBase, '/').'/'.ltrim($source, '/');
+        }
+
+        try {
+            $ctx = stream_context_create(['http' => [
+                'header' => "User-Agent: curl/8.5.0\r\n",
+                'timeout' => 20,
+                'follow_location' => 1,
+                'max_redirects' => 3,
+            ]]);
+
+            $bytes = @file_get_contents($source, false, $ctx);
+
+            if ($bytes === false || strlen($bytes) < 64 || strlen($bytes) > 12_000_000) {
+                return false;
+            }
+
+            $store = resolve('\\Ernestdefoe\\TagCovers\\CoverStore');
+            $path = $store->putContents($tagId, $bytes, 'cover');
+
+            self::db()->table('tag_covers')->updateOrInsert(
+                ['tag_id' => $tagId],
+                ['path' => $path, 'updated_at' => date('Y-m-d H:i:s')]
+            );
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false): int
     {
         $db = self::db();

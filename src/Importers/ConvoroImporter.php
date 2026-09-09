@@ -25,6 +25,40 @@ class ConvoroImporter
      *
      * @return array{forums: string, forumTitle: string, topicForum: string, postHtml: string, userName: string}
      */
+    /**
+     * The members who actually exist.
+     *
+     * 🚨 Convoro deletes a member by SETTING `deleted_at`, not by removing the
+     * row, so a board that has cleared out spam registrations keeps every one
+     * of them in `users`. Importing the lot turned a ten-member board into a
+     * ninety-six-member one, and every one of those accounts arrived with a
+     * working bcrypt password — a deleted account restored to a live login.
+     *
+     * Probed rather than assumed: the column is recent enough that an older
+     * Convoro will not have it, and an unknown-column error on the members
+     * phase takes the whole import with it.
+     */
+    private static function liveUsers($conn)
+    {
+        $query = $conn->table('users');
+
+        try {
+            $table = method_exists($conn, 'getTablePrefix') ? $conn->getTablePrefix().'users' : 'users';
+
+            foreach ($conn->select("SHOW COLUMNS FROM `{$table}`") as $col) {
+                $field = is_array($col) ? ($col['Field'] ?? null) : ($col->Field ?? null);
+
+                if ($field === 'deleted_at') {
+                    return $query->whereNull('deleted_at');
+                }
+            }
+        } catch (\Throwable) {
+            // Older schema, or a driver that does not answer SHOW COLUMNS.
+        }
+
+        return $query;
+    }
+
     private static function layout($conn): array
     {
         $sb = $conn->getSchemaBuilder();
@@ -109,7 +143,15 @@ class ConvoroImporter
                     foreach ($rows as $c) {
                         $cursor = $c->id;
                         $name = (string) ($c->{$at['forumTitle']} ?? '');
-                        $map[$c->id] = Dst::tag($name ?: 'Forum', Src::tagSlug($name ?: 'forum', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
+                        $tagId = Dst::tag($name ?: 'Forum', Src::tagSlug($name ?: 'forum', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
+                        $map[$c->id] = $tagId;
+                        /*
+                         * The forum's cover art, where the board has somewhere
+                         * to put it. Silently skipped without tag-covers — a
+                         * cover is decoration, and an import that aborts over
+                         * one has its priorities backwards.
+                         */
+                        Dst::tagCover($tagId, $c->cover_path ?? null, $ctx->cfg['assets_base'] ?? '');
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -119,9 +161,9 @@ class ConvoroImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table('users')->count(),
+                fn () => (int) self::liveUsers(Src::connect($cfg))->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($at) {
-                    $rows = $ctx->src()->table('users')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
+                    $rows = self::liveUsers($ctx->src())->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -133,7 +175,11 @@ class ConvoroImporter
                             continue;
                         }
                         try {
-                            $map[$u->id] = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
+                            $id = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
+                            $map[$u->id] = $id;
+                            // Best effort; a member whose picture has gone is
+                            // a member with no picture, not a failed import.
+                            Dst::avatar($id, $u->avatar ?? null, $ctx->cfg['assets_base'] ?? '');
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

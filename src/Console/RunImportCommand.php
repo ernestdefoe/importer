@@ -31,6 +31,7 @@ class RunImportCommand extends AbstractCommand
             ->addOption('username', null, InputOption::VALUE_REQUIRED, 'DB username', 'root')
             ->addOption('password', null, InputOption::VALUE_REQUIRED, 'DB password', '')
             ->addOption('prefix', null, InputOption::VALUE_REQUIRED, 'Source table prefix', '')
+            ->addOption('assets-base', null, InputOption::VALUE_REQUIRED, 'Origin for RELATIVE image paths on the old board, e.g. https://old.example.com. Absolute URLs are used as they are; without this, relative ones are skipped.', '')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.');
     }
 
@@ -52,6 +53,7 @@ class RunImportCommand extends AbstractCommand
             'username' => (string) $this->input->getOption('username'),
             'password' => (string) $this->input->getOption('password'),
             'prefix' => (string) $this->input->getOption('prefix'),
+            'assets_base' => (string) $this->input->getOption('assets-base'),
         ];
 
         try {

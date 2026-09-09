@@ -111,6 +111,7 @@ jobs:
 
       - name: Post reply to support discussion
         env:
+          GH_TOKEN: ${{ github.token }}
           FLARUM_FORUM_URL: ${{ vars.FLARUM_FORUM_URL }}
           FLARUM_DISCUSSION_ID: ${{ vars.FLARUM_DISCUSSION_ID }}
           FLARUM_API_KEY: ${{ secrets.FLARUM_API_KEY }}
@@ -119,13 +120,91 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 🚨 Skip, do not fail, when the announcement is not configured.
+          # A repository with no support discussion is a normal state — a new
+          # extension, a private one, one that simply is not announced. Exiting
+          # 1 painted a red X on every release of every such repo, which trains
+          # people to ignore the one failure that does matter.
           if [ -z "${FLARUM_FORUM_URL}" ] || [ -z "${FLARUM_DISCUSSION_ID}" ] || [ -z "${FLARUM_API_KEY}" ]; then
-            echo "Missing FLARUM_FORUM_URL / FLARUM_DISCUSSION_ID / FLARUM_API_KEY — set repo variables and secret." >&2
-            exit 1
+            echo "::notice::No support discussion configured for this repository — skipping the announcement. Set the FLARUM_FORUM_URL and FLARUM_DISCUSSION_ID variables and the FLARUM_API_KEY secret to enable it."
+            exit 0
           fi
 
-          CONTENT=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n' \
+          CONTENT_MD=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n' \
             "$REPO_NAME" "$RELEASE_TAG" "${POST_BODY:-_No release notes provided._}" "$RELEASE_URL")
+
+          # 🚨 Render to HTML before posting. Release notes are Markdown, and the
+          # support site has no Markdown extension — Scribe replaced it — so
+          # posting the raw source published literal "##" and "**bold**" as the
+          # announcement body. GitHub's own /markdown endpoint is used because it
+          # is already authenticated here, needs nothing installed, and renders
+          # the same GFM the release page shows.
+          #
+          # Falls back to the Markdown source if the render fails: a slightly
+          # ugly announcement beats no announcement.
+          #
+          # 🚨 Two attempts, then a LOUD fallback.
+          #
+          # This used to discard stderr and fall back silently, so a failed
+          # render published literal "##" and "**bold**" to the support site
+          # with nothing anywhere saying it had happened — page-builder 3.5.0
+          # is still sitting there like that. A fallback nobody can see is
+          # indistinguishable from working, which is how it survived.
+          #
+          # The retry is because the failure is intermittent: the same release
+          # notes rendered fine on other repos the same week.
+          CONTENT=""
+          for attempt in 1 2; do
+            if CONTENT=$(jq -n --arg text "$CONTENT_MD" '{text:$text, mode:"gfm"}' \
+                 | gh api --method POST /markdown --input - 2>/tmp/md-render-err.txt) \
+               && [ -n "$CONTENT" ]; then
+              break
+            fi
+            CONTENT=""
+            if [ "$attempt" = "1" ]; then sleep 3; fi
+          done
+
+          if [ -z "$CONTENT" ]; then
+            # Still posted, because a rough announcement beats none — but the run
+            # is now marked so somebody can go and fix the post.
+            echo "::warning title=Markdown render failed::Posting the Markdown SOURCE, which this site does not render — the announcement will contain literal ## and **. $(head -c 300 /tmp/md-render-err.txt 2>/dev/null | tr -s '[:space:]' ' ')"
+            CONTENT="$CONTENT_MD"
+          fi
+
+          # 🚨 <tt> is not in Scribe's allowed vocabulary, so the site ESCAPES it
+          # and the announcement shows a literal "&lt;tt&gt;" to every reader.
+          # GitHub's GFM renderer emits it unprompted: a bare compare URL is
+          # autolinked as <a class="commit-link">owner/repo@<tt>a...b</tt></a>,
+          # which is exactly the "Full Changelog" line release notes end with.
+          # <code> renders identically and is allowed.
+          # 🚨 Three more cases of the very same problem, every one of them
+          # seen in a published post. GitHub also wraps fenced code blocks in
+          # <div class="highlight..."> and tables in
+          # <markdown-accessiblity-table> (their spelling of "accessibility",
+          # so match it exactly), and it escapes `<script>` to &lt;script&gt;
+          # inside <code> — which Flarum then escapes AGAIN, so the reader is
+          # shown the entity instead of the tag. Send the literal characters
+          # and let Flarum escape them exactly once.
+          #
+          # 🚨 The captures are copied into lexicals before the inner
+          # substitutions run. Those substitutions reset $1, so building the
+          # replacement straight from $1 silently drops the opening <code>
+          # tag and leaves a stray </code> behind in the prose.
+          CONTENT=$(printf '%s' "$CONTENT" | perl -0777 -pe '
+            s|<tt>|<code>|g;
+            s|</tt>|</code>|g;
+            s|<div class="highlight[^"]*">\s*||g;
+            s|</pre>\s*</div>|</pre>|g;
+            s|</?markdown-accessiblity-table>||g;
+            s{(<code[^>]*>)(.*?)</code>}{
+              my ($open, $inner) = ($1, $2);
+              $inner =~ s{&lt;}{<}g;
+              $inner =~ s{&gt;}{>}g;
+              $inner =~ s{&amp;}{&}g;
+              $open . $inner . "</code>";
+            }ges;
+            s|&amp;|&|g;
+          ')
 
           PAYLOAD=$(jq -n \
             --arg content "$CONTENT" \

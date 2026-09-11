@@ -25,9 +25,21 @@ class Phases
                         $ids[] = (int) $r->target_id;
                     }
                     if ($ids) {
+                        /*
+                         * 🚨 Raw expressions are passed through VERBATIM — the
+                         * query builder only prefixes identifiers it wraps
+                         * itself, so `table()` and `whereIn()` came out right
+                         * while these correlated subqueries did not. On a forum
+                         * with a table prefix the whole counts phase died on
+                         * "Table 'discussions' doesn't exist" at the very end of
+                         * an otherwise finished import. Interpolate the prefix
+                         * exactly as core does (Flarum\Post\Post::boot()); an
+                         * unprefixed install returns '' and is unchanged.
+                         */
+                        $p = $db->getTablePrefix();
                         $db->table('users')->whereIn('id', $ids)->update([
-                            'discussion_count' => $db->raw('(SELECT COUNT(*) FROM discussions WHERE discussions.user_id = users.id)'),
-                            'comment_count' => $db->raw("(SELECT COUNT(*) FROM posts WHERE posts.user_id = users.id AND posts.type = 'comment')"),
+                            'discussion_count' => $db->raw("(SELECT COUNT(*) FROM {$p}discussions WHERE {$p}discussions.user_id = {$p}users.id)"),
+                            'comment_count' => $db->raw("(SELECT COUNT(*) FROM {$p}posts WHERE {$p}posts.user_id = {$p}users.id AND {$p}posts.type = 'comment')"),
                         ]);
                     }
 
@@ -59,9 +71,13 @@ class Phases
                          * stays one statement over the run's tags rather than a
                          * query per tag on a board with a hundred and fifty.
                          */
-                        $newest = "SELECT d.id FROM discussion_tag dt
-                                     JOIN discussions d ON d.id = dt.discussion_id
-                                    WHERE dt.tag_id = tags.id
+                        // Prefix every table named inside the raw SQL below —
+                        // see the counts-users phase for why.
+                        $p = $db->getTablePrefix();
+
+                        $newest = "SELECT d.id FROM {$p}discussion_tag dt
+                                     JOIN {$p}discussions d ON d.id = dt.discussion_id
+                                    WHERE dt.tag_id = {$p}tags.id
                                       AND d.is_private = 0
                                       AND d.hidden_at IS NULL
                                       AND d.comment_count > 0
@@ -71,10 +87,10 @@ class Phases
                         $db->table('tags')
                             ->whereIn('id', $ids)
                             ->update([
-                                'discussion_count' => $db->raw('(SELECT COUNT(*) FROM discussion_tag WHERE discussion_tag.tag_id = tags.id)'),
+                                'discussion_count' => $db->raw("(SELECT COUNT(*) FROM {$p}discussion_tag WHERE {$p}discussion_tag.tag_id = {$p}tags.id)"),
                                 'last_posted_discussion_id' => $db->raw("({$newest})"),
-                                'last_posted_at' => $db->raw("(SELECT d.last_posted_at FROM discussions d WHERE d.id = ({$newest}))"),
-                                'last_posted_user_id' => $db->raw("(SELECT d.last_posted_user_id FROM discussions d WHERE d.id = ({$newest}))"),
+                                'last_posted_at' => $db->raw("(SELECT d.last_posted_at FROM {$p}discussions d WHERE d.id = ({$newest}))"),
+                                'last_posted_user_id' => $db->raw("(SELECT d.last_posted_user_id FROM {$p}discussions d WHERE d.id = ({$newest}))"),
                             ]);
                     }
 

@@ -196,6 +196,41 @@ jobs:
             s|<div class="highlight[^"]*">\s*||g;
             s|</pre>\s*</div>|</pre>|g;
             s|</?markdown-accessiblity-table>||g;
+            #
+            # 🚨 A FENCED CODE BLOCK posts its own wrapper as visible text.
+            #
+            # Flarum renders <pre> and supplies its OWN <code>, escaping
+            # everything else inside it. GitHub emits a fence two ways, and
+            # BOTH leave tags inside the <pre> that the reader then sees as
+            # literal markup:
+            #
+            #   ```          -> <pre class="notranslate"><code class="notranslate">TEXT</code></pre>
+            #   ```php       -> <div class="highlight..."><pre class="notranslate"><span class="pl-s1">TEXT</span></pre></div>
+            #
+            # The plain form published a literal <code class="notranslate">
+            # line above the code and </code> below it — social-groups v2.5.0
+            # went out like that. The highlighted form is worse: every syntax
+            # <span> is shown as source, burying the code in markup. Nobody had
+            # hit that one only because no release notes had used a
+            # language-tagged fence yet.
+            #
+            # So reduce every fence to <pre>TEXT</pre> and let Flarum wrap it.
+            # Entities are unescaped exactly once here, because Flarum escapes
+            # what it is given — the same reason the <code> rule below does it.
+            # Highlighting still happens: Flarum loads hljs client-side.
+            #
+            # Must run BEFORE the inline-<code> rule, or that rule's non-greedy
+            # match pairs an opening <code> inside a <pre> with a closing tag
+            # outside it.
+            s{<pre[^>]*>(.*?)</pre>}{
+              my $inner = $1;
+              $inner =~ s{</?code[^>]*>}{}g;
+              $inner =~ s{</?span[^>]*>}{}g;
+              $inner =~ s{&lt;}{<}g;
+              $inner =~ s{&gt;}{>}g;
+              $inner =~ s{&amp;}{&}g;
+              "<pre>" . $inner . "</pre>";
+            }ges;
             s{(<code[^>]*>)(.*?)</code>}{
               my ($open, $inner) = ($1, $2);
               $inner =~ s{&lt;}{<}g;

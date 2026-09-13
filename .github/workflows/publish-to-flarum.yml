@@ -155,7 +155,7 @@ jobs:
           # notes rendered fine on other repos the same week.
           CONTENT=""
           for attempt in 1 2; do
-            if CONTENT=$(jq -n --arg text "$CONTENT_MD" '{text:$text, mode:"gfm"}' \
+            if CONTENT=$(jq -n --arg text "$CONTENT_MD" '{text:$text, mode:"markdown"}' \
                  | gh api --method POST /markdown --input - 2>/tmp/md-render-err.txt) \
                && [ -n "$CONTENT" ]; then
               break

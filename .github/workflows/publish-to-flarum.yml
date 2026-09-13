@@ -219,7 +219,7 @@ jobs:
             # what it is given — the same reason the <code> rule below does it.
             # Highlighting still happens: Flarum loads hljs client-side.
             #
-            # Must run BEFORE the inline-<code> rule, or that rule's non-greedy
+            # Must run BEFORE the inline-<code> rule, or the non-greedy
             # match pairs an opening <code> inside a <pre> with a closing tag
             # outside it.
             s{<pre[^>]*>(.*?)</pre>}{

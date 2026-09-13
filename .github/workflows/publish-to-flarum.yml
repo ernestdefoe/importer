@@ -197,6 +197,22 @@ jobs:
             s|</pre>\s*</div>|</pre>|g;
             s|</?markdown-accessiblity-table>||g;
             #
+            # 🚨 A HEADING posts its permalink furniture as visible text.
+            #
+            # In "markdown" mode GitHub wraps every heading like this:
+            #   <div class="markdown-heading"><h2 class="heading-element">T</h2>
+            #   <a class="anchor"><span class="octicon octicon-link"></span></a></div>
+            #
+            # Flarum allows the heading and nothing else there, so it escapes
+            # the div, the anchor and the span, and the reader is shown the
+            # markup instead of a title. Keep the heading, drop the furniture.
+            s{<div class="markdown-heading">(.*?)</div>}{
+              my $h = $1;
+              $h =~ s{<a[^>]*class="anchor".*?</a>}{}gs;
+              $h =~ s{ class="heading-element"}{}g;
+              $h;
+            }ges;
+            #
             # 🚨 A FENCED CODE BLOCK posts its own wrapper as visible text.
             #
             # Flarum renders <pre> and supplies its OWN <code>, escaping

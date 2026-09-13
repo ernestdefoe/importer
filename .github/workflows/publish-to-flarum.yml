@@ -255,6 +255,14 @@ jobs:
               $open . $inner . "</code>";
             }ges;
             s|&amp;|&|g;
+            #
+            # 🚨 Flarum makes its OWN <br> from any newline inside a block.
+            #
+            # The renderer pretty-prints, so a wrapped paragraph arrives as
+            # several lines and Flarum turned every one of those into a visible
+            # line break. Hand it one line per block. Newlines inside <pre> are
+            # content, so they are kept.
+            s{(<pre.*?</pre>)|\n+}{ defined $1 ? $1 : " " }ges;
           ')
 
           PAYLOAD=$(jq -n \

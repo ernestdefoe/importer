@@ -1,0 +1,159 @@
+name: Draft release from commits
+
+# Replaces release-drafter. Whenever main moves forward, this workflow
+# rebuilds (or creates) a draft release whose body is the actual list of
+# commits since the last published tag — and whose tag_name is a semver
+# bump from that tag.
+#
+# Bump rule for the draft tag:
+#   - any commit message contains "BREAKING CHANGE" or matches a
+#     conventional-commit "!" suffix (e.g. "feat!:")  → major
+#   - any commit message starts with "feat(...)?:"     → minor
+#   - otherwise                                        → patch
+#
+# The previous tag's prefix is preserved: if the last published tag was
+# "2.1.24" the next draft is "2.1.25"; if it was "v2.1.24" the next
+# draft is "v2.1.25".
+
+# 🚨 No hardcoded branch name here.
+#
+# `branches: [main]` looked right and was silently dead on every repository
+# whose default branch is master or 2.x — the workflow sat in the repo and
+# never once ran. The job guards on the repository's OWN default branch
+# instead, so this file is correct wherever it is copied.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write       # required to create or update releases
+
+concurrency:
+  group: draft-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    # Only the default branch drafts a release, whatever that branch is called.
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build draft from commit history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          HEAD_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # ---------------------------------------------------------------
+          # 1. Find the most recent published (non-draft) tag.
+          # ---------------------------------------------------------------
+          previous_tag=$(gh api "repos/${GH_REPO}/releases?per_page=100" \
+            --jq '[.[] | select(.draft == false) | .tag_name][0] // empty')
+
+          if [ -z "$previous_tag" ]; then
+            # No published releases — fall back to the newest git tag if any.
+            previous_tag=$(gh api "repos/${GH_REPO}/tags?per_page=1" --jq '.[0].name // empty')
+          fi
+
+          echo "Previous tag: ${previous_tag:-<none>}"
+
+          # ---------------------------------------------------------------
+          # 2. Decide the next version by looking at commit messages
+          #    between previous_tag and HEAD.
+          # ---------------------------------------------------------------
+          if [ -z "$previous_tag" ]; then
+            # No history at all — this is the very first release.
+            next_version="0.1.0"
+            next_tag_prefix=""
+            messages=""
+          else
+            # Pull the prefix off the previous tag (preserve "v" vs no-"v").
+            if [[ "$previous_tag" == v* ]]; then
+              next_tag_prefix="v"
+              stripped="${previous_tag#v}"
+            else
+              next_tag_prefix=""
+              stripped="$previous_tag"
+            fi
+
+            # Parse semver. If the previous tag isn't strict semver, bail to
+            # patch-bumping the closest interpretation (default to 0.0.0).
+            IFS='.' read -r major minor patch <<< "$stripped" || true
+            major=${major:-0}
+            minor=${minor:-0}
+            patch=${patch:-0}
+            # Strip pre-release / build metadata from the patch component.
+            patch=${patch%%[-+]*}
+            # Default any non-numeric component to 0 so arithmetic doesn't crash.
+            [[ "$major" =~ ^[0-9]+$ ]] || major=0
+            [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+            [[ "$patch" =~ ^[0-9]+$ ]] || patch=0
+
+            messages=$(gh api --paginate "repos/${GH_REPO}/compare/${previous_tag}...${HEAD_SHA}" \
+              --jq '[.commits[].commit.message] | join("\n")')
+
+            bump="patch"
+            if printf '%s' "$messages" | grep -qE 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]+\))?!:'; then
+              bump="major"
+            elif printf '%s' "$messages" | grep -qE '^feat(\([^)]+\))?:'; then
+              bump="minor"
+            fi
+
+            case "$bump" in
+              major) next_version="$((major + 1)).0.0" ;;
+              minor) next_version="${major}.$((minor + 1)).0" ;;
+              patch) next_version="${major}.${minor}.$((patch + 1))" ;;
+            esac
+          fi
+
+          next_tag="${next_tag_prefix}${next_version}"
+          echo "Next draft tag: ${next_tag}"
+
+          # ---------------------------------------------------------------
+          # 3. Build the changelog body from non-merge commits.
+          # ---------------------------------------------------------------
+          if [ -n "$previous_tag" ]; then
+            changelog=$(gh api --paginate "repos/${GH_REPO}/compare/${previous_tag}...${HEAD_SHA}" \
+              --jq '[.commits[]
+                     | select((.parents | length) < 2)
+                     | "- " + (.commit.message | split("\n")[0])
+                    ] | .[:60] | join("\n")')
+
+            if [ -z "$changelog" ]; then
+              echo "No commits between ${previous_tag} and HEAD — leaving any existing draft as-is."
+              exit 0
+            fi
+
+            body=$(printf "## What's Changed\n\n%s\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n" \
+              "$changelog" "$GH_REPO" "$previous_tag" "$next_tag")
+          else
+            body="_Initial release._"
+          fi
+
+          # ---------------------------------------------------------------
+          # 4. Find an existing draft to update; otherwise create a new one.
+          # ---------------------------------------------------------------
+          existing_draft_id=$(gh api "repos/${GH_REPO}/releases?per_page=100" \
+            --jq '[.[] | select(.draft == true)][0].id // empty')
+
+          if [ -n "$existing_draft_id" ]; then
+            echo "Updating existing draft ${existing_draft_id} → ${next_tag}"
+            gh api -X PATCH "repos/${GH_REPO}/releases/${existing_draft_id}" \
+              -f tag_name="$next_tag" \
+              -f name="$next_tag" \
+              -f body="$body" \
+              -F draft=true > /dev/null
+          else
+            echo "Creating new draft ${next_tag}"
+            gh api -X POST "repos/${GH_REPO}/releases" \
+              -f tag_name="$next_tag" \
+              -f name="$next_tag" \
+              -f target_commitish="$HEAD_REF" \
+              -f body="$body" \
+              -F draft=true > /dev/null
+          fi
+
+          echo "Draft is up to date: ${next_tag}"

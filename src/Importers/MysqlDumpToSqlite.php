@@ -30,6 +30,16 @@ class MysqlDumpToSqlite
     /** Runtime connection name for the scratch SQLite file. */
     public const CONN = 'importer_dump';
 
+    /**
+     * Run exactly one translated statement. The text came from an uploaded
+     * dump, often produced by a third party; exec() would run every statement
+     * in the string, a prepared statement compiles only the first.
+     */
+    private static function runOne(\Illuminate\Database\Connection $conn, string $sql): void
+    {
+        $conn->getPdo()->prepare($sql)->execute();
+    }
+
     /** @return array{tables:int, rows:int, skipped:int} */
     public static function convert(string $dumpPath, string $sqlitePath): array
     {
@@ -75,12 +85,12 @@ class MysqlDumpToSqlite
                 if (stripos($head, 'CREATE TABLE') === 0) {
                     if ($sql = self::translateCreate($stmt)) {
                         $conn->unprepared('DROP TABLE IF EXISTS ' . self::quoteIdent(self::tableOf($stmt)));
-                        $conn->unprepared($sql);
+                        self::runOne($conn, $sql);
                         $tables++;
                     }
                 } elseif (stripos($head, 'INSERT INTO') === 0) {
                     try {
-                        $conn->unprepared(self::translateInsert($stmt));
+                        self::runOne($conn, self::translateInsert($stmt));
                         $rows++;
                     } catch (\Throwable) {
                         // skip a malformed row-batch rather than abort the whole import

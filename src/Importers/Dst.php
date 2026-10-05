@@ -156,19 +156,12 @@ class Dst
         }
 
         try {
-            $ctx = stream_context_create(['http' => [
-                'header' => "User-Agent: curl/8.5.0\r\n",
-                'timeout' => 15,
-                'follow_location' => 1,
-                'max_redirects' => 3,
-            ]]);
-
-            $bytes = @file_get_contents($source, false, $ctx);
+            $bytes = SafeFetch::get($source, 3_000_000, 15, (string) parse_url($assetsBase, PHP_URL_HOST));
 
             // 3MB ceiling: an avatar is rendered at 96px and a board being
             // migrated is not the place to discover somebody uploaded a
             // twenty-megabyte PNG.
-            if ($bytes === false || strlen($bytes) < 64 || strlen($bytes) > 3_000_000) {
+            if ($bytes === null || strlen($bytes) < 64) {
                 return false;
             }
 
@@ -236,16 +229,9 @@ class Dst
         }
 
         try {
-            $ctx = stream_context_create(['http' => [
-                'header' => "User-Agent: curl/8.5.0\r\n",
-                'timeout' => 20,
-                'follow_location' => 1,
-                'max_redirects' => 3,
-            ]]);
+            $bytes = SafeFetch::get($source, 12_000_000, 20, (string) parse_url($assetsBase, PHP_URL_HOST));
 
-            $bytes = @file_get_contents($source, false, $ctx);
-
-            if ($bytes === false || strlen($bytes) < 64 || strlen($bytes) > 12_000_000) {
+            if ($bytes === null || strlen($bytes) < 64) {
                 return false;
             }
 

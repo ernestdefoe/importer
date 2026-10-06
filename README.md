@@ -69,6 +69,10 @@ php flarum importer:run --source=phpbb \
 # add --test to only check the connection and show counts
 ```
 
+## Discuss
+
+Questions, ideas and release notes: [Importer on discuss.flarum.org](https://discuss.flarum.org/d/39527-importer).
+
 ## License
 
 MIT © ernestdefoe

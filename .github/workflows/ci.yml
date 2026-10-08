@@ -1,0 +1,80 @@
+# What the shared Flarum workflows (backend.yml, frontend.yml) don't check:
+# that composer.json is valid, the plain-PHP checks in tests/, and that the
+# committed JS bundle — what forums actually load, never rebuilt on install —
+# matches a fresh build of js/src.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  composer:
+    name: composer.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+  plain-php:
+    name: URL patterns + safe fetch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      # Plain PHP, no Flarum and no dependencies: the redirect pattern table
+      # against real old-forum addresses, and which avatar/cover URLs the
+      # importer may download.
+      - name: Redirect patterns
+        run: php tests/patterns.php
+
+      - name: Safe fetch
+        run: php tests/safe_fetch.php
+
+  js:
+    name: JS bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install
+        working-directory: js
+        run: npm ci
+
+      - name: Build
+        working-directory: js
+        run: npm run build
+
+      # js/dist is committed and is what forums load. If a build from the
+      # committed source produces different bytes, the shipped bundle is not
+      # the shipped source — which is invisible until someone debugs the wrong
+      # code.
+      - name: Fail if the committed bundle is stale
+        run: |
+          if ! git diff --quiet -- js/dist; then
+            echo "js/dist differs from a fresh build of js/src — run 'npm run build' in js/ and commit." >&2
+            git diff --stat -- js/dist
+            exit 1
+          fi

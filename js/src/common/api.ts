@@ -106,5 +106,12 @@ export function redirectState(runId?: number, source?: string): Promise<Redirect
  * nothing — an empty map, an unknown platform, a run that no longer exists.
  */
 export function saveRedirects(enabled: boolean, runId?: number, source?: string): Promise<any> {
-  return app.request({ method: 'POST', url: `${base()}/importer/redirects`, body: { enabled, runId, source }, errorHandler: (e: any) => { throw e; } });
+  return app.request({
+    method: 'POST',
+    url: `${base()}/importer/redirects`,
+    body: { enabled, runId, source },
+    errorHandler: (e: any) => {
+      throw e;
+    },
+  });
 }

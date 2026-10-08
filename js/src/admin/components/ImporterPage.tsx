@@ -1,7 +1,17 @@
 import app from 'flarum/admin/app';
 import Component from 'flarum/common/Component';
 import Button from 'flarum/common/components/Button';
-import { testConnection, uploadDump, startImport, stepImport, importStatus, resetImport, type ImportStatus, type TestResult, type SourceConfig } from '../../common/api';
+import {
+  testConnection,
+  uploadDump,
+  startImport,
+  stepImport,
+  importStatus,
+  resetImport,
+  type ImportStatus,
+  type TestResult,
+  type SourceConfig,
+} from '../../common/api';
 
 declare const m: any;
 const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importer.admin.' + k, p);
@@ -192,8 +202,28 @@ export default class ImporterPage extends Component {
           // mode toggle (upload is mysqldump-only, so hidden for Redis/PostgreSQL sources)
           !src.noUpload &&
             m('.ImporterPage-modes', { role: 'tablist' }, [
-              m('button', { type: 'button', role: 'tab', 'aria-selected': this.mode === 'connect', className: 'ImporterPage-mode' + (this.mode === 'connect' ? ' is-active' : ''), onclick: () => this.setMode('connect') }, [m('i.fas.fa-database'), t('mode_connect')]),
-              m('button', { type: 'button', role: 'tab', 'aria-selected': this.mode === 'upload', className: 'ImporterPage-mode' + (this.mode === 'upload' ? ' is-active' : ''), onclick: () => this.setMode('upload') }, [m('i.fas.fa-file-arrow-up'), t('mode_upload')]),
+              m(
+                'button',
+                {
+                  type: 'button',
+                  role: 'tab',
+                  'aria-selected': this.mode === 'connect',
+                  className: 'ImporterPage-mode' + (this.mode === 'connect' ? ' is-active' : ''),
+                  onclick: () => this.setMode('connect'),
+                },
+                [m('i.fas.fa-database'), t('mode_connect')]
+              ),
+              m(
+                'button',
+                {
+                  type: 'button',
+                  role: 'tab',
+                  'aria-selected': this.mode === 'upload',
+                  className: 'ImporterPage-mode' + (this.mode === 'upload' ? ' is-active' : ''),
+                  onclick: () => this.setMode('upload'),
+                },
+                [m('i.fas.fa-file-arrow-up'), t('mode_upload')]
+              ),
             ]),
 
           this.mode === 'connect'
@@ -208,7 +238,11 @@ export default class ImporterPage extends Component {
             : m('.ImporterPage-upload', [
                 m('.Form-group', [
                   m('label', t('dump_file')),
-                  m('input.FormControl.ImporterPage-file', { type: 'file', accept: '.sql,.sql.gz,.gz,.sqlite,.sqlite3,.db', onchange: (e: any) => (this.file = e.target.files[0] || null) }),
+                  m('input.FormControl.ImporterPage-file', {
+                    type: 'file',
+                    accept: '.sql,.sql.gz,.gz,.sqlite,.sqlite3,.db',
+                    onchange: (e: any) => (this.file = e.target.files[0] || null),
+                  }),
                   m('p.helpText', t('dump_help')),
                 ]),
                 src.needsPrefix && this.field('prefix', t('prefix'), 'text', '160px'),
@@ -241,7 +275,10 @@ export default class ImporterPage extends Component {
     const counts = r.counts || {};
     return m('.Alert.Alert--success.ImporterPage-result', [
       m('strong', t('test_ok')),
-      m('.ImporterPage-counts', Object.keys(counts).map((k) => m('span.ImporterPage-count', [m('b', counts[k].toLocaleString()), ' ', k]))),
+      m(
+        '.ImporterPage-counts',
+        Object.keys(counts).map((k) => m('span.ImporterPage-count', [m('b', counts[k].toLocaleString()), ' ', k]))
+      ),
     ]);
   }
 
@@ -256,7 +293,10 @@ export default class ImporterPage extends Component {
       m('.ImporterPage-bar', m('.ImporterPage-barFill', { className: failed ? 'is-failed' : '', style: `width:${pct}%` })),
       m('p.ImporterPage-status', this.status.status || ''),
       Object.keys(summary).length > 0 &&
-        m('.ImporterPage-counts', Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', k]))),
+        m(
+          '.ImporterPage-counts',
+          Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', k]))
+        ),
       this.status.lastStatus && m('p.helpText', this.status.lastStatus),
       (done || failed) && m('.ImporterPage-actions', [m(Button, { className: 'Button', onclick: () => this.reset() }, t('import_another'))]),
     ]);

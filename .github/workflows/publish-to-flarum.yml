@@ -281,3 +281,108 @@ jobs:
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             exit 1
           fi
+
+      # 🚨 The same release notes, as Markdown, in the extension's thread on
+      # discuss.flarum.org — so people following it there see each release
+      # without anyone posting by hand. Independent of the support-site post
+      # above: it runs even if that one failed, and it skips quietly on a
+      # repository with no thread mapped (DISCUSS_DISCUSSION_ID variable,
+      # DISCUSS_FLARUM_TOKEN secret: a developer token for Ernest's account).
+      - name: Post reply to discuss.flarum.org thread
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DISCUSS_DISCUSSION_ID: ${{ vars.DISCUSS_DISCUSSION_ID }}
+          DISCUSS_FLARUM_TOKEN: ${{ secrets.DISCUSS_FLARUM_TOKEN }}
+          DISCUSS_URL: https://discuss.flarum.org
+          POST_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DISCUSS_DISCUSSION_ID}" ] || [ -z "${DISCUSS_FLARUM_TOKEN}" ]; then
+            echo "::notice::No discuss.flarum.org thread configured for this repository — skipping."
+            exit 0
+          fi
+
+          # Never post a release this run could not resolve.
+          if [ -z "${RELEASE_TAG:-}" ] || [ -z "${RELEASE_URL:-}" ]; then
+            echo "::error::The release was not resolved, so nothing was posted to discuss.flarum.org."
+            exit 1
+          fi
+
+          # "Waymark 1.5.0 — a full trail on profiles": the extension's own
+          # title in front of a release name that starts with its version.
+          ext_title() {
+            gh api "repos/${GH_REPO}/contents/composer.json$1" --jq '.content' 2>/dev/null \
+              | base64 -d 2>/dev/null | jq -r '.extra["flarum-extension"].title // empty' 2>/dev/null || true
+          }
+          title=$(ext_title "?ref=${RELEASE_TAG}")
+          title="${title:-$(ext_title "")}"
+          title="${title:-${GH_REPO#*/}}"
+          name="${RELEASE_NAME:-$RELEASE_TAG}"
+          case "$name" in
+            [vV0-9]*) heading="$title $name" ;;
+            *) heading="$name" ;;
+          esac
+
+          notes="${POST_BODY:-_No release notes provided._}"
+
+          # Release notes usually open with their own "## tagline", which the
+          # heading above already says: drop a first heading the name contains.
+          first=$(printf '%s\n' "$notes" | sed -n '/[^[:space:]]/{p;q;}')
+          first_text=$(printf '%s' "$first" | sed -E 's/^#+[[:space:]]+//; s/[[:space:]]+$//')
+          if [ "$first" != "$first_text" ] && [ -n "$first_text" ] \
+             && printf '%s' "$name" | grep -qiF -- "$first_text"; then
+            notes=$(printf '%s\n' "$notes" | awk -v f="$first" 'done || $0 != f { print; next } { done = 1 }')
+          fi
+
+          # The release's own headings, shifted so the highest of them sits
+          # one level under the heading above (###). Discuss renders Markdown,
+          # so the notes are otherwise posted as they are, leading blank
+          # lines trimmed.
+          notes=$(printf '%s\n' "$notes" | awk '
+            { lines[NR] = $0; if (match($0, /^#+ /)) { l = RLENGTH - 1; if (!min || l < min) min = l } }
+            END {
+              started = 0
+              for (i = 1; i <= NR; i++) {
+                line = lines[i]
+                if (!started && line ~ /^[[:space:]]*$/) continue
+                started = 1
+                if (min && match(line, /^#+ /)) {
+                  n = RLENGTH - 1 - min + 3; if (n > 6) n = 6
+                  h = ""; for (j = 0; j < n; j++) h = h "#"
+                  line = h " " substr(line, RLENGTH + 1)
+                }
+                print line
+              }
+            }')
+          CONTENT=$(printf '## %s\n\n%s\n\n[Release on GitHub](%s)\n' "$heading" "$notes" "$RELEASE_URL")
+
+          PAYLOAD=$(jq -n \
+            --arg content "$CONTENT" \
+            --arg did "$DISCUSS_DISCUSSION_ID" \
+            '{data:{type:"posts",attributes:{content:$content},relationships:{discussion:{data:{type:"discussions",id:$did}}}}}')
+
+          # Flarum throttles posting, so a burst of releases can meet a 429:
+          # one wait and one retry covers it.
+          for attempt in 1 2; do
+            HTTP_CODE=$(curl -sS -o /tmp/discuss-resp.json -w '%{http_code}' \
+              -X POST "${DISCUSS_URL%/}/api/posts" \
+              -H "Authorization: Token ${DISCUSS_FLARUM_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+            if [ "$HTTP_CODE" = "429" ] && [ "$attempt" = "1" ]; then
+              echo "Throttled; trying again in 35 seconds."
+              sleep 35
+              continue
+            fi
+            break
+          done
+
+          echo "discuss.flarum.org responded with HTTP $HTTP_CODE"
+          jq -c '{post: .data.id, number: .data.attributes.number, approved: .data.attributes.isApproved, errors}' /tmp/discuss-resp.json 2>/dev/null \
+            || head -c 500 /tmp/discuss-resp.json
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            exit 1
+          fi

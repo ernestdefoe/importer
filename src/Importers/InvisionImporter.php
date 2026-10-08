@@ -2,6 +2,8 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+
 /**
  * Invision Community 4.x / 5.x (IP.Board) → Flarum.
  *   forums_forums → tags (titles live in core_sys_lang_words: forums_forum_{id})
@@ -137,7 +139,7 @@ class InvisionImporter
      *
      * @return array{0:array<int,string>,1:array<int,string>} [names, descs]
      */
-    private static function forumWords($conn, array $ids): array
+    private static function forumWords(ConnectionInterface $conn, array $ids): array
     {
         $names = $descs = [];
         if (! $ids || ! $conn->getSchemaBuilder()->hasTable('core_sys_lang_words')) {

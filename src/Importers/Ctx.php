@@ -2,6 +2,8 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+
 /**
  * Per-step context handed to a phase's batch closure: the source connection and
  * the source→Flarum id maps (persisted in `importer_map` so they survive across
@@ -9,12 +11,12 @@ namespace ErnestDefoe\Importer\Importers;
  */
 class Ctx
 {
-    private $src = null;
+    private ?ConnectionInterface $src = null;
 
     public function __construct(public int $runId, public array $cfg) {}
 
     /** The source database connection (cached for this request). */
-    public function src()
+    public function src(): ConnectionInterface
     {
         return $this->src ??= Src::connect($this->cfg);
     }

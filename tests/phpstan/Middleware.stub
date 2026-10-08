@@ -1,0 +1,21 @@
+<?php
+
+namespace Flarum\Extend;
+
+/**
+ * Flarum's own docblock says the existing middleware may be a class "Or
+ * container binding name", but types it class-string, so PHPStan refuses
+ * 'flarum.forum.route_resolver', the only name that slot in the forum stack
+ * has. This stub states the documented contract; nothing else changes.
+ */
+class Middleware
+{
+    /**
+     * @param non-empty-string $originalMiddleware a middleware class or container binding name
+     * @param class-string $newMiddleware
+     */
+    public function insertBefore(string $originalMiddleware, string $newMiddleware): self
+    {
+        return $this;
+    }
+}

@@ -73,7 +73,7 @@ class Bbcode
 
         // Lists.
         $t = preg_replace_callback('#\[list(?:=([^\]]+))?\](.*?)\[/list\]#is', function ($m) {
-            $tag = ($m[1] ?? '') !== '' && $m[1] !== '*' ? 'ol' : 'ul';
+            $tag = $m[1] !== '' && $m[1] !== '*' ? 'ol' : 'ul';
             $items = preg_split('#\[\*\]#', $m[2]);
             $li = '';
             foreach ($items as $it) {

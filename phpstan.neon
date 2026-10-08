@@ -1,0 +1,18 @@
+includes:
+    - vendor/flarum/phpstan/extension.neon
+
+parameters:
+    # One process: flarum/phpstan's bootstrap installs a test forum the first
+    # time it runs, and parallel workers each start that install at once on a
+    # fresh checkout (CI), failing with Install\StepFailed.
+    parallel:
+        maximumNumberOfProcesses: 1
+    level: 6
+    paths:
+        - extend.php
+        - src
+    databaseMigrationsPath: [migrations]
+    # Flarum's Extend\Middleware documents that a container binding name may
+    # name the existing middleware, but types it class-string; see the stub.
+    stubFiles:
+        - tests/phpstan/Middleware.stub

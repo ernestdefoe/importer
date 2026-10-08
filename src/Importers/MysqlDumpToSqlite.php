@@ -223,13 +223,40 @@ class MysqlDumpToSqlite
         return $out;
     }
 
-    /** gz-aware open (gzopen reads plain files transparently too). */
+    /**
+     * gz-aware open (gzopen reads plain files transparently too).
+     *
+     * @return resource|false
+     */
     private static function open(string $path)
     {
         return gzopen($path, 'rb');
     }
 
-    /** Yield top-level SQL statements, respecting strings/identifiers/comments. */
+    /**
+     * Read past the line that closes a block comment, or to the end.
+     *
+     * A method of its own: inside statements() PHPStan carries the outer
+     * loop's `gzgets($fh) !== false` over to this call as well.
+     *
+     * @param resource $fh
+     */
+    private static function skipComment($fh, string $line): void
+    {
+        while (strpos($line, '*/') === false) {
+            $line = gzgets($fh);
+
+            if ($line === false) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Yield top-level SQL statements, respecting strings/identifiers/comments.
+     *
+     * @param resource $fh
+     */
     private static function statements($fh): \Generator
     {
         $buf = '';
@@ -258,8 +285,7 @@ class MysqlDumpToSqlite
                     continue;
                 }
                 if (str_starts_with($l, '/*')) {
-                    while (strpos($line, '*/') === false && ($line = gzgets($fh)) !== false) {
-                    }
+                    self::skipComment($fh, $line);
 
                     continue;
                 }

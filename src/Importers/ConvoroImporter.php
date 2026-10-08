@@ -2,6 +2,9 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\Query\Builder;
+use Illuminate\Database\ConnectionInterface;
+
 /**
  * Convoro → Flarum (the reverse of Convoro's own Flarum importer).
  *   categories/forums → tags · users → users · topics → discussions · posts → posts
@@ -38,7 +41,7 @@ class ConvoroImporter
      * Convoro will not have it, and an unknown-column error on the members
      * phase takes the whole import with it.
      */
-    private static function liveUsers($conn)
+    private static function liveUsers(ConnectionInterface $conn): Builder
     {
         $query = $conn->table('users');
 
@@ -59,7 +62,7 @@ class ConvoroImporter
         return $query;
     }
 
-    private static function layout($conn): array
+    private static function layout(ConnectionInterface $conn): array
     {
         $sb = $conn->getSchemaBuilder();
 

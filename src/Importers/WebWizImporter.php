@@ -2,6 +2,8 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+
 /**
  * Web Wiz Forums (ASP / SQL Server) → Flarum.
  *   tblForum → tags · tblAuthor → users · tblTopic → discussions · tblThread → posts
@@ -39,7 +41,7 @@ class WebWizImporter
      * First column from $candidates that actually exists on $table.
      * Returns null when none match.
      */
-    private static function col($conn, string $table, array $candidates): ?string
+    private static function col(ConnectionInterface $conn, string $table, array $candidates): ?string
     {
         try {
             $have = array_map('strtolower', $conn->getSchemaBuilder()->getColumnListing($table));

@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -20,7 +21,7 @@ class Src
      * Flarum's DatabaseManager via the config repository (Flarum's `config()`
      * helper is read-only, so we set it on the repository directly).
      */
-    public static function connect(array $cfg)
+    public static function connect(array $cfg): ConnectionInterface
     {
         $driver = $cfg['driver'] ?? 'mysql';
 
@@ -106,7 +107,7 @@ class Src
     }
 
     /** Unix timestamp or datetime string → Carbon. */
-    public static function ts($v): Carbon
+    public static function ts(mixed $v): Carbon
     {
         if ($v === null || $v === '') {
             return Carbon::now();

@@ -2,6 +2,8 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+
 /**
  * vBulletin 5 / 6 (node architecture) → Flarum.
  *
@@ -15,7 +17,7 @@ namespace ErnestDefoe\Importer\Importers;
 class Vbulletin5Importer
 {
     /** @return array{0:int[],1:int[]} [channelTypeIds, textTypeIds] */
-    private static function typeIds($conn, string $p): array
+    private static function typeIds(ConnectionInterface $conn, string $p): array
     {
         $channel = $text = [];
         foreach ($conn->table($p . 'contenttype')->get(['contenttypeid', 'class']) as $ct) {
@@ -30,7 +32,7 @@ class Vbulletin5Importer
     }
 
     /** @return int[] */
-    private static function channelNodeIds($conn, string $p, array $channelTypeIds): array
+    private static function channelNodeIds(ConnectionInterface $conn, string $p, array $channelTypeIds): array
     {
         return $channelTypeIds
             ? $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all()

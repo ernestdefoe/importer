@@ -171,7 +171,7 @@ class Dst
                 return false;
             }
 
-            $ext = match ($info['mime'] ?? '') {
+            $ext = match ($info['mime']) {
                 'image/png' => 'png',
                 'image/jpeg' => 'jpg',
                 'image/gif' => 'gif',

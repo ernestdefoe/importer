@@ -48,7 +48,7 @@ class NodebbImporter
     }
 
     /** NodeBB timestamps are epoch milliseconds. */
-    private static function ts($ms): Carbon
+    private static function ts(mixed $ms): Carbon
     {
         return ($ms === null || $ms === '') ? Carbon::now() : Src::ts((int) ((int) $ms / 1000));
     }

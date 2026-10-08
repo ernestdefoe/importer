@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Api\Controller;
 
+use Psr\Http\Message\UploadedFileInterface;
 use ErnestDefoe\Importer\Importers\MysqlDumpToSqlite;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Upload;
@@ -108,7 +109,7 @@ class UploadController implements RequestHandlerInterface
      * PDF) is rejected before we write it to disk and try to parse it.
      * Returns an error message, or null when the file looks acceptable.
      */
-    private static function rejectContent($file): ?string
+    private static function rejectContent(UploadedFileInterface $file): ?string
     {
         try {
             $stream = $file->getStream();

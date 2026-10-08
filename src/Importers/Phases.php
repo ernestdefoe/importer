@@ -108,7 +108,7 @@ class Phases
      * @param  \Closure  $fetch  fn($conn, array $cur, int $limit): iterable  — rows > cursor, ordered (topic,id)
      * @param  \Closure  $map    fn($row): array{tid:int,pid:int,uid:mixed,html:string,at:\Illuminate\Support\Carbon,ok:bool}
      */
-    public static function postsBatch($cursor, int $limit, Ctx $ctx, \Closure $fetch, \Closure $map): array
+    public static function postsBatch(mixed $cursor, int $limit, Ctx $ctx, \Closure $fetch, \Closure $map): array
     {
         $cur = is_array($cursor) ? $cursor : ['tid' => 0, 'pid' => 0, 'carry' => null];
         $carry = $cur['carry'] ?? null;

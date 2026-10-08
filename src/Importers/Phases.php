@@ -78,7 +78,7 @@ class Phases
                         $newest = "SELECT d.id FROM {$p}discussion_tag dt
                                      JOIN {$p}discussions d ON d.id = dt.discussion_id
                                     WHERE dt.tag_id = {$p}tags.id
-                                      AND d.is_private = 0
+                                      AND d.is_private = false
                                       AND d.hidden_at IS NULL
                                       AND d.comment_count > 0
                                  ORDER BY d.last_posted_at DESC

@@ -13,7 +13,9 @@ class Phases
     public static function tail(): array
     {
         return [
-            new Phase('counts-users', 'Updating member counts…',
+            new Phase(
+                'counts-users',
+                'Updating member counts…',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) {
                     $db = Dst::db();
@@ -46,7 +48,9 @@ class Phases
                     return ['cursor' => (int) $cursor, 'processed' => 0, 'done' => count($rows) < $limit, 'summary' => []];
                 }
             ),
-            new Phase('counts-tags', 'Finishing up…',
+            new Phase(
+                'counts-tags',
+                'Finishing up…',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) {
                     if (Dst::hasTags()) {

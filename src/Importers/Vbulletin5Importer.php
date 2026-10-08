@@ -76,7 +76,9 @@ class Vbulletin5Importer
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing channels…',
+            new Phase(
+                'tags',
+                'Importing channels…',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -102,7 +104,9 @@ class Vbulletin5Importer
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
@@ -135,7 +139,9 @@ class Vbulletin5Importer
 
             // Thread starters: Text nodes whose parent is a Channel. The node's own
             // text row is the discussion's first post (#1).
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
@@ -178,7 +184,9 @@ class Vbulletin5Importer
 
             // Replies: Text nodes whose parent is a thread starter (not a Channel).
             // They continue each discussion's numbering after the starter (#1).
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();

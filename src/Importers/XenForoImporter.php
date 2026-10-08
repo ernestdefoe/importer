@@ -34,7 +34,9 @@ class XenForoImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => ($hasTags && Src::connect($cfg)->getSchemaBuilder()->hasTable('xf_node')) ? (int) Src::connect($cfg)->table('xf_node')->where('node_type_id', 'Forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     if (! $hasTags || ! $ctx->src()->getSchemaBuilder()->hasTable('xf_node')) {
@@ -54,7 +56,9 @@ class XenForoImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table('xf_user')->count(),
                 function ($cursor, $limit, Ctx $ctx) {
                     $conn = $ctx->src();
@@ -101,7 +105,9 @@ class XenForoImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table('xf_thread')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     $rows = $ctx->src()->table('xf_thread')->where('thread_id', '>', (int) $cursor)->orderBy('thread_id')->limit($limit)->get();
@@ -127,9 +133,14 @@ class XenForoImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table('xf_post')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table('xf_post')
                         ->where(fn ($q) => $q->where('thread_id', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('thread_id', (int) $cur['tid'])->where('post_id', '>', (int) $cur['pid'])))

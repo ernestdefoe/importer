@@ -42,7 +42,9 @@ class DiscourseImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table('categories')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     if (! $hasTags) {
@@ -62,7 +64,9 @@ class DiscourseImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table('users')->where('id', '>', 0)->count(),
                 function ($cursor, $limit, Ctx $ctx) {
                     $conn = $ctx->src();
@@ -100,7 +104,9 @@ class DiscourseImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     $rows = $ctx->src()->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')
@@ -124,9 +130,14 @@ class DiscourseImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table('posts')->whereNull('deleted_at')->where('post_type', 1)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table('posts')->whereNull('deleted_at')->where('post_type', 1)
                         ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('id', '>', (int) $cur['pid'])))

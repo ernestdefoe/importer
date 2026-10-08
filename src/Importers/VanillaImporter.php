@@ -41,7 +41,9 @@ class VanillaImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Category')->where('CategoryID', '>', 0)->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -63,7 +65,9 @@ class VanillaImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
@@ -94,7 +98,9 @@ class VanillaImporter
             ),
 
             // Discussion → topic; its own Body is the first post (#1).
-            new Phase('topics', 'Importing discussions…',
+            new Phase(
+                'topics',
+                'Importing discussions…',
                 fn () => (int) Src::connect($cfg)->table($p.'Discussion')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
@@ -122,7 +128,9 @@ class VanillaImporter
             ),
 
             // Comments → replies, continuing each discussion's numbering after #1.
-            new Phase('posts', 'Importing comments…',
+            new Phase(
+                'posts',
+                'Importing comments…',
                 fn () => (int) Src::connect($cfg)->table($p.'Comment')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];

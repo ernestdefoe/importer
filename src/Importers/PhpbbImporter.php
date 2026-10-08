@@ -39,7 +39,9 @@ class PhpbbImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -64,7 +66,9 @@ class PhpbbImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
@@ -92,7 +96,9 @@ class PhpbbImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table($p.'topics')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
@@ -120,14 +126,19 @@ class PhpbbImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $sb = $ctx->src()->getSchemaBuilder();
                     $visCol = $sb->hasColumn($p.'posts', 'post_visibility') ? 'post_visibility'
                         : ($sb->hasColumn($p.'posts', 'post_approved') ? 'post_approved' : null);
 
-                    return Phases::postsBatch($cursor, $limit, $ctx,
+                    return Phases::postsBatch(
+                        $cursor,
+                        $limit,
+                        $ctx,
                         fn ($conn, $cur, $lim) => $conn->table($p.'posts')
                             ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
                                 ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('post_id', '>', (int) $cur['pid'])))

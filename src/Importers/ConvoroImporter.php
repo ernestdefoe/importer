@@ -134,7 +134,9 @@ class ConvoroImporter
         $at = self::layout(Src::connect($cfg));
 
         return array_merge([
-            new Phase('tags', 'Importing forums…',
+            new Phase(
+                'tags',
+                'Importing forums…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($at['forums'])->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     if (! $hasTags) {
@@ -163,7 +165,9 @@ class ConvoroImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) self::liveUsers(Src::connect($cfg))->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($at) {
                     $rows = self::liveUsers($ctx->src())->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
@@ -195,7 +199,9 @@ class ConvoroImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table('topics')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     $rows = $ctx->src()->table('topics')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
@@ -218,9 +224,14 @@ class ConvoroImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table('posts')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table('posts')
                         ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('id', '>', (int) $cur['pid'])))

@@ -52,7 +52,9 @@ class VbulletinImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -72,7 +74,9 @@ class VbulletinImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
@@ -101,7 +105,9 @@ class VbulletinImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table($p.'thread')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'thread')->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
@@ -127,9 +133,14 @@ class VbulletinImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table($p.'post')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table($p.'post')
                         ->where(fn ($q) => $q->where('threadid', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('threadid', (int) $cur['tid'])->where('postid', '>', (int) $cur['pid'])))

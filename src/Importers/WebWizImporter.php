@@ -157,7 +157,9 @@ class WebWizImporter
         $c = self::schema($cfg)['cols'];
 
         return array_merge([
-            new Phase('tags', 'Importing forums…',
+            new Phase(
+                'tags',
+                'Importing forums…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
                     if (! $hasTags) {
@@ -187,7 +189,9 @@ class WebWizImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'Author')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $c) {
                     $rows = $ctx->src()->table($p.'Author')
@@ -223,7 +227,9 @@ class WebWizImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table($p.'Topic')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
                     $rows = $ctx->src()->table($p.'Topic')
@@ -262,9 +268,14 @@ class WebWizImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table($p.'Thread')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table($p.'Thread')
                         ->where(fn ($q) => $q->where($c['thread_topic'], '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where($c['thread_topic'], (int) $cur['tid'])->where($c['thread_id'], '>', (int) $cur['pid'])))

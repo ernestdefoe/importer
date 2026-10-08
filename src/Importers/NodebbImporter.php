@@ -74,7 +74,9 @@ class NodebbImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) self::redis($cfg)->zCard('categories:cid') : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($cfg, $hasTags) {
                     if (! $hasTags) {
@@ -100,7 +102,9 @@ class NodebbImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) self::redis($cfg)->zCard('users:joindate'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg) {
                     $r = self::redis($cfg);
@@ -132,7 +136,9 @@ class NodebbImporter
 
             // Topic + its first post (topic.mainPid). Reply-less topics still get
             // finalised here so their counts are right.
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) self::redis($cfg)->zCard('topics:tid'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg, $hasTags) {
                     $r = self::redis($cfg);
@@ -183,7 +189,9 @@ class NodebbImporter
             ),
 
             // Replies: every post except the ones already imported as a topic's first post.
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) self::redis($cfg)->zCard('posts:pid'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg) {
                     $r = self::redis($cfg);

@@ -127,7 +127,12 @@ foreach ($cases as $source => $urls) {
         if ($got[0] !== $wantKind || $got[1] !== $wantId) {
             printf(
                 "  FAIL %-11s %-42s got %s %s, wanted %s %s\n",
-                $source, $url, $got[0], $got[1], $wantKind, $wantId
+                $source,
+                $url,
+                $got[0],
+                $got[1],
+                $wantKind,
+                $wantId
             );
             $fails++;
         }

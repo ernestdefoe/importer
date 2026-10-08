@@ -41,7 +41,9 @@ class MybbImporter
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'Importing categories…',
+            new Phase(
+                'tags',
+                'Importing categories…',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->where('type', 'f')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -64,7 +66,9 @@ class MybbImporter
                 }
             ),
 
-            new Phase('users', 'Importing members…',
+            new Phase(
+                'users',
+                'Importing members…',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
@@ -92,7 +96,9 @@ class MybbImporter
                 }
             ),
 
-            new Phase('topics', 'Importing topics…',
+            new Phase(
+                'topics',
+                'Importing topics…',
                 fn () => (int) Src::connect($cfg)->table($p.'threads')->where('visible', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'threads')->where('visible', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
@@ -115,9 +121,14 @@ class MybbImporter
                 }
             ),
 
-            new Phase('posts', 'Importing posts…',
+            new Phase(
+                'posts',
+                'Importing posts…',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
+                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
+                    $cursor,
+                    $limit,
+                    $ctx,
                     fn ($conn, $cur, $lim) => $conn->table($p.'posts')->where('visible', 1)
                         ->where(fn ($q) => $q->where('tid', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('tid', (int) $cur['tid'])->where('pid', '>', (int) $cur['pid'])))

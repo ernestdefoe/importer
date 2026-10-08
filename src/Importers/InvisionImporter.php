@@ -53,7 +53,7 @@ class InvisionImporter
                         if ((int) ($f->redirect_on ?? 0) === 1 && trim((string) ($f->redirect_url ?? '')) !== '') {
                             continue; // redirect-only forum — no content
                         }
-                        $name = $names[(int) $f->id] ?? (($f->name_seo ?? '') ? \Illuminate\Support\Str::headline((string) $f->name_seo) : ('Forum ' . $f->id));
+                        $name = $names[(int) $f->id] ?? (($f->name_seo ?? '') ? \Illuminate\Support\Str::headline((string) $f->name_seo) : ('Forum '.$f->id));
                         $map[$f->id] = Dst::tag($name, Src::tagSlug($name, (int) $f->id), $descs[(int) $f->id] ?? null, $f->feature_color ?? null, (int) ($f->position ?? 0));
                         $n++;
                     }
@@ -77,6 +77,7 @@ class InvisionImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, $u->members_pass_hash ?? null, Src::ts($u->joined ?? null));
                             $n++;
@@ -147,8 +148,8 @@ class InvisionImporter
         }
         $keys = [];
         foreach ($ids as $id) {
-            $keys[] = 'forums_forum_' . (int) $id;
-            $keys[] = 'forums_forum_' . (int) $id . '_desc';
+            $keys[] = 'forums_forum_'.(int) $id;
+            $keys[] = 'forums_forum_'.(int) $id.'_desc';
         }
         $words = $conn->table('core_sys_lang_words')->where('word_app', 'forums')->whereIn('word_key', $keys)
             ->orderBy('lang_id')->get(['word_key', 'word_default', 'word_custom']);
@@ -179,7 +180,7 @@ class InvisionImporter
         $dom = new \DOMDocument;
         libxml_use_internal_errors(true);
         $ok = $dom->loadHTML(
-            '<?xml encoding="UTF-8"><div id="ips-root">' . $html . '</div>',
+            '<?xml encoding="UTF-8"><div id="ips-root">'.$html.'</div>',
             LIBXML_NONET | LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
         );
         libxml_clear_errors();
@@ -235,7 +236,7 @@ class InvisionImporter
             }
             if ($user !== '') {
                 $cite = $dom->createElement('p');
-                $cite->appendChild($dom->createElement('strong', $user . ' wrote:'));
+                $cite->appendChild($dom->createElement('strong', $user.' wrote:'));
                 $bq->insertBefore($cite, $bq->firstChild);
             }
         }

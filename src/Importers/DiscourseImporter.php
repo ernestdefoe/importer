@@ -86,6 +86,7 @@ class DiscourseImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->id] = Dst::user(Src::username($u->username ?? ($u->name ?? null), (int) $u->id), $email, null, Src::ts($u->created_at ?? null));
                             $n++;

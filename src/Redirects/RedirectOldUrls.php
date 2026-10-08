@@ -121,7 +121,7 @@ class RedirectOldUrls implements MiddlewareInterface
         }
 
         $uri = $request->getUri();
-        $pathAndQuery = $uri->getPath() . ($uri->getQuery() !== '' ? '?' . $uri->getQuery() : '');
+        $pathAndQuery = $uri->getPath().($uri->getQuery() !== '' ? '?'.$uri->getQuery() : '');
 
         $path = $this->resolver->resolve($runId, $source, $pathAndQuery);
 
@@ -141,6 +141,6 @@ class RedirectOldUrls implements MiddlewareInterface
          * string and every redirect went out as a bare path. Browsers follow
          * one, which is exactly why it would have survived a casual test.
          */
-        return rtrim($this->url->to('forum')->base(), '/') . $path;
+        return rtrim($this->url->to('forum')->base(), '/').$path;
     }
 }

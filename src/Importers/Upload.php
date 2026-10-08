@@ -14,7 +14,7 @@ class Upload
 {
     public static function dir(): string
     {
-        $dir = resolve(Paths::class)->storage . '/imports';
+        $dir = resolve(Paths::class)->storage.'/imports';
         if (! is_dir($dir)) {
             @mkdir($dir, 0770, true);
         }
@@ -27,7 +27,7 @@ class Upload
     {
         if (! empty($cfg['file'])) {
             $cfg['driver'] = 'sqlite';
-            $cfg['database'] = self::dir() . '/' . basename((string) $cfg['file']);
+            $cfg['database'] = self::dir().'/'.basename((string) $cfg['file']);
         }
 
         return $cfg;
@@ -45,7 +45,7 @@ class Upload
     /** Sweep scratch files older than a day so failed/abandoned uploads don't pile up. */
     public static function sweep(): void
     {
-        foreach (glob(self::dir() . '/{scratch-*,dump-*}', GLOB_BRACE) ?: [] as $f) {
+        foreach (glob(self::dir().'/{scratch-*,dump-*}', GLOB_BRACE) ?: [] as $f) {
             if (is_file($f) && filemtime($f) < time() - 86400) {
                 @unlink($f);
             }

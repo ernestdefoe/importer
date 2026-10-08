@@ -95,6 +95,7 @@ class Runner
         }
 
         $state = [];
+
         try {
             // Fresh read now that we hold the lock.
             $run = Dst::db()->table('importer_runs')->where('id', $runId)->first();
@@ -208,16 +209,16 @@ class Runner
             'done' => $status === 'done',
             'failed' => $status === 'failed',
             'percent' => $pct,
-            'status' => $status === 'failed' ? ('Import failed: ' . $error) : ($status === 'done' ? 'Import complete.' : ($state['phaseLabel'] ?? 'Working…')),
+            'status' => $status === 'failed' ? ('Import failed: '.$error) : ($status === 'done' ? 'Import complete.' : ($state['phaseLabel'] ?? 'Working…')),
             'summary' => $summary,
             'source' => null,
-            'lastStatus' => $status === 'done' ? self::summaryLine($summary) : ($status === 'failed' ? ('Import failed: ' . $error) : null),
+            'lastStatus' => $status === 'done' ? self::summaryLine($summary) : ($status === 'failed' ? ('Import failed: '.$error) : null),
         ];
     }
 
     private static function summaryLine(array $s): string
     {
-        return 'Imported ' . ($s['topics'] ?? 0) . ' discussions, ' . ($s['posts'] ?? 0) . ' posts, '
-            . ($s['users'] ?? 0) . ' members' . (isset($s['categories']) ? ', ' . $s['categories'] . ' tags' : '') . '.';
+        return 'Imported '.($s['topics'] ?? 0).' discussions, '.($s['posts'] ?? 0).' posts, '
+            .($s['users'] ?? 0).' members'.(isset($s['categories']) ? ', '.$s['categories'].' tags' : '').'.';
     }
 }

@@ -12,7 +12,7 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/../src/Importers/SafeFetch.php';
+require __DIR__.'/../src/Importers/SafeFetch.php';
 
 use ErnestDefoe\Importer\Importers\SafeFetch;
 
@@ -54,10 +54,10 @@ foreach ($cases as [$url, $trusted, $expected]) {
     $actual = SafeFetch::vet($url, $trusted) !== null;
     if ($actual !== $expected) {
         $failed++;
-        echo "FAIL  {$url}" . ($trusted !== '' ? " (trusting {$trusted})" : '') . ': expected '
-            . ($expected ? 'allowed' : 'refused') . ', got ' . ($actual ? 'allowed' : 'refused') . "\n";
+        echo "FAIL  {$url}".($trusted !== '' ? " (trusting {$trusted})" : '').': expected '
+            .($expected ? 'allowed' : 'refused').', got '.($actual ? 'allowed' : 'refused')."\n";
     }
 }
 
-echo $failed === 0 ? 'ok — ' . count($cases) . " addresses\n" : "{$failed} failed\n";
+echo $failed === 0 ? 'ok — '.count($cases)." addresses\n" : "{$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

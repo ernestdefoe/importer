@@ -6,7 +6,7 @@ namespace ErnestDefoe\Importer\Importers;
  * Maps a source-platform key to its importer class. Each importer exposes two
  * static methods:
  *   test(array $cfg): array         → validate + row counts
- *   phases(array $cfg): Phase[]     → the batched, resumable import steps
+ *   phases(array $cfg): Phase[]     → the batched, resumable import steps.
  */
 class Registry
 {

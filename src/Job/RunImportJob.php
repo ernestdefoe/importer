@@ -17,13 +17,16 @@ use Illuminate\Queue\SerializesModels;
  */
 class RunImportJob implements ShouldQueue
 {
-    use Queueable, SerializesModels;
+    use Queueable;
+    use SerializesModels;
 
     public int $timeout = 3600;
 
     public int $tries = 1;
 
-    public function __construct(public int $runId) {}
+    public function __construct(public int $runId)
+    {
+    }
 
     public function handle(): void
     {

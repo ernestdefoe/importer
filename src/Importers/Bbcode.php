@@ -25,7 +25,7 @@ class Bbcode
         }
 
         if (! empty($opts['uid'])) {
-            $text = str_replace(':' . $opts['uid'], '', $text);
+            $text = str_replace(':'.$opts['uid'], '', $text);
         }
         if (! empty($opts['escaped'])) {
             $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -37,8 +37,8 @@ class Bbcode
         // Code blocks: protect their contents from further BBCode processing.
         $codes = [];
         $t = preg_replace_callback('#\[code(?:=[^\]]*)?\](.*?)\[/code\]#is', function ($m) use (&$codes) {
-            $key = '@@CODE' . count($codes) . '@@';
-            $codes[$key] = '<pre><code>' . trim($m[1]) . '</code></pre>';
+            $key = '@@CODE'.count($codes).'@@';
+            $codes[$key] = '<pre><code>'.trim($m[1]).'</code></pre>';
 
             return $key;
         }, $t);
@@ -66,7 +66,7 @@ class Bbcode
         // YouTube / media → a plain link (the post renderer turns it into an embed).
         $t = preg_replace_callback('#\[(?:youtube|video|media)[^\]]*\](.*?)\[/(?:youtube|video|media)\]#is', function ($m) {
             $v = trim($m[1]);
-            $url = preg_match('#^https?://#', $v) ? $v : 'https://www.youtube.com/watch?v=' . preg_replace('/[^\w-]/', '', $v);
+            $url = preg_match('#^https?://#', $v) ? $v : 'https://www.youtube.com/watch?v='.preg_replace('/[^\w-]/', '', $v);
 
             return self::link($url, $url);
         }, $t);
@@ -79,7 +79,7 @@ class Bbcode
             foreach ($items as $it) {
                 $it = trim($it);
                 if ($it !== '') {
-                    $li .= '<li>' . $it . '</li>';
+                    $li .= '<li>'.$it.'</li>';
                 }
             }
 
@@ -102,14 +102,14 @@ class Bbcode
             return $text; // block javascript:/data:
         }
 
-        return '<a href="' . htmlspecialchars($href, ENT_QUOTES) . '" rel="nofollow noopener" target="_blank">' . $text . '</a>';
+        return '<a href="'.htmlspecialchars($href, ENT_QUOTES).'" rel="nofollow noopener" target="_blank">'.$text.'</a>';
     }
 
     private static function img(string $src): string
     {
         $src = trim(html_entity_decode($src, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
 
-        return preg_match('#^https?://#i', $src) ? '<img src="' . htmlspecialchars($src, ENT_QUOTES) . '" alt="">' : '';
+        return preg_match('#^https?://#i', $src) ? '<img src="'.htmlspecialchars($src, ENT_QUOTES).'" alt="">' : '';
     }
 
     /** Wrap loose lines into paragraphs, leaving existing block elements alone. */
@@ -125,7 +125,7 @@ class Bbcode
             if (preg_match('#^<(p|div|blockquote|ul|ol|pre|h[1-6]|img|hr|table)\b#i', $b)) {
                 $out .= $b;
             } else {
-                $out .= '<p>' . nl2br($b, false) . '</p>';
+                $out .= '<p>'.nl2br($b, false).'</p>';
             }
         }
 

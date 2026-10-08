@@ -13,7 +13,9 @@ class Ctx
 {
     private ?ConnectionInterface $src = null;
 
-    public function __construct(public int $runId, public array $cfg) {}
+    public function __construct(public int $runId, public array $cfg)
+    {
+    }
 
     /** The source database connection (cached for this request). */
     public function src(): ConnectionInterface

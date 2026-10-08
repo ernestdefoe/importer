@@ -6,7 +6,7 @@ use Illuminate\Database\ConnectionInterface;
 
 /**
  * Web Wiz Forums (ASP / SQL Server) → Flarum.
- *   tblForum → tags · tblAuthor → users · tblTopic → discussions · tblThread → posts
+ *   tblForum → tags · tblAuthor → users · tblTopic → discussions · tblThread → posts.
  *
  * 🚨 Web Wiz's vocabulary is inverted relative to every other platform here:
  * a "Topic" is the DISCUSSION and a "Thread" is an individual POST. tblThread
@@ -68,37 +68,37 @@ class WebWizImporter
     public static function schema(array $cfg): array
     {
         $conn = Src::connect($cfg);
-        $p    = self::prefix($cfg);
+        $p = self::prefix($cfg);
 
         $cols = [
             // tblAuthor
-            'author_id'    => self::col($conn, $p . 'Author', ['Author_ID']),
-            'username'     => self::col($conn, $p . 'Author', ['Username', 'User_name']),
-            'email'        => self::col($conn, $p . 'Author', ['Author_email', 'Email', 'Author_Email']),
-            'joined'       => self::col($conn, $p . 'Author', ['Join_date', 'Joined_date', 'Date_joined']),
+            'author_id' => self::col($conn, $p.'Author', ['Author_ID']),
+            'username' => self::col($conn, $p.'Author', ['Username', 'User_name']),
+            'email' => self::col($conn, $p.'Author', ['Author_email', 'Email', 'Author_Email']),
+            'joined' => self::col($conn, $p.'Author', ['Join_date', 'Joined_date', 'Date_joined']),
 
             // tblForum
-            'forum_id'     => self::col($conn, $p . 'Forum', ['Forum_ID']),
-            'forum_name'   => self::col($conn, $p . 'Forum', ['Forum_name', 'Forum_Name', 'Name']),
-            'forum_desc'   => self::col($conn, $p . 'Forum', ['Forum_description', 'Forum_Description', 'Description']),
-            'forum_order'  => self::col($conn, $p . 'Forum', ['Forum_order', 'Sort_order', 'Forum_Order']),
+            'forum_id' => self::col($conn, $p.'Forum', ['Forum_ID']),
+            'forum_name' => self::col($conn, $p.'Forum', ['Forum_name', 'Forum_Name', 'Name']),
+            'forum_desc' => self::col($conn, $p.'Forum', ['Forum_description', 'Forum_Description', 'Description']),
+            'forum_order' => self::col($conn, $p.'Forum', ['Forum_order', 'Sort_order', 'Forum_Order']),
 
             // tblTopic  (= a discussion)
-            'topic_id'     => self::col($conn, $p . 'Topic', ['Topic_ID']),
-            'topic_forum'  => self::col($conn, $p . 'Topic', ['Forum_ID']),
-            'topic_subj'   => self::col($conn, $p . 'Topic', ['Subject', 'Topic_subject']),
-            'topic_author' => self::col($conn, $p . 'Topic', ['Author_ID']),
-            'topic_date'   => self::col($conn, $p . 'Topic', ['Start_date', 'Topic_date', 'Date']),
-            'topic_locked' => self::col($conn, $p . 'Topic', ['Locked', 'Is_locked']),
-            'topic_sticky' => self::col($conn, $p . 'Topic', ['Priority', 'Sticky', 'Is_sticky']),
-            'topic_moved'  => self::col($conn, $p . 'Topic', ['Moved_ID']),
+            'topic_id' => self::col($conn, $p.'Topic', ['Topic_ID']),
+            'topic_forum' => self::col($conn, $p.'Topic', ['Forum_ID']),
+            'topic_subj' => self::col($conn, $p.'Topic', ['Subject', 'Topic_subject']),
+            'topic_author' => self::col($conn, $p.'Topic', ['Author_ID']),
+            'topic_date' => self::col($conn, $p.'Topic', ['Start_date', 'Topic_date', 'Date']),
+            'topic_locked' => self::col($conn, $p.'Topic', ['Locked', 'Is_locked']),
+            'topic_sticky' => self::col($conn, $p.'Topic', ['Priority', 'Sticky', 'Is_sticky']),
+            'topic_moved' => self::col($conn, $p.'Topic', ['Moved_ID']),
 
             // tblThread (= a post)
-            'thread_id'    => self::col($conn, $p . 'Thread', ['Thread_ID', 'Message_ID']),
-            'thread_topic' => self::col($conn, $p . 'Thread', ['Topic_ID']),
-            'thread_author' => self::col($conn, $p . 'Thread', ['Author_ID']),
-            'thread_body'  => self::col($conn, $p . 'Thread', ['Message', 'Thread_message', 'Body', 'Post']),
-            'thread_date'  => self::col($conn, $p . 'Thread', ['Message_date', 'Thread_date', 'Date', 'Post_date']),
+            'thread_id' => self::col($conn, $p.'Thread', ['Thread_ID', 'Message_ID']),
+            'thread_topic' => self::col($conn, $p.'Thread', ['Topic_ID']),
+            'thread_author' => self::col($conn, $p.'Thread', ['Author_ID']),
+            'thread_body' => self::col($conn, $p.'Thread', ['Message', 'Thread_message', 'Body', 'Post']),
+            'thread_date' => self::col($conn, $p.'Thread', ['Message_date', 'Thread_date', 'Date', 'Post_date']),
         ];
 
         // Without these there is nothing to import; the rest degrade to null.
@@ -116,11 +116,11 @@ class WebWizImporter
     public static function test(array $cfg): array
     {
         $conn = Src::connect($cfg);
-        $p    = self::prefix($cfg);
-        $sb   = $conn->getSchemaBuilder();
+        $p = self::prefix($cfg);
+        $sb = $conn->getSchemaBuilder();
 
         foreach (['Author', 'Forum', 'Topic', 'Thread'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException(
                     "This doesn't look like a Web Wiz Forums database (missing “{$p}{$req}”). Check the table prefix — Web Wiz ships tables as tblAuthor, tblForum, tblTopic, tblThread."
                 );
@@ -131,18 +131,18 @@ class WebWizImporter
 
         if ($missing !== []) {
             throw new \RuntimeException(
-                'Found the Web Wiz tables, but could not identify these columns: ' . implode(', ', $missing)
-                . '. This is likely a Web Wiz version with a different schema — send the output of a column listing for tblAuthor/tblForum/tblTopic/tblThread so the mapping can be extended.'
+                'Found the Web Wiz tables, but could not identify these columns: '.implode(', ', $missing)
+                .'. This is likely a Web Wiz version with a different schema — send the output of a column listing for tblAuthor/tblForum/tblTopic/tblThread so the mapping can be extended.'
             );
         }
 
         return [
             'ok' => true,
             'counts' => [
-                'users' => (int) $conn->table($p . 'Author')->count(),
-                'categories' => (int) $conn->table($p . 'Forum')->count(),
-                'topics' => (int) $conn->table($p . 'Topic')->count(),
-                'posts' => (int) $conn->table($p . 'Thread')->count(),
+                'users' => (int) $conn->table($p.'Author')->count(),
+                'categories' => (int) $conn->table($p.'Forum')->count(),
+                'topics' => (int) $conn->table($p.'Topic')->count(),
+                'posts' => (int) $conn->table($p.'Thread')->count(),
             ],
             // Surfaced so the admin can sanity-check the mapping before running.
             'resolved_columns' => array_filter($cols),
@@ -158,12 +158,12 @@ class WebWizImporter
 
         return array_merge([
             new Phase('tags', 'Importing forums…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'Forum')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p . 'Forum')
+                    $rows = $ctx->src()->table($p.'Forum')
                         ->where($c['forum_id'], '>', (int) $cursor)
                         ->orderBy($c['forum_id'])->limit($limit)->get();
                     $map = [];
@@ -188,9 +188,9 @@ class WebWizImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'Author')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'Author')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $c) {
-                    $rows = $ctx->src()->table($p . 'Author')
+                    $rows = $ctx->src()->table($p.'Author')
                         ->where($c['author_id'], '>', (int) $cursor)
                         ->orderBy($c['author_id'])->limit($limit)->get();
                     $map = [];
@@ -204,6 +204,7 @@ class WebWizImporter
 
                             continue;
                         }
+
                         try {
                             $map[$id] = Dst::user(
                                 Src::username($u->{$c['username']} ?? null, $id),
@@ -223,9 +224,9 @@ class WebWizImporter
             ),
 
             new Phase('topics', 'Importing topics…',
-                fn () => (int) Src::connect($cfg)->table($p . 'Topic')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'Topic')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
-                    $rows = $ctx->src()->table($p . 'Topic')
+                    $rows = $ctx->src()->table($p.'Topic')
                         ->where($c['topic_id'], '>', (int) $cursor)
                         ->orderBy($c['topic_id'])->limit($limit)->get();
                     $userMap = $c['topic_author'] ? $ctx->mapGet('user', $rows->pluck($c['topic_author'])->all()) : [];
@@ -262,9 +263,9 @@ class WebWizImporter
             ),
 
             new Phase('posts', 'Importing posts…',
-                fn () => (int) Src::connect($cfg)->table($p . 'Thread')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'Thread')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p . 'Thread')
+                    fn ($conn, $cur, $lim) => $conn->table($p.'Thread')
                         ->where(fn ($q) => $q->where($c['thread_topic'], '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where($c['thread_topic'], (int) $cur['tid'])->where($c['thread_id'], '>', (int) $cur['pid'])))
                         ->orderBy($c['thread_topic'])->orderBy($c['thread_id'])->limit($lim)->get(),

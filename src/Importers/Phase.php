@@ -21,5 +21,6 @@ class Phase
         public string $label,
         public \Closure $count,
         public \Closure $batch,
-    ) {}
+    ) {
+    }
 }

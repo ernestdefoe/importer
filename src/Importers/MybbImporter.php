@@ -21,16 +21,16 @@ class MybbImporter
         $p = self::prefix($cfg);
         $sb = $conn->getSchemaBuilder();
         foreach (['users', 'forums', 'threads', 'posts'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like a MyBB database (missing “{$p}{$req}”). Check the table prefix.");
             }
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'users')->count(),
-            'categories' => (int) $conn->table($p . 'forums')->where('type', 'f')->count(),
-            'topics' => (int) $conn->table($p . 'threads')->where('visible', 1)->count(),
-            'posts' => (int) $conn->table($p . 'posts')->where('visible', 1)->count(),
+            'users' => (int) $conn->table($p.'users')->count(),
+            'categories' => (int) $conn->table($p.'forums')->where('type', 'f')->count(),
+            'topics' => (int) $conn->table($p.'threads')->where('visible', 1)->count(),
+            'posts' => (int) $conn->table($p.'posts')->where('visible', 1)->count(),
         ]];
     }
 
@@ -42,12 +42,12 @@ class MybbImporter
 
         return array_merge([
             new Phase('tags', 'Importing categories…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'forums')->where('type', 'f')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->where('type', 'f')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p . 'forums')->where('type', 'f')->where('fid', '>', (int) $cursor)->orderBy('fid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'forums')->where('type', 'f')->where('fid', '>', (int) $cursor)->orderBy('fid')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $f) {
@@ -65,9 +65,9 @@ class MybbImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'users')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p . 'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -78,6 +78,7 @@ class MybbImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null));
                             $n++;
@@ -92,9 +93,9 @@ class MybbImporter
             ),
 
             new Phase('topics', 'Importing topics…',
-                fn () => (int) Src::connect($cfg)->table($p . 'threads')->where('visible', 1)->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'threads')->where('visible', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
-                    $rows = $ctx->src()->table($p . 'threads')->where('visible', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'threads')->where('visible', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('uid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('fid')->all()) : [];
                     $map = [];
@@ -115,9 +116,9 @@ class MybbImporter
             ),
 
             new Phase('posts', 'Importing posts…',
-                fn () => (int) Src::connect($cfg)->table($p . 'posts')->where('visible', 1)->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p . 'posts')->where('visible', 1)
+                    fn ($conn, $cur, $lim) => $conn->table($p.'posts')->where('visible', 1)
                         ->where(fn ($q) => $q->where('tid', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('tid', (int) $cur['tid'])->where('pid', '>', (int) $cur['pid'])))
                         ->orderBy('tid')->orderBy('pid')->limit($lim)->get(),

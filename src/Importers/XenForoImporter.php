@@ -87,6 +87,7 @@ class XenForoImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null));
                             $n++;

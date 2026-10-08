@@ -34,16 +34,16 @@ class SmfImporter
         $p = self::prefix($cfg);
         $sb = $conn->getSchemaBuilder();
         foreach (['members', 'boards', 'topics', 'messages'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like an SMF database (missing “{$p}{$req}”). Check the table prefix.");
             }
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'members')->count(),
-            'categories' => (int) $conn->table($p . 'boards')->count(),
-            'topics' => (int) $conn->table($p . 'topics')->where('approved', 1)->count(),
-            'posts' => (int) $conn->table($p . 'messages')->where('approved', 1)->count(),
+            'users' => (int) $conn->table($p.'members')->count(),
+            'categories' => (int) $conn->table($p.'boards')->count(),
+            'topics' => (int) $conn->table($p.'topics')->where('approved', 1)->count(),
+            'posts' => (int) $conn->table($p.'messages')->where('approved', 1)->count(),
         ]];
     }
 
@@ -55,12 +55,12 @@ class SmfImporter
 
         return array_merge([
             new Phase('tags', 'Importing boards…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'boards')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'boards')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p . 'boards')->where('id_board', '>', (int) $cursor)->orderBy('id_board')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'boards')->where('id_board', '>', (int) $cursor)->orderBy('id_board')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $b) {
@@ -79,9 +79,9 @@ class SmfImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'members')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'members')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p . 'members')->where('id_member', '>', (int) $cursor)->orderBy('id_member')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'members')->where('id_member', '>', (int) $cursor)->orderBy('id_member')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -93,6 +93,7 @@ class SmfImporter
                             continue;
                         }
                         $name = self::decode(trim((string) ($u->real_name ?? '')) ?: (string) ($u->member_name ?? ''));
+
                         try {
                             $map[$u->id_member] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->id_member), $email, null, Src::ts($u->date_registered ?? null));
                             $n++;
@@ -108,15 +109,15 @@ class SmfImporter
 
             // SMF topics carry no title — it lives on the first message.
             new Phase('topics', 'Importing topics…',
-                fn () => (int) Src::connect($cfg)->table($p . 'topics')->where('approved', 1)->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'topics')->where('approved', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
-                    $rows = $conn->table($p . 'topics')->where('approved', 1)->where('id_redirect_topic', 0)
+                    $rows = $conn->table($p.'topics')->where('approved', 1)->where('id_redirect_topic', 0)
                         ->where('id_topic', '>', (int) $cursor)->orderBy('id_topic')->limit($limit)->get();
                     $firstMsgIds = $rows->pluck('id_first_msg')->filter()->all();
                     $firstMsg = [];
                     if ($firstMsgIds) {
-                        foreach ($conn->table($p . 'messages')->whereIn('id_msg', $firstMsgIds)->get(['id_msg', 'subject', 'poster_time']) as $m) {
+                        foreach ($conn->table($p.'messages')->whereIn('id_msg', $firstMsgIds)->get(['id_msg', 'subject', 'poster_time']) as $m) {
                             $firstMsg[(string) $m->id_msg] = $m;
                         }
                     }
@@ -142,9 +143,9 @@ class SmfImporter
             ),
 
             new Phase('posts', 'Importing posts…',
-                fn () => (int) Src::connect($cfg)->table($p . 'messages')->where('approved', 1)->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'messages')->where('approved', 1)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p . 'messages')->where('approved', 1)
+                    fn ($conn, $cur, $lim) => $conn->table($p.'messages')->where('approved', 1)
                         ->where(fn ($q) => $q->where('id_topic', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('id_topic', (int) $cur['tid'])->where('id_msg', '>', (int) $cur['pid'])))
                         ->orderBy('id_topic')->orderBy('id_msg')->limit($lim)->get(),

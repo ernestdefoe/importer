@@ -69,6 +69,7 @@ class Dst
         if ($md === '') {
             $md = '​'; // zero-width space so the post isn't empty
         }
+
         try {
             return self::formatter()->parse($md, null);
         } catch (\Throwable) {
@@ -113,7 +114,7 @@ class Dst
         $name = $base;
         $n = 1;
         while ($db->table('users')->where('username', $name)->exists()) {
-            $name = Str::limit($base, 26, '') . '_' . (++$n);
+            $name = Str::limit($base, 26, '').'_'.(++$n);
         }
 
         return (int) $db->table('users')->insertGetId([

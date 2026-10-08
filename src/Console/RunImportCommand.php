@@ -23,7 +23,7 @@ class RunImportCommand extends AbstractCommand
         $this
             ->setName('importer:run')
             ->setDescription('Import a forum into Flarum from another platform.')
-            ->addOption('source', null, InputOption::VALUE_REQUIRED, 'Source platform: ' . implode(', ', array_keys(Registry::map())))
+            ->addOption('source', null, InputOption::VALUE_REQUIRED, 'Source platform: '.implode(', ', array_keys(Registry::map())))
             ->addOption('driver', null, InputOption::VALUE_REQUIRED, 'DB driver (mysql|pgsql|sqlite)', 'mysql')
             ->addOption('host', null, InputOption::VALUE_REQUIRED, 'DB host', '127.0.0.1')
             ->addOption('port', null, InputOption::VALUE_REQUIRED, 'DB port', '')
@@ -40,7 +40,7 @@ class RunImportCommand extends AbstractCommand
         $source = (string) $this->input->getOption('source');
         $importer = Registry::get($source);
         if (! $importer) {
-            $this->error('Unknown source "' . $source . '". Available: ' . implode(', ', array_keys(Registry::map())));
+            $this->error('Unknown source "'.$source.'". Available: '.implode(', ', array_keys(Registry::map())));
 
             return 1;
         }
@@ -59,7 +59,7 @@ class RunImportCommand extends AbstractCommand
         try {
             if ($this->input->getOption('test')) {
                 $r = $importer::test($cfg);
-                $this->info('Connection OK — ' . json_encode($r['counts'] ?? []));
+                $this->info('Connection OK — '.json_encode($r['counts'] ?? []));
 
                 return 0;
             }
@@ -82,7 +82,7 @@ class RunImportCommand extends AbstractCommand
                     return 1;
                 }
                 if (! empty($st['done'])) {
-                    $this->info('Import complete — ' . ($st['lastStatus'] ?? ''));
+                    $this->info('Import complete — '.($st['lastStatus'] ?? ''));
 
                     return 0;
                 }
@@ -96,7 +96,7 @@ class RunImportCommand extends AbstractCommand
 
             return 1;
         } catch (\Throwable $e) {
-            $this->error('Import failed: ' . $e->getMessage());
+            $this->error('Import failed: '.$e->getMessage());
 
             return 1;
         }

@@ -4,7 +4,7 @@ namespace ErnestDefoe\Importer\Importers;
 
 /**
  * phpBB 3.x → Flarum.
- *   phpbb_forums → tags · phpbb_users → users · phpbb_topics → discussions · phpbb_posts → posts
+ *   phpbb_forums → tags · phpbb_users → users · phpbb_topics → discussions · phpbb_posts → posts.
  */
 class PhpbbImporter
 {
@@ -19,16 +19,16 @@ class PhpbbImporter
         $p = self::prefix($cfg);
         $sb = $conn->getSchemaBuilder();
         foreach (['users', 'forums', 'topics', 'posts'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like a phpBB database (missing “{$p}{$req}”). Check the table prefix.");
             }
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'users')->count(),
-            'categories' => (int) $conn->table($p . 'forums')->count(),
-            'topics' => (int) $conn->table($p . 'topics')->count(),
-            'posts' => (int) $conn->table($p . 'posts')->count(),
+            'users' => (int) $conn->table($p.'users')->count(),
+            'categories' => (int) $conn->table($p.'forums')->count(),
+            'topics' => (int) $conn->table($p.'topics')->count(),
+            'posts' => (int) $conn->table($p.'posts')->count(),
         ]];
     }
 
@@ -40,14 +40,14 @@ class PhpbbImporter
 
         return array_merge([
             new Phase('tags', 'Importing categories…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'forums')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
                     $conn = $ctx->src();
-                    $hasType = $conn->getSchemaBuilder()->hasColumn($p . 'forums', 'forum_type');
-                    $rows = $conn->table($p . 'forums')->where('forum_id', '>', (int) $cursor)->orderBy('forum_id')->limit($limit)->get();
+                    $hasType = $conn->getSchemaBuilder()->hasColumn($p.'forums', 'forum_type');
+                    $rows = $conn->table($p.'forums')->where('forum_id', '>', (int) $cursor)->orderBy('forum_id')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $f) {
@@ -65,9 +65,9 @@ class PhpbbImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'users')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p . 'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -78,6 +78,7 @@ class PhpbbImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $u->user_password ?? null, Src::ts($u->user_regdate ?? null));
                             $n++;
@@ -92,11 +93,11 @@ class PhpbbImporter
             ),
 
             new Phase('topics', 'Importing topics…',
-                fn () => (int) Src::connect($cfg)->table($p . 'topics')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'topics')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
-                    $visCol = $conn->getSchemaBuilder()->hasColumn($p . 'topics', 'topic_visibility') ? 'topic_visibility' : null;
-                    $rows = $conn->table($p . 'topics')->where('topic_id', '>', (int) $cursor)->orderBy('topic_id')->limit($limit)->get();
+                    $visCol = $conn->getSchemaBuilder()->hasColumn($p.'topics', 'topic_visibility') ? 'topic_visibility' : null;
+                    $rows = $conn->table($p.'topics')->where('topic_id', '>', (int) $cursor)->orderBy('topic_id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('topic_poster')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forum_id')->all()) : [];
                     $map = [];
@@ -120,14 +121,14 @@ class PhpbbImporter
             ),
 
             new Phase('posts', 'Importing posts…',
-                fn () => (int) Src::connect($cfg)->table($p . 'posts')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'posts')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $sb = $ctx->src()->getSchemaBuilder();
-                    $visCol = $sb->hasColumn($p . 'posts', 'post_visibility') ? 'post_visibility'
-                        : ($sb->hasColumn($p . 'posts', 'post_approved') ? 'post_approved' : null);
+                    $visCol = $sb->hasColumn($p.'posts', 'post_visibility') ? 'post_visibility'
+                        : ($sb->hasColumn($p.'posts', 'post_approved') ? 'post_approved' : null);
 
                     return Phases::postsBatch($cursor, $limit, $ctx,
-                        fn ($conn, $cur, $lim) => $conn->table($p . 'posts')
+                        fn ($conn, $cur, $lim) => $conn->table($p.'posts')
                             ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
                                 ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('post_id', '>', (int) $cur['pid'])))
                             ->orderBy('topic_id')->orderBy('post_id')->limit($lim)->get(),

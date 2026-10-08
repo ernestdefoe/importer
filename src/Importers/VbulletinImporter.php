@@ -17,7 +17,7 @@ class VbulletinImporter
         $p = trim((string) ($cfg['prefix'] ?? ''));
         $sb = $conn->getSchemaBuilder();
 
-        return $sb->hasTable($p . 'node') && $sb->hasTable($p . 'contenttype') && ! $sb->hasTable($p . 'thread');
+        return $sb->hasTable($p.'node') && $sb->hasTable($p.'contenttype') && ! $sb->hasTable($p.'thread');
     }
 
     public static function test(array $cfg): array
@@ -29,16 +29,16 @@ class VbulletinImporter
         $p = trim((string) ($cfg['prefix'] ?? ''));
         $sb = $conn->getSchemaBuilder();
         foreach (['user', 'thread', 'post', 'forum'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like a vBulletin database (missing “{$p}{$req}”). Check the table prefix.");
             }
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'user')->count(),
-            'categories' => (int) $conn->table($p . 'forum')->count(),
-            'topics' => (int) $conn->table($p . 'thread')->count(),
-            'posts' => (int) $conn->table($p . 'post')->count(),
+            'users' => (int) $conn->table($p.'user')->count(),
+            'categories' => (int) $conn->table($p.'forum')->count(),
+            'topics' => (int) $conn->table($p.'thread')->count(),
+            'posts' => (int) $conn->table($p.'post')->count(),
         ]];
     }
 
@@ -53,12 +53,12 @@ class VbulletinImporter
 
         return array_merge([
             new Phase('tags', 'Importing categories…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'forum')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p . 'forum')->where('forumid', '>', (int) $cursor)->orderBy('forumid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'forum')->where('forumid', '>', (int) $cursor)->orderBy('forumid')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $f) {
@@ -73,9 +73,9 @@ class VbulletinImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'user')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p . 'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -86,6 +86,7 @@ class VbulletinImporter
 
                             continue;
                         }
+
                         try {
                             // vB md5 → not portable; members reset (null password).
                             $map[$u->userid] = Dst::user(Src::username($u->username ?? null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null));
@@ -101,9 +102,9 @@ class VbulletinImporter
             ),
 
             new Phase('topics', 'Importing topics…',
-                fn () => (int) Src::connect($cfg)->table($p . 'thread')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'thread')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
-                    $rows = $ctx->src()->table($p . 'thread')->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'thread')->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('postuserid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forumid')->all()) : [];
                     $map = [];
@@ -127,9 +128,9 @@ class VbulletinImporter
             ),
 
             new Phase('posts', 'Importing posts…',
-                fn () => (int) Src::connect($cfg)->table($p . 'post')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'post')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch($cursor, $limit, $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p . 'post')
+                    fn ($conn, $cur, $lim) => $conn->table($p.'post')
                         ->where(fn ($q) => $q->where('threadid', '>', (int) $cur['tid'])
                             ->orWhere(fn ($q2) => $q2->where('threadid', (int) $cur['tid'])->where('postid', '>', (int) $cur['pid'])))
                         ->orderBy('threadid')->orderBy('postid')->limit($lim)->get(),

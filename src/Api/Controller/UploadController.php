@@ -2,7 +2,6 @@
 
 namespace ErnestDefoe\Importer\Api\Controller;
 
-use Psr\Http\Message\UploadedFileInterface;
 use ErnestDefoe\Importer\Importers\MysqlDumpToSqlite;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Upload;
@@ -11,6 +10,7 @@ use Illuminate\Support\Arr;
 use Laminas\Diactoros\Response\JsonResponse;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use Psr\Http\Message\UploadedFileInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 
 /**
@@ -62,21 +62,22 @@ class UploadController implements RequestHandlerInterface
         Upload::sweep();
         $dir = Upload::dir();
         $ext = strtolower(pathinfo((string) $file->getClientFilename(), PATHINFO_EXTENSION));
-        $sqliteName = 'scratch-' . bin2hex(random_bytes(6)) . '.sqlite';
-        $sqlitePath = $dir . '/' . $sqliteName;
+        $sqliteName = 'scratch-'.bin2hex(random_bytes(6)).'.sqlite';
+        $sqlitePath = $dir.'/'.$sqliteName;
 
         $conversion = null;
+
         try {
             if (in_array($ext, ['sqlite', 'sqlite3', 'db'], true)) {
                 $file->moveTo($sqlitePath); // already a SQLite database
             } else {
-                $tmp = $dir . '/dump-' . bin2hex(random_bytes(6)) . ($ext === 'gz' ? '.sql.gz' : '.sql');
+                $tmp = $dir.'/dump-'.bin2hex(random_bytes(6)).($ext === 'gz' ? '.sql.gz' : '.sql');
                 $file->moveTo($tmp);
                 $conversion = MysqlDumpToSqlite::convert($tmp, $sqlitePath);
                 @unlink($tmp);
             }
         } catch (\Throwable $e) {
-            return new JsonResponse(['ok' => false, 'error' => 'Could not read that file: ' . $e->getMessage()], 422);
+            return new JsonResponse(['ok' => false, 'error' => 'Could not read that file: '.$e->getMessage()], 422);
         }
 
         $cfg = Upload::resolve(['file' => $sqliteName, 'prefix' => (string) Arr::get($body, 'prefix', '')]);
@@ -86,7 +87,7 @@ class UploadController implements RequestHandlerInterface
         } catch (\Throwable $e) {
             @unlink($sqlitePath);
 
-            return new JsonResponse(['ok' => false, 'error' => "File loaded, but it doesn't look like a {$source} database: " . $e->getMessage()], 422);
+            return new JsonResponse(['ok' => false, 'error' => "File loaded, but it doesn't look like a {$source} database: ".$e->getMessage()], 422);
         }
 
         // A dump can parse "successfully" while individual row-batches were
@@ -142,7 +143,7 @@ class UploadController implements RequestHandlerInterface
     private static function humanBytes(int $bytes): string
     {
         return $bytes >= 1024 * 1024 * 1024
-            ? round($bytes / 1024 / 1024 / 1024, 1) . ' GB'
-            : round($bytes / 1024 / 1024) . ' MB';
+            ? round($bytes / 1024 / 1024 / 1024, 1).' GB'
+            : round($bytes / 1024 / 1024).' MB';
     }
 }

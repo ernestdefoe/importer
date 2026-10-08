@@ -88,7 +88,7 @@ final class Resolver
              * ours would be the one that goes stale the moment a title is
              * edited.
              */
-            'topic' => '/d/' . $id,
+            'topic' => '/d/'.$id,
             'tag' => $this->tagPath($id),
             'user' => $this->userPath($id),
             default => null,
@@ -102,7 +102,7 @@ final class Resolver
     {
         $tag = Dst::db()->table('tags')->where('id', $id)->first();
 
-        return $tag && $tag->slug !== '' ? '/t/' . $tag->slug : null;
+        return $tag && $tag->slug !== '' ? '/t/'.$tag->slug : null;
     }
 
     /** And a user by username. */
@@ -110,7 +110,7 @@ final class Resolver
     {
         $user = Dst::db()->table('users')->where('id', $id)->first();
 
-        return $user && $user->username !== '' ? '/u/' . $user->username : null;
+        return $user && $user->username !== '' ? '/u/'.$user->username : null;
     }
 
     /**
@@ -175,6 +175,6 @@ final class Resolver
 
         [$digits, $offset] = end($m[0]);
 
-        return substr($example, 0, $offset) . $sourceId . substr($example, $offset + strlen($digits));
+        return substr($example, 0, $offset).$sourceId.substr($example, $offset + strlen($digits));
     }
 }

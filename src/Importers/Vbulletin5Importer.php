@@ -20,7 +20,7 @@ class Vbulletin5Importer
     private static function typeIds(ConnectionInterface $conn, string $p): array
     {
         $channel = $text = [];
-        foreach ($conn->table($p . 'contenttype')->get(['contenttypeid', 'class']) as $ct) {
+        foreach ($conn->table($p.'contenttype')->get(['contenttypeid', 'class']) as $ct) {
             if ((string) $ct->class === 'Channel') {
                 $channel[] = (int) $ct->contenttypeid;
             } elseif ((string) $ct->class === 'Text') {
@@ -35,7 +35,7 @@ class Vbulletin5Importer
     private static function channelNodeIds(ConnectionInterface $conn, string $p, array $channelTypeIds): array
     {
         return $channelTypeIds
-            ? $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all()
+            ? $conn->table($p.'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all()
             : [];
     }
 
@@ -52,7 +52,7 @@ class Vbulletin5Importer
         $p = trim((string) ($cfg['prefix'] ?? ''));
         $sb = $conn->getSchemaBuilder();
         foreach (['node', 'text', 'contenttype', 'user'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like a vBulletin 5 database (missing “{$p}{$req}”).");
             }
         }
@@ -60,12 +60,12 @@ class Vbulletin5Importer
         $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'user')->count(),
+            'users' => (int) $conn->table($p.'user')->count(),
             'categories' => count($channelIds),
             'topics' => $textTypeIds && $channelIds
-                ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
+                ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
                 : 0,
-            'posts' => $textTypeIds ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
+            'posts' => $textTypeIds ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
         ]];
     }
 
@@ -87,12 +87,12 @@ class Vbulletin5Importer
                     if (! $channelTypeIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    $rows = $conn->table($p.'node')->whereIn('contenttypeid', $channelTypeIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->nodeid;
-                        $name = trim((string) ($c->title ?? '')) ?: ('Channel ' . $c->nodeid);
+                        $name = trim((string) ($c->title ?? '')) ?: ('Channel '.$c->nodeid);
                         $map[$c->nodeid] = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0));
                         $n++;
                     }
@@ -103,11 +103,11 @@ class Vbulletin5Importer
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'user')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
-                    $hasDisplayName = $conn->getSchemaBuilder()->hasColumn($p . 'user', 'displayname');
-                    $rows = $conn->table($p . 'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
+                    $hasDisplayName = $conn->getSchemaBuilder()->hasColumn($p.'user', 'displayname');
+                    $rows = $conn->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -119,6 +119,7 @@ class Vbulletin5Importer
                             continue;
                         }
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
+
                         try {
                             $map[$u->userid] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null));
                             $n++;
@@ -143,14 +144,14 @@ class Vbulletin5Importer
                     if (! $textTypeIds || ! $channelIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $conn->table($p . 'node')
-                        ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
-                        ->whereIn($p . 'node.contenttypeid', $textTypeIds)
-                        ->whereIn($p . 'node.parentid', $channelIds)
-                        ->where($p . 'node.approved', 1)
-                        ->where($p . 'node.nodeid', '>', (int) $cursor)
-                        ->orderBy($p . 'node.nodeid')
-                        ->select($p . 'node.*', $p . 'text.rawtext', $p . 'text.htmlstate')
+                    $rows = $conn->table($p.'node')
+                        ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
+                        ->whereIn($p.'node.contenttypeid', $textTypeIds)
+                        ->whereIn($p.'node.parentid', $channelIds)
+                        ->where($p.'node.approved', 1)
+                        ->where($p.'node.nodeid', '>', (int) $cursor)
+                        ->orderBy($p.'node.nodeid')
+                        ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
                         ->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
@@ -189,14 +190,14 @@ class Vbulletin5Importer
                     $cur = is_array($cursor) ? $cursor : ['nid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
 
-                    $rows = $conn->table($p . 'node')
-                        ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
-                        ->whereIn($p . 'node.contenttypeid', $textTypeIds)
-                        ->when($channelIds, fn ($q) => $q->whereNotIn($p . 'node.parentid', $channelIds))
-                        ->where($p . 'node.approved', 1)
-                        ->where($p . 'node.nodeid', '>', (int) $cur['nid'])
-                        ->orderBy($p . 'node.nodeid')
-                        ->select($p . 'node.*', $p . 'text.rawtext', $p . 'text.htmlstate')
+                    $rows = $conn->table($p.'node')
+                        ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
+                        ->whereIn($p.'node.contenttypeid', $textTypeIds)
+                        ->when($channelIds, fn ($q) => $q->whereNotIn($p.'node.parentid', $channelIds))
+                        ->where($p.'node.approved', 1)
+                        ->where($p.'node.nodeid', '>', (int) $cur['nid'])
+                        ->orderBy($p.'node.nodeid')
+                        ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
                         ->limit($limit)->get();
 
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());
@@ -216,6 +217,7 @@ class Vbulletin5Importer
                             $carry = ['did' => (int) $did, 'num' => (int) ($db->table('posts')->where('discussion_id', $did)->max('number') ?? 0)];
                         }
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
+
                         try {
                             Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '') ?: '<p></p>', $created);
                             $n++;

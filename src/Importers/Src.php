@@ -40,7 +40,7 @@ class Src
             if (! in_array('sqlsrv', \PDO::getAvailableDrivers(), true)) {
                 throw new \RuntimeException(
                     'This server cannot connect to SQL Server directly: the PHP extension pdo_sqlsrv is not installed. '
-                    . 'Export the source database to a dump or CSV and use the file-upload import instead.'
+                    .'Export the source database to a dump or CSV and use the file-upload import instead.'
                 );
             }
 
@@ -82,7 +82,7 @@ class Src
 
         /** @var \Illuminate\Contracts\Config\Repository $config */
         $config = resolve('config');
-        $config->set('database.connections.' . self::CONN, $conf);
+        $config->set('database.connections.'.self::CONN, $conf);
 
         /** @var \Illuminate\Database\DatabaseManager $db */
         $db = resolve('db');
@@ -95,7 +95,7 @@ class Src
     {
         $c = trim((string) $c);
 
-        return preg_match('/^#?[0-9a-fA-F]{6}$/', $c) ? (str_starts_with($c, '#') ? $c : '#' . $c) : '#5b5bd6';
+        return preg_match('/^#?[0-9a-fA-F]{6}$/', $c) ? (str_starts_with($c, '#') ? $c : '#'.$c) : '#5b5bd6';
     }
 
     /** Copy bcrypt hashes (Flarum uses bcrypt too, so they work straight away); anything else → random (user resets). */
@@ -115,6 +115,7 @@ class Src
         if (is_numeric($v)) {
             return Carbon::createFromTimestamp((int) $v);
         }
+
         try {
             return Carbon::parse($v);
         } catch (\Throwable) {
@@ -153,13 +154,13 @@ class Src
             }
         }
 
-        return self::sanitizeHtml('<p>' . nl2br(htmlspecialchars($md, ENT_QUOTES), false) . '</p>');
+        return self::sanitizeHtml('<p>'.nl2br(htmlspecialchars($md, ENT_QUOTES), false).'</p>');
     }
 
     /** Unique tag slug from a name + source id. */
     public static function tagSlug(string $name, int $sourceId): string
     {
-        return (Str::slug($name) ?: 'tag') . '-' . $sourceId;
+        return (Str::slug($name) ?: 'tag').'-'.$sourceId;
     }
 
     /**
@@ -171,6 +172,6 @@ class Src
         $u = preg_replace('/[^\w.-]+/u', '_', trim((string) $name));
         $u = trim((string) $u, '_.-');
 
-        return $u !== '' ? $u : ('user' . $sourceId);
+        return $u !== '' ? $u : ('user'.$sourceId);
     }
 }

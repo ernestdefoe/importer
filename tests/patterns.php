@@ -20,7 +20,7 @@ declare(strict_types=1);
  *
  *     php tests/patterns.php
  */
-require __DIR__ . '/../src/Redirects/Patterns.php';
+require __DIR__.'/../src/Redirects/Patterns.php';
 
 use ErnestDefoe\Importer\Redirects\Patterns;
 

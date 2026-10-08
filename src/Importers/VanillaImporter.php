@@ -21,16 +21,16 @@ class VanillaImporter
         $p = self::prefix($cfg);
         $sb = $conn->getSchemaBuilder();
         foreach (['User', 'Category', 'Discussion', 'Comment'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException("This doesn't look like a Vanilla database (missing “{$p}{$req}”). Check the table prefix.");
             }
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'User')->count(),
-            'categories' => (int) $conn->table($p . 'Category')->where('CategoryID', '>', 0)->count(),
-            'topics' => (int) $conn->table($p . 'Discussion')->count(),
-            'posts' => (int) $conn->table($p . 'Comment')->count(),
+            'users' => (int) $conn->table($p.'User')->count(),
+            'categories' => (int) $conn->table($p.'Category')->where('CategoryID', '>', 0)->count(),
+            'topics' => (int) $conn->table($p.'Discussion')->count(),
+            'posts' => (int) $conn->table($p.'Comment')->count(),
         ]];
     }
 
@@ -42,18 +42,18 @@ class VanillaImporter
 
         return array_merge([
             new Phase('tags', 'Importing categories…',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p . 'Category')->where('CategoryID', '>', 0)->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Category')->where('CategoryID', '>', 0)->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p . 'Category')->where('CategoryID', '>', max(0, (int) $cursor))->orderBy('CategoryID')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'Category')->where('CategoryID', '>', max(0, (int) $cursor))->orderBy('CategoryID')->limit($limit)->get();
                     $map = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->CategoryID;
-                        $name = trim((string) ($c->Name ?? '')) ?: ('Category ' . $c->CategoryID);
-                        $slug = trim((string) ($c->UrlCode ?? '')) !== '' ? (\Illuminate\Support\Str::slug($c->UrlCode) . '-' . $c->CategoryID) : Src::tagSlug($name, (int) $c->CategoryID);
+                        $name = trim((string) ($c->Name ?? '')) ?: ('Category '.$c->CategoryID);
+                        $slug = trim((string) ($c->UrlCode ?? '')) !== '' ? (\Illuminate\Support\Str::slug($c->UrlCode).'-'.$c->CategoryID) : Src::tagSlug($name, (int) $c->CategoryID);
                         $map[$c->CategoryID] = Dst::tag($name, $slug, $c->Description ?? null, null, (int) ($c->Sort ?? 0));
                         $n++;
                     }
@@ -64,11 +64,11 @@ class VanillaImporter
             ),
 
             new Phase('users', 'Importing members…',
-                fn () => (int) Src::connect($cfg)->table($p . 'User')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
-                    $hasDeleted = $conn->getSchemaBuilder()->hasColumn($p . 'User', 'Deleted');
-                    $rows = $conn->table($p . 'User')->where('UserID', '>', (int) $cursor)->orderBy('UserID')->limit($limit)->get();
+                    $hasDeleted = $conn->getSchemaBuilder()->hasColumn($p.'User', 'Deleted');
+                    $rows = $conn->table($p.'User')->where('UserID', '>', (int) $cursor)->orderBy('UserID')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -79,6 +79,7 @@ class VanillaImporter
 
                             continue;
                         }
+
                         try {
                             $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null));
                             $n++;
@@ -94,9 +95,9 @@ class VanillaImporter
 
             // Discussion → topic; its own Body is the first post (#1).
             new Phase('topics', 'Importing discussions…',
-                fn () => (int) Src::connect($cfg)->table($p . 'Discussion')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'Discussion')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
-                    $rows = $ctx->src()->table($p . 'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
+                    $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('CategoryID')->all()) : [];
                     $map = [];
@@ -122,11 +123,11 @@ class VanillaImporter
 
             // Comments → replies, continuing each discussion's numbering after #1.
             new Phase('posts', 'Importing comments…',
-                fn () => (int) Src::connect($cfg)->table($p . 'Comment')->count(),
+                fn () => (int) Src::connect($cfg)->table($p.'Comment')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
-                    $rows = $ctx->src()->table($p . 'Comment')
+                    $rows = $ctx->src()->table($p.'Comment')
                         ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
                             ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
@@ -148,6 +149,7 @@ class VanillaImporter
                             $carry = ['did' => (int) $did, 'num' => (int) ($db->table('posts')->where('discussion_id', $did)->max('number') ?? 0)];
                         }
                         $created = Src::ts($c->DateInserted ?? null);
+
                         try {
                             Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, self::body($c->Body ?? '', $c->Format ?? '') ?: '<p></p>', $created);
                             $n++;
@@ -196,7 +198,7 @@ class VanillaImporter
         foreach (preg_split('/\n{2,}/', trim($text)) as $block) {
             $block = trim((string) $block);
             if ($block !== '') {
-                $out .= '<p>' . nl2br(htmlspecialchars($block, ENT_QUOTES), false) . '</p>';
+                $out .= '<p>'.nl2br(htmlspecialchars($block, ENT_QUOTES), false).'</p>';
             }
         }
 
@@ -217,7 +219,7 @@ class VanillaImporter
             if (is_string($insert)) {
                 $text .= $insert;
             } elseif (is_array($insert) && isset($insert['url'])) {
-                $text .= ' ' . $insert['url'] . ' ';
+                $text .= ' '.$insert['url'].' ';
             }
         }
 

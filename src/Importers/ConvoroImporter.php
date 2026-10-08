@@ -2,12 +2,12 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
-use Illuminate\Database\Query\Builder;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
 
 /**
  * Convoro → Flarum (the reverse of Convoro's own Flarum importer).
- *   categories/forums → tags · users → users · topics → discussions · posts → posts
+ *   categories/forums → tags · users → users · topics → discussions · posts → posts.
  *
  * Convoro hashes with bcrypt, so passwords copy straight across and members keep
  * their logins. Post bodies are stored as rendered HTML, which runs through the
@@ -177,6 +177,7 @@ class ConvoroImporter
 
                             continue;
                         }
+
                         try {
                             $id = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
                             $map[$u->id] = $id;

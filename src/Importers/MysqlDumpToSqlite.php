@@ -52,14 +52,14 @@ class MysqlDumpToSqlite
         // Laravel's SQLite connector refuses to open a path that doesn't exist
         // (unlike a bare PDO DSN, which creates it), so seed an empty file first.
         if (@touch($sqlitePath) === false) {
-            throw new \RuntimeException('Could not create a scratch database at ' . $sqlitePath);
+            throw new \RuntimeException('Could not create a scratch database at '.$sqlitePath);
         }
 
         // Go through Flarum's DatabaseManager rather than a bare PDO handle, so
         // the connection is managed (and can be purged/closed) like every other.
         /** @var \Illuminate\Contracts\Config\Repository $config */
         $config = resolve('config');
-        $config->set('database.connections.' . self::CONN, [
+        $config->set('database.connections.'.self::CONN, [
             'driver' => 'sqlite',
             'database' => $sqlitePath,
             'prefix' => '',
@@ -78,13 +78,14 @@ class MysqlDumpToSqlite
         $rows = 0;
         $skipped = 0;
         $conn->beginTransaction();
+
         try {
             foreach (self::statements($in) as $stmt) {
                 $stmt = self::normaliseTsql($stmt);
                 $head = ltrim($stmt);
                 if (stripos($head, 'CREATE TABLE') === 0) {
                     if ($sql = self::translateCreate($stmt)) {
-                        $conn->unprepared('DROP TABLE IF EXISTS ' . self::quoteIdent(self::tableOf($stmt)));
+                        $conn->unprepared('DROP TABLE IF EXISTS '.self::quoteIdent(self::tableOf($stmt)));
                         self::runOne($conn, $sql);
                         $tables++;
                     }
@@ -101,6 +102,7 @@ class MysqlDumpToSqlite
             $conn->commit();
         } catch (\Throwable $e) {
             $conn->rollBack();
+
             throw $e;
         } finally {
             if (is_resource($in)) {
@@ -212,7 +214,7 @@ class MysqlDumpToSqlite
                     continue;
                 }
 
-                $out .= '`' . str_replace('`', '', $ident) . '`';
+                $out .= '`'.str_replace('`', '', $ident).'`';
 
                 continue;
             }
@@ -341,7 +343,7 @@ class MysqlDumpToSqlite
 
     private static function quoteIdent(string $name): string
     {
-        return '`' . str_replace('`', '', $name) . '`';
+        return '`'.str_replace('`', '', $name).'`';
     }
 
     /** mysqldump CREATE TABLE → minimal SQLite CREATE (columns + affinity only). */
@@ -372,13 +374,13 @@ class MysqlDumpToSqlite
             }
             $name = substr($part, 1, $end - 1);
             $rest = strtolower(substr($part, $end + 1));
-            $cols[] = self::quoteIdent($name) . ' ' . self::affinity($rest);
+            $cols[] = self::quoteIdent($name).' '.self::affinity($rest);
         }
         if (! $cols) {
             return null;
         }
 
-        return 'CREATE TABLE ' . self::quoteIdent($table) . ' (' . implode(', ', $cols) . ')';
+        return 'CREATE TABLE '.self::quoteIdent($table).' ('.implode(', ', $cols).')';
     }
 
     private static function affinity(string $typePart): string

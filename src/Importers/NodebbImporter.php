@@ -90,7 +90,7 @@ class NodebbImporter
                         if (! $c || ($c['disabled'] ?? '0') === '1') {
                             continue;
                         }
-                        $name = trim((string) ($c['name'] ?? '')) ?: ('Category ' . $cid);
+                        $name = trim((string) ($c['name'] ?? '')) ?: ('Category '.$cid);
                         $map[$cid] = Dst::tag($name, Src::tagSlug($name, (int) $cid), $c['description'] ?? null, $c['bgColor'] ?? null, (int) ($c['order'] ?? 0));
                         $n++;
                     }
@@ -116,6 +116,7 @@ class NodebbImporter
 
                             continue;
                         }
+
                         try {
                             $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, null, self::ts($u['joindate'] ?? null));
                             $n++;
@@ -218,6 +219,7 @@ class NodebbImporter
                             continue;
                         }
                         $counts[$did] ??= 0;
+
                         try {
                             Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, Src::markdown($post['content'] ?? '') ?: '<p></p>', self::ts($post['timestamp'] ?? null));
                             $n++;

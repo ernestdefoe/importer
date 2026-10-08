@@ -145,6 +145,7 @@ class Phases
                 $carry = ['tid' => (int) $m['tid'], 'did' => $did, 'num' => 0];
             }
             $num = ++$carry['num'];
+
             try {
                 Dst::post($did, $num, $userMap[(string) $m['uid']] ?? null, $m['html'], $m['at']);
                 $n++;

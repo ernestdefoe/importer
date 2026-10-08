@@ -1,5 +1,5 @@
 import app from 'flarum/admin/app';
-import Component from 'flarum/common/Component';
+import Component, { type ComponentAttrs } from 'flarum/common/Component';
 import Button from 'flarum/common/components/Button';
 import Switch from 'flarum/common/components/Switch';
 import extractText from 'flarum/common/utils/extractText';
@@ -18,7 +18,7 @@ const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importe
  * list of real addresses from this site's own import, each resolved for real.
  * Somebody should be able to recognise one of their own URLs before they commit.
  */
-export default class RedirectsPanel extends Component {
+export default class RedirectsPanel extends Component<ComponentAttrs, RedirectState | null> {
   state: RedirectState | null = null;
   loading = true;
   saving = false;
@@ -137,11 +137,15 @@ export default class RedirectsPanel extends Component {
             this.error && m('.Alert.Alert--error.RedirectsPanel-alert', t('error_' + this.error)),
 
             m('.ImporterPage-actions', [
-              m(Switch, {
-                state: s.enabled,
-                disabled: this.saving || !s.known,
-                onchange: (v: boolean) => this.save(v),
-              }, t(s.enabled ? 'on' : 'off')),
+              m(
+                Switch,
+                {
+                  state: s.enabled,
+                  disabled: this.saving || !s.known,
+                  onchange: (v: boolean) => this.save(v),
+                },
+                t(s.enabled ? 'on' : 'off')
+              ),
             ]),
 
             m('p.helpText.ImporterPage-note', t('note')),

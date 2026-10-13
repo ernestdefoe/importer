@@ -130,7 +130,7 @@ jobs:
             exit 0
           fi
 
-          CONTENT_MD=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n' \
+          CONTENT_MD=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n\n☕ If you like the things I have built, consider [buying me a coffee](https://buymeacoffee.com/ernestdefoe).\n' \
             "$REPO_NAME" "$RELEASE_TAG" "${POST_BODY:-_No release notes provided._}" "$RELEASE_URL")
 
           # 🚨 Render to HTML before posting. Release notes are Markdown, and the
@@ -357,7 +357,7 @@ jobs:
                 print line
               }
             }')
-          CONTENT=$(printf '## %s\n\n%s\n\n[Release on GitHub](%s)\n' "$heading" "$notes" "$RELEASE_URL")
+          CONTENT=$(printf '## %s\n\n%s\n\n[Release on GitHub](%s)\n\n☕ If you like the things I have built, consider [buying me a coffee](https://buymeacoffee.com/ernestdefoe).\n' "$heading" "$notes" "$RELEASE_URL")
 
           PAYLOAD=$(jq -n \
             --arg content "$CONTENT" \

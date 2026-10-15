@@ -15,6 +15,12 @@ class Src
 {
     public const CONN = 'importer_src';
 
+    /** Translate an `ernestdefoe-importer.api.*` string (these classes are static, so no injection). */
+    public static function t(string $key, array $params = []): string
+    {
+        return resolve(\Flarum\Locale\TranslatorInterface::class)->trans('ernestdefoe-importer.api.'.$key, $params);
+    }
+
     /**
      * Build a runtime read connection to the source database (MySQL, PostgreSQL
      * for Discourse, or SQLite for fixtures). Registers a named connection on
@@ -38,10 +44,7 @@ class Src
             // say so plainly rather than letting PDO throw "could not find
             // driver": the fix is a different import route, not a config typo.
             if (! in_array('sqlsrv', \PDO::getAvailableDrivers(), true)) {
-                throw new \RuntimeException(
-                    'This server cannot connect to SQL Server directly: the PHP extension pdo_sqlsrv is not installed. '
-                    .'Export the source database to a dump or CSV and use the file-upload import instead.'
-                );
+                throw new \RuntimeException(self::t('sqlsrv_missing'));
             }
 
             $conf = [
@@ -100,13 +103,10 @@ class Src
     {
         $msg = $e->getMessage();
         $hint = match (true) {
-            str_contains($msg, '[2002]') && stripos($msg, 'timed out') !== false => 'This server could not reach the source database at all: the connection timed out. '
-                .'The source MySQL server is not accepting connections from this server — usually a firewall blocking port 3306, MySQL listening on 127.0.0.1 only (bind-address), '
-                .'or the host not allowing remote MySQL (on cPanel, add this server\'s IP under Remote MySQL). '
-                .'If you cannot open it up, upload a dump instead, or load the dump into a database on this server and connect to 127.0.0.1.',
-            str_contains($msg, '[2002]') => 'Nothing answered at that host and port. Check the host and port, and that the database server is running and reachable from this server.',
-            str_contains($msg, '[1130]') => 'The source database refused this server\'s address. Grant the database user access from this server\'s IP (not just localhost).',
-            str_contains($msg, '[1045]') => 'The source database rejected the username or password. If they are right, the user may only be allowed to connect from localhost.',
+            str_contains($msg, '[2002]') && stripos($msg, 'timed out') !== false => self::t('explain.timed_out'),
+            str_contains($msg, '[2002]') => self::t('explain.no_answer'),
+            str_contains($msg, '[1130]') => self::t('explain.host_refused'),
+            str_contains($msg, '[1045]') => self::t('explain.bad_login'),
             default => null,
         };
 

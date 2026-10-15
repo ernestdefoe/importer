@@ -25,7 +25,7 @@ class TestConnectionController implements RequestHandlerInterface
 
         $importer = Registry::get($source);
         if (! $importer) {
-            return new JsonResponse(['ok' => false, 'error' => 'Unknown import source.'], 422);
+            return new JsonResponse(['ok' => false, 'error' => Src::t('unknown_source')], 422);
         }
 
         try {

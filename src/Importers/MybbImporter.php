@@ -22,7 +22,7 @@ class MybbImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['users', 'forums', 'threads', 'posts'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like a MyBB database (missing “{$p}{$req}”). Check the table prefix.");
+                throw new \RuntimeException(Src::t('not_source.mybb', ['table' => $p.$req]));
             }
         }
 
@@ -43,7 +43,7 @@ class MybbImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->where('type', 'f')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -68,7 +68,7 @@ class MybbImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
@@ -98,7 +98,7 @@ class MybbImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table($p.'threads')->where('visible', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'threads')->where('visible', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
@@ -123,7 +123,7 @@ class MybbImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

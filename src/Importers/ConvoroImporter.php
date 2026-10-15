@@ -105,7 +105,7 @@ class ConvoroImporter
 
         foreach (['users', $at['forums'], 'topics', 'posts'] as $req) {
             if (! $sb->hasTable($req)) {
-                throw new \RuntimeException("This doesn't look like a Convoro database (missing “{$req}”).");
+                throw new \RuntimeException(Src::t('not_source.convoro', ['table' => $req]));
             }
         }
 
@@ -116,7 +116,7 @@ class ConvoroImporter
          * and demanding the 1.x name rejected every Convoro 2 site.
          */
         if (! $sb->hasColumn('posts', $at['postHtml']) || ! $sb->hasColumn('topics', 'is_pinned')) {
-            throw new \RuntimeException("This database has the right table names but not Convoro's columns — is it really a Convoro forum?");
+            throw new \RuntimeException(Src::t('not_source.convoro_columns'));
         }
 
         return ['ok' => true, 'counts' => [
@@ -136,7 +136,7 @@ class ConvoroImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing forums…',
+                'forums',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($at['forums'])->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     if (! $hasTags) {
@@ -167,7 +167,7 @@ class ConvoroImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) self::liveUsers(Src::connect($cfg))->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($at) {
                     $rows = self::liveUsers($ctx->src())->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
@@ -201,7 +201,7 @@ class ConvoroImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table('topics')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
                     $rows = $ctx->src()->table('topics')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
@@ -226,7 +226,7 @@ class ConvoroImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table('posts')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

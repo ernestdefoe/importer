@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Api\Controller;
 
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Runner;
 use Flarum\Http\RequestUtil;
 use Illuminate\Support\Arr;
@@ -19,7 +20,7 @@ class StepController implements RequestHandlerInterface
 
         $runId = (int) Arr::get((array) $request->getParsedBody(), 'runId', 0);
         if (! $runId) {
-            return new JsonResponse(['error' => 'Missing run id.'], 422);
+            return new JsonResponse(['error' => Src::t('missing_run_id')], 422);
         }
 
         try {

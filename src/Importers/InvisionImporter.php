@@ -19,7 +19,7 @@ class InvisionImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['core_members', 'forums_forums', 'forums_topics', 'forums_posts'] as $req) {
             if (! $sb->hasTable($req)) {
-                throw new \RuntimeException("This doesn't look like an Invision Community database (missing “{$req}”).");
+                throw new \RuntimeException(Src::t('not_source.invision', ['table' => $req]));
             }
         }
 
@@ -39,7 +39,7 @@ class InvisionImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table('forums_forums')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     if (! $hasTags) {
@@ -67,7 +67,7 @@ class InvisionImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table('core_members')->where('member_id', '>', 0)->count(),
                 function ($cursor, $limit, Ctx $ctx) {
                     $rows = $ctx->src()->table('core_members')->where('member_id', '>', (int) $cursor)->orderBy('member_id')->limit($limit)->get();
@@ -97,7 +97,7 @@ class InvisionImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table('forums_topics')->where('approved', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     $rows = $ctx->src()->table('forums_topics')->where('approved', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
@@ -125,7 +125,7 @@ class InvisionImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table('forums_posts')->where('queued', 0)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

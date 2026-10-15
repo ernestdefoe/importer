@@ -30,7 +30,7 @@ class VbulletinImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['user', 'thread', 'post', 'forum'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like a vBulletin database (missing “{$p}{$req}”). Check the table prefix.");
+                throw new \RuntimeException(Src::t('not_source.vbulletin', ['table' => $p.$req]));
             }
         }
 
@@ -54,7 +54,7 @@ class VbulletinImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -76,7 +76,7 @@ class VbulletinImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
@@ -107,7 +107,7 @@ class VbulletinImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table($p.'thread')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'thread')->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
@@ -135,7 +135,7 @@ class VbulletinImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table($p.'post')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

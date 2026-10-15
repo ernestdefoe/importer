@@ -15,6 +15,9 @@ import {
 
 declare const m: any;
 const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importer.admin.' + k, p);
+// Row-count keys the server sends (test counts + import summary); anything else shows as-is.
+const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped'];
+const countLabel = (k: string): any => (COUNTS.includes(k) ? t('count.' + k) : k);
 
 interface Source {
   label: string;
@@ -277,7 +280,7 @@ export default class ImporterPage extends Component {
       m('strong', t('test_ok')),
       m(
         '.ImporterPage-counts',
-        Object.keys(counts).map((k) => m('span.ImporterPage-count', [m('b', counts[k].toLocaleString()), ' ', k]))
+        Object.keys(counts).map((k) => m('span.ImporterPage-count', [m('b', counts[k].toLocaleString()), ' ', countLabel(k)]))
       ),
     ]);
   }
@@ -295,7 +298,7 @@ export default class ImporterPage extends Component {
       Object.keys(summary).length > 0 &&
         m(
           '.ImporterPage-counts',
-          Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', k]))
+          Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', countLabel(k)]))
         ),
       this.status.lastStatus && m('p.helpText', this.status.lastStatus),
       (done || failed) && m('.ImporterPage-actions', [m(Button, { className: 'Button', onclick: () => this.reset() }, t('import_another'))]),

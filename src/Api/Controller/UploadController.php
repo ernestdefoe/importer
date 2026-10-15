@@ -4,6 +4,7 @@ namespace ErnestDefoe\Importer\Api\Controller;
 
 use ErnestDefoe\Importer\Importers\MysqlDumpToSqlite;
 use ErnestDefoe\Importer\Importers\Registry;
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
 use Flarum\Http\RequestUtil;
 use Illuminate\Support\Arr;
@@ -35,23 +36,22 @@ class UploadController implements RequestHandlerInterface
         $source = (string) Arr::get($body, 'source', '');
         $importer = Registry::get($source);
         if (! $importer) {
-            return new JsonResponse(['ok' => false, 'error' => 'Unknown import source.'], 422);
+            return new JsonResponse(['ok' => false, 'error' => Src::t('unknown_source')], 422);
         }
 
         $file = Arr::get($request->getUploadedFiles(), 'file');
         if (! $file || $file->getError() !== UPLOAD_ERR_OK) {
-            return new JsonResponse(['ok' => false, 'error' => 'No file was uploaded (or it exceeded the server upload limit).'], 422);
+            return new JsonResponse(['ok' => false, 'error' => Src::t('upload.no_file')], 422);
         }
 
         $size = (int) $file->getSize();
         if ($size > self::MAX_BYTES) {
             return new JsonResponse([
                 'ok' => false,
-                'error' => sprintf(
-                    'That file is %s — the limit is %s. Gzip the dump (.sql.gz) or import from a live database connection instead.',
-                    self::humanBytes($size),
-                    self::humanBytes(self::MAX_BYTES)
-                ),
+                'error' => Src::t('upload.too_large', [
+                    'size' => self::humanBytes($size),
+                    'limit' => self::humanBytes(self::MAX_BYTES),
+                ]),
             ], 422);
         }
 
@@ -77,7 +77,7 @@ class UploadController implements RequestHandlerInterface
                 @unlink($tmp);
             }
         } catch (\Throwable $e) {
-            return new JsonResponse(['ok' => false, 'error' => 'Could not read that file: '.$e->getMessage()], 422);
+            return new JsonResponse(['ok' => false, 'error' => Src::t('upload.unreadable', ['error' => $e->getMessage()])], 422);
         }
 
         $cfg = Upload::resolve(['file' => $sqliteName, 'prefix' => (string) Arr::get($body, 'prefix', '')]);
@@ -87,18 +87,17 @@ class UploadController implements RequestHandlerInterface
         } catch (\Throwable $e) {
             @unlink($sqlitePath);
 
-            return new JsonResponse(['ok' => false, 'error' => "File loaded, but it doesn't look like a {$source} database: ".$e->getMessage()], 422);
+            return new JsonResponse(['ok' => false, 'error' => Src::t('upload.wrong_source', ['source' => $source, 'error' => $e->getMessage()])], 422);
         }
 
         // A dump can parse "successfully" while individual row-batches were
         // unusable — say so rather than letting the admin discover missing
         // content after the import finishes.
         if ($conversion && ($conversion['skipped'] ?? 0) > 0) {
-            $res['warning'] = sprintf(
-                '%d of %d row batches in this dump could not be read and were skipped, so some content may be missing. Importing from a live database connection avoids this.',
-                $conversion['skipped'],
-                $conversion['skipped'] + $conversion['rows']
-            );
+            $res['warning'] = Src::t('upload.skipped_batches', [
+                'skipped' => $conversion['skipped'],
+                'total' => $conversion['skipped'] + $conversion['rows'],
+            ]);
         }
 
         return new JsonResponse($res + ['handle' => $sqliteName]);
@@ -122,7 +121,7 @@ class UploadController implements RequestHandlerInterface
         }
 
         if ($head === '') {
-            return 'That file is empty.';
+            return Src::t('upload.empty');
         }
         // SQLite database, or gzip (a .sql.gz dump).
         if (str_starts_with($head, "SQLite format 3\0") || str_starts_with($head, "\x1f\x8b")) {
@@ -134,7 +133,7 @@ class UploadController implements RequestHandlerInterface
             return null;
         }
         if (str_contains($head, "\0")) {
-            return 'That file doesn\'t look like a database dump — it appears to be binary. Upload a .sql, .sql.gz or SQLite file.';
+            return Src::t('upload.binary');
         }
 
         return null; // text of some other shape — let the parser decide

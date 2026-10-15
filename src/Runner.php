@@ -5,6 +5,7 @@ namespace ErnestDefoe\Importer;
 use ErnestDefoe\Importer\Importers\Ctx;
 use ErnestDefoe\Importer\Importers\Dst;
 use ErnestDefoe\Importer\Importers\Registry;
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
 use Illuminate\Support\Carbon;
 
@@ -24,7 +25,7 @@ class Runner
     {
         $importer = Registry::get($source);
         if (! $importer) {
-            throw new \RuntimeException('Unknown import source.');
+            throw new \RuntimeException(Src::t('unknown_source'));
         }
         $cfg = Upload::resolve($cfg); // an uploaded-dump run carries a {file} handle → sqlite
         Dst::reset();
@@ -45,7 +46,7 @@ class Runner
             'grandTotal' => $grand,
             'processed' => 0,
             'summary' => [],
-            'phaseLabel' => $phases[0]->label ?? 'Starting…',
+            'phaseLabel' => $phases[0]->label ?? Src::t('starting'),
         ];
 
         $id = (int) Dst::db()->table('importer_runs')->insertGetId([
@@ -77,7 +78,7 @@ class Runner
     {
         $run = Dst::db()->table('importer_runs')->where('id', $runId)->first();
         if (! $run) {
-            throw new \RuntimeException('Import run not found.');
+            throw new \RuntimeException(Src::t('run_not_found'));
         }
         if ($run->status !== 'running') {
             return self::progress($runId, json_decode($run->state, true) ?: [], $run->status, $run->error);
@@ -106,7 +107,7 @@ class Runner
             $state = json_decode($run->state, true) ?: [];
             $importer = Registry::get($run->source);
             if (! $importer) {
-                return self::finishFailed($runId, $state, 'Unknown import source.');
+                return self::finishFailed($runId, $state, Src::t('unknown_source'));
             }
 
             Dst::reset();
@@ -209,16 +210,17 @@ class Runner
             'done' => $status === 'done',
             'failed' => $status === 'failed',
             'percent' => $pct,
-            'status' => $status === 'failed' ? ('Import failed: '.$error) : ($status === 'done' ? 'Import complete.' : ($state['phaseLabel'] ?? 'Working…')),
+            'status' => $status === 'failed' ? Src::t('failed', ['error' => $error]) : ($status === 'done' ? Src::t('complete') : ($state['phaseLabel'] ?? Src::t('working'))),
             'summary' => $summary,
             'source' => null,
-            'lastStatus' => $status === 'done' ? self::summaryLine($summary) : ($status === 'failed' ? ('Import failed: '.$error) : null),
+            'lastStatus' => $status === 'done' ? self::summaryLine($summary) : ($status === 'failed' ? Src::t('failed', ['error' => $error]) : null),
         ];
     }
 
     private static function summaryLine(array $s): string
     {
-        return 'Imported '.($s['topics'] ?? 0).' discussions, '.($s['posts'] ?? 0).' posts, '
-            .($s['users'] ?? 0).' members'.(isset($s['categories']) ? ', '.$s['categories'].' tags' : '').'.';
+        $params = ['topics' => $s['topics'] ?? 0, 'posts' => $s['posts'] ?? 0, 'users' => $s['users'] ?? 0, 'categories' => $s['categories'] ?? 0];
+
+        return Src::t(isset($s['categories']) ? 'summary_with_tags' : 'summary', $params);
     }
 }

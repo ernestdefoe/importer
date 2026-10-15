@@ -16,7 +16,7 @@ class XenForoImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['xf_user', 'xf_thread', 'xf_post'] as $req) {
             if (! $sb->hasTable($req)) {
-                throw new \RuntimeException("This doesn't look like a XenForo database (missing “{$req}”).");
+                throw new \RuntimeException(Src::t('not_source.xenforo', ['table' => $req]));
             }
         }
 
@@ -36,7 +36,7 @@ class XenForoImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => ($hasTags && Src::connect($cfg)->getSchemaBuilder()->hasTable('xf_node')) ? (int) Src::connect($cfg)->table('xf_node')->where('node_type_id', 'Forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     if (! $hasTags || ! $ctx->src()->getSchemaBuilder()->hasTable('xf_node')) {
@@ -58,7 +58,7 @@ class XenForoImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table('xf_user')->count(),
                 function ($cursor, $limit, Ctx $ctx) {
                     $conn = $ctx->src();
@@ -107,7 +107,7 @@ class XenForoImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table('xf_thread')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     $rows = $ctx->src()->table('xf_thread')->where('thread_id', '>', (int) $cursor)->orderBy('thread_id')->limit($limit)->get();
@@ -135,7 +135,7 @@ class XenForoImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table('xf_post')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

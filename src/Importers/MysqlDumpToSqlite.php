@@ -45,14 +45,14 @@ class MysqlDumpToSqlite
     {
         $in = self::open($dumpPath);
         if (! $in) {
-            throw new \RuntimeException('Could not open the uploaded dump.');
+            throw new \RuntimeException(Src::t('dump_unreadable'));
         }
 
         @unlink($sqlitePath);
         // Laravel's SQLite connector refuses to open a path that doesn't exist
         // (unlike a bare PDO DSN, which creates it), so seed an empty file first.
         if (@touch($sqlitePath) === false) {
-            throw new \RuntimeException('Could not create a scratch database at '.$sqlitePath);
+            throw new \RuntimeException(Src::t('scratch_failed', ['path' => $sqlitePath]));
         }
 
         // Go through Flarum's DatabaseManager rather than a bare PDO handle, so

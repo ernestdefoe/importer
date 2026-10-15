@@ -11,7 +11,7 @@ class Phase
 {
     /**
      * @param  string  $key      stable identifier (users, topics, posts…)
-     * @param  string  $label    human label for the progress bar
+     * @param  string  $label    `api.phase.*` key of the progress-bar label (translated here)
      * @param  \Closure  $count   fn(): int — total source rows (for the % bar)
      * @param  \Closure  $batch   fn(mixed $cursor, int $limit, Ctx $ctx): array
      *                            returns ['cursor'=>mixed, 'processed'=>int, 'done'=>bool, 'summary'=>array<string,int>]
@@ -22,5 +22,6 @@ class Phase
         public \Closure $count,
         public \Closure $batch,
     ) {
+        $this->label = Src::t('phase.'.$label);
     }
 }

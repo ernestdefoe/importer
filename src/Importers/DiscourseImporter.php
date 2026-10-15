@@ -23,7 +23,7 @@ class DiscourseImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['users', 'topics', 'posts', 'categories'] as $req) {
             if (! $sb->hasTable($req)) {
-                throw new \RuntimeException("This doesn't look like a Discourse database (missing “{$req}”). Discourse uses PostgreSQL.");
+                throw new \RuntimeException(Src::t('not_source.discourse', ['table' => $req]));
             }
         }
 
@@ -44,7 +44,7 @@ class DiscourseImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table('categories')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     if (! $hasTags) {
@@ -66,7 +66,7 @@ class DiscourseImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table('users')->where('id', '>', 0)->count(),
                 function ($cursor, $limit, Ctx $ctx) {
                     $conn = $ctx->src();
@@ -106,7 +106,7 @@ class DiscourseImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
                     $rows = $ctx->src()->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')
@@ -132,7 +132,7 @@ class DiscourseImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table('posts')->whereNull('deleted_at')->where('post_type', 1)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Api\Controller;
 
 use ErnestDefoe\Importer\Importers\Registry;
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Runner;
 use Flarum\Http\RequestUtil;
 use Illuminate\Support\Arr;
@@ -23,7 +24,7 @@ class StartImportController implements RequestHandlerInterface
         $cfg = (array) Arr::get($body, 'config', []);
 
         if (! Registry::get($source)) {
-            return new JsonResponse(['error' => 'Unknown import source.'], 422);
+            return new JsonResponse(['error' => Src::t('unknown_source')], 422);
         }
 
         try {

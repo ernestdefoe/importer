@@ -35,7 +35,7 @@ class SmfImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['members', 'boards', 'topics', 'messages'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like an SMF database (missing “{$p}{$req}”). Check the table prefix.");
+                throw new \RuntimeException(Src::t('not_source.smf', ['table' => $p.$req]));
             }
         }
 
@@ -56,7 +56,7 @@ class SmfImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing boards…',
+                'boards',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'boards')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -82,7 +82,7 @@ class SmfImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'members')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'members')->where('id_member', '>', (int) $cursor)->orderBy('id_member')->limit($limit)->get();
@@ -114,7 +114,7 @@ class SmfImporter
             // SMF topics carry no title — it lives on the first message.
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table($p.'topics')->where('approved', 1)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
@@ -150,7 +150,7 @@ class SmfImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table($p.'messages')->where('approved', 1)->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

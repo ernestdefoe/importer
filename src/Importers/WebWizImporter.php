@@ -121,19 +121,14 @@ class WebWizImporter
 
         foreach (['Author', 'Forum', 'Topic', 'Thread'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException(
-                    "This doesn't look like a Web Wiz Forums database (missing “{$p}{$req}”). Check the table prefix — Web Wiz ships tables as tblAuthor, tblForum, tblTopic, tblThread."
-                );
+                throw new \RuntimeException(Src::t('not_source.webwiz', ['table' => $p.$req]));
             }
         }
 
         ['cols' => $cols, 'missing' => $missing] = self::schema($cfg);
 
         if ($missing !== []) {
-            throw new \RuntimeException(
-                'Found the Web Wiz tables, but could not identify these columns: '.implode(', ', $missing)
-                .'. This is likely a Web Wiz version with a different schema — send the output of a column listing for tblAuthor/tblForum/tblTopic/tblThread so the mapping can be extended.'
-            );
+            throw new \RuntimeException(Src::t('not_source.webwiz_columns', ['columns' => implode(', ', $missing)]));
         }
 
         return [
@@ -159,7 +154,7 @@ class WebWizImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing forums…',
+                'forums',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Forum')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
                     if (! $hasTags) {
@@ -191,7 +186,7 @@ class WebWizImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'Author')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $c) {
                     $rows = $ctx->src()->table($p.'Author')
@@ -229,7 +224,7 @@ class WebWizImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table($p.'Topic')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
                     $rows = $ctx->src()->table($p.'Topic')
@@ -270,7 +265,7 @@ class WebWizImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table($p.'Thread')->count(),
                 fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
                     $cursor,

@@ -53,7 +53,7 @@ class Vbulletin5Importer
         $sb = $conn->getSchemaBuilder();
         foreach (['node', 'text', 'contenttype', 'user'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like a vBulletin 5 database (missing “{$p}{$req}”).");
+                throw new \RuntimeException(Src::t('not_source.vbulletin5', ['table' => $p.$req]));
             }
         }
         [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
@@ -78,7 +78,7 @@ class Vbulletin5Importer
         return array_merge([
             new Phase(
                 'tags',
-                'Importing channels…',
+                'channels',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -106,7 +106,7 @@ class Vbulletin5Importer
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
@@ -141,7 +141,7 @@ class Vbulletin5Importer
             // text row is the discussion's first post (#1).
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
@@ -186,7 +186,7 @@ class Vbulletin5Importer
             // They continue each discussion's numbering after the starter (#1).
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();

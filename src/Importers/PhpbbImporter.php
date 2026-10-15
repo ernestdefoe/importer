@@ -20,7 +20,7 @@ class PhpbbImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['users', 'forums', 'topics', 'posts'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like a phpBB database (missing “{$p}{$req}”). Check the table prefix.");
+                throw new \RuntimeException(Src::t('not_source.phpbb', ['table' => $p.$req]));
             }
         }
 
@@ -41,7 +41,7 @@ class PhpbbImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -68,7 +68,7 @@ class PhpbbImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
@@ -98,7 +98,7 @@ class PhpbbImporter
 
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) Src::connect($cfg)->table($p.'topics')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
@@ -128,7 +128,7 @@ class PhpbbImporter
 
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $sb = $ctx->src()->getSchemaBuilder();

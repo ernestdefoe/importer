@@ -15,7 +15,7 @@ class Phases
         return [
             new Phase(
                 'counts-users',
-                'Updating member counts…',
+                'member_counts',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) {
                     $db = Dst::db();
@@ -50,7 +50,7 @@ class Phases
             ),
             new Phase(
                 'counts-tags',
-                'Finishing up…',
+                'finishing',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) {
                     if (Dst::hasTags()) {

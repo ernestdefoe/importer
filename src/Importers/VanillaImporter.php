@@ -22,7 +22,7 @@ class VanillaImporter
         $sb = $conn->getSchemaBuilder();
         foreach (['User', 'Category', 'Discussion', 'Comment'] as $req) {
             if (! $sb->hasTable($p.$req)) {
-                throw new \RuntimeException("This doesn't look like a Vanilla database (missing “{$p}{$req}”). Check the table prefix.");
+                throw new \RuntimeException(Src::t('not_source.vanilla', ['table' => $p.$req]));
             }
         }
 
@@ -43,7 +43,7 @@ class VanillaImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'Category')->where('CategoryID', '>', 0)->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -67,7 +67,7 @@ class VanillaImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
@@ -100,7 +100,7 @@ class VanillaImporter
             // Discussion → topic; its own Body is the first post (#1).
             new Phase(
                 'topics',
-                'Importing discussions…',
+                'discussions',
                 fn () => (int) Src::connect($cfg)->table($p.'Discussion')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
@@ -130,7 +130,7 @@ class VanillaImporter
             // Comments → replies, continuing each discussion's numbering after #1.
             new Phase(
                 'posts',
-                'Importing comments…',
+                'comments',
                 fn () => (int) Src::connect($cfg)->table($p.'Comment')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];

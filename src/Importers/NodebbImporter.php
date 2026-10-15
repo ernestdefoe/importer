@@ -24,13 +24,13 @@ class NodebbImporter
     private static function redis(array $cfg): \Redis
     {
         if (! class_exists(\Redis::class)) {
-            throw new \RuntimeException('Importing from NodeBB requires the PHP “redis” (phpredis) extension on the server.');
+            throw new \RuntimeException(Src::t('nodebb.no_extension'));
         }
         $host = ($cfg['host'] ?? '') ?: '127.0.0.1';
         $port = (int) (($cfg['port'] ?? 0) ?: 6379);
         $r = new \Redis;
         if (! @$r->connect($host, $port, 3.0)) {
-            throw new \RuntimeException("Could not connect to the NodeBB Redis server at {$host}:{$port}.");
+            throw new \RuntimeException(Src::t('nodebb.no_connect', ['host' => $host, 'port' => $port]));
         }
         if (($cfg['password'] ?? '') !== '') {
             $r->auth($cfg['password']);
@@ -57,7 +57,7 @@ class NodebbImporter
     {
         $r = self::redis($cfg);
         if (! $r->exists('global') && ! $r->exists('categories:cid')) {
-            throw new \RuntimeException("This doesn't look like a NodeBB Redis store (no “global” or “categories:cid” key). Check the host, port and database number.");
+            throw new \RuntimeException(Src::t('not_source.nodebb'));
         }
 
         return ['ok' => true, 'counts' => [
@@ -76,7 +76,7 @@ class NodebbImporter
         return array_merge([
             new Phase(
                 'tags',
-                'Importing categories…',
+                'categories',
                 fn () => $hasTags ? (int) self::redis($cfg)->zCard('categories:cid') : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($cfg, $hasTags) {
                     if (! $hasTags) {
@@ -104,7 +104,7 @@ class NodebbImporter
 
             new Phase(
                 'users',
-                'Importing members…',
+                'members',
                 fn () => (int) self::redis($cfg)->zCard('users:joindate'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg) {
                     $r = self::redis($cfg);
@@ -138,7 +138,7 @@ class NodebbImporter
             // finalised here so their counts are right.
             new Phase(
                 'topics',
-                'Importing topics…',
+                'topics',
                 fn () => (int) self::redis($cfg)->zCard('topics:tid'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg, $hasTags) {
                     $r = self::redis($cfg);
@@ -191,7 +191,7 @@ class NodebbImporter
             // Replies: every post except the ones already imported as a topic's first post.
             new Phase(
                 'posts',
-                'Importing posts…',
+                'posts',
                 fn () => (int) self::redis($cfg)->zCard('posts:pid'),
                 function ($cursor, $limit, Ctx $ctx) use ($cfg) {
                     $r = self::redis($cfg);

@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Api\Controller;
 
 use ErnestDefoe\Importer\Importers\Registry;
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
 use Flarum\Http\RequestUtil;
 use Illuminate\Support\Arr;
@@ -31,7 +32,7 @@ class TestConnectionController implements RequestHandlerInterface
             return new JsonResponse($importer::test($cfg));
         } catch (\Throwable $e) {
             // 200 with ok=false so the wizard shows the message inline.
-            return new JsonResponse(['ok' => false, 'error' => $e->getMessage()]);
+            return new JsonResponse(['ok' => false, 'error' => Src::explain($e)]);
         }
     }
 }

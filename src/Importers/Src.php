@@ -91,6 +91,28 @@ class Src
         return $db->connection(self::CONN);
     }
 
+    /**
+     * Turn the PDO errors people actually hit when pointing at a remote source
+     * database into the fix, keeping the driver's own text on the end. Anything
+     * else passes through unchanged.
+     */
+    public static function explain(\Throwable $e): string
+    {
+        $msg = $e->getMessage();
+        $hint = match (true) {
+            str_contains($msg, '[2002]') && stripos($msg, 'timed out') !== false => 'This server could not reach the source database at all: the connection timed out. '
+                .'The source MySQL server is not accepting connections from this server — usually a firewall blocking port 3306, MySQL listening on 127.0.0.1 only (bind-address), '
+                .'or the host not allowing remote MySQL (on cPanel, add this server\'s IP under Remote MySQL). '
+                .'If you cannot open it up, upload a dump instead, or load the dump into a database on this server and connect to 127.0.0.1.',
+            str_contains($msg, '[2002]') => 'Nothing answered at that host and port. Check the host and port, and that the database server is running and reachable from this server.',
+            str_contains($msg, '[1130]') => 'The source database refused this server\'s address. Grant the database user access from this server\'s IP (not just localhost).',
+            str_contains($msg, '[1045]') => 'The source database rejected the username or password. If they are right, the user may only be allowed to connect from localhost.',
+            default => null,
+        };
+
+        return $hint ? $hint.' ('.rtrim(strtok($msg, '(')).')' : $msg;
+    }
+
     public static function color(?string $c): string
     {
         $c = trim((string) $c);

@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Console;
 
 use ErnestDefoe\Importer\Importers\Registry;
+use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Runner;
 use Flarum\Console\AbstractCommand;
 use Symfony\Component\Console\Input\InputOption;
@@ -96,7 +97,7 @@ class RunImportCommand extends AbstractCommand
 
             return 1;
         } catch (\Throwable $e) {
-            $this->error('Import failed: '.$e->getMessage());
+            $this->error('Import failed: '.Src::explain($e));
 
             return 1;
         }

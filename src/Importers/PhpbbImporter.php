@@ -145,7 +145,7 @@ class PhpbbImporter
                             ->orderBy('topic_id')->orderBy('post_id')->limit($lim)->get(),
                         fn ($post) => [
                             'tid' => (int) $post->topic_id, 'pid' => (int) $post->post_id, 'uid' => $post->poster_id,
-                            'html' => Bbcode::toHtml($post->post_text ?? '', ['uid' => (string) ($post->bbcode_uid ?? ''), 'escaped' => true]),
+                            'html' => Bbcode::phpbb($post->post_text ?? '', (string) ($post->bbcode_uid ?? '')),
                             'at' => Src::ts($post->post_time ?? null),
                             'ok' => ! ($visCol && (int) ($post->$visCol ?? 1) !== 1),
                         ]

@@ -69,6 +69,14 @@ php flarum importer:run --source=phpbb \
 # add --test to only check the connection and show counts
 ```
 
+- Imported with 0.3.6 or earlier and see `<!-- m --><a class="postlink" …>` in old phpBB posts, or `&amp;` / `&lt;` where `&` and `<` should be? Repair them in place — the old board is not needed:
+
+```bash
+php flarum importer:repair-text --dry-run   # counts + a preview, saves nothing
+php flarum importer:repair-text             # chunked, safe to run twice
+# add --all if the import was reset in the wizard (only phpBB 3.0 markup is repaired then)
+```
+
 ## Support
 
 - **Support forum:** [Importer on ernestdefoe.online](https://ernestdefoe.online/d/75)

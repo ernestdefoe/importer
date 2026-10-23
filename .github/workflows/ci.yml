@@ -30,7 +30,7 @@ jobs:
         run: composer validate --strict
 
   plain-php:
-    name: URL patterns + safe fetch
+    name: URL patterns + safe fetch + post text
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,9 @@ jobs:
 
       - name: Safe fetch
         run: php tests/safe_fetch.php
+
+      - name: Post text (phpBB 3.0/3.2 conversion, Markdown repair)
+        run: php tests/post_text.php
 
   js:
     name: JS bundle

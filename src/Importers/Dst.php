@@ -65,7 +65,7 @@ class Dst
     /** Convert an HTML body into Flarum's stored (parsed) content form. */
     public static function content(string $html): string
     {
-        $md = trim(self::html()->convert($html !== '' ? $html : ' '));
+        $md = trim(PostText::fixEntities(self::html()->convert($html !== '' ? $html : ' ')));
         if ($md === '') {
             $md = '​'; // zero-width space so the post isn't empty
         }
@@ -74,7 +74,7 @@ class Dst
             return self::formatter()->parse($md, null);
         } catch (\Throwable) {
             // Never let one weird post kill the run — fall back to plain text.
-            return self::formatter()->parse(strip_tags($html) ?: '​', null);
+            return self::formatter()->parse(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8') ?: '​', null);
         }
     }
 

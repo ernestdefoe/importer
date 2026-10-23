@@ -8,6 +8,7 @@
  */
 
 use ErnestDefoe\Importer\Api\Controller;
+use ErnestDefoe\Importer\Console\RepairTextCommand;
 use ErnestDefoe\Importer\Console\RunImportCommand;
 use ErnestDefoe\Importer\Redirects;
 use Flarum\Extend;
@@ -20,7 +21,8 @@ return [
     new Extend\Locales(__DIR__.'/resources/locale'),
 
     (new Extend\Console())
-        ->command(RunImportCommand::class),
+        ->command(RunImportCommand::class)
+        ->command(RepairTextCommand::class),
 
     /*
      * 🚨 Old addresses, 301'd to where the content went.

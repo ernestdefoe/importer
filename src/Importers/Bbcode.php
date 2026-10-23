@@ -38,7 +38,8 @@ class Bbcode
         $codes = [];
         $t = preg_replace_callback('#\[code(?:=[^\]]*)?\](.*?)\[/code\]#is', function ($m) use (&$codes) {
             $key = '@@CODE'.count($codes).'@@';
-            $codes[$key] = '<pre><code>'.trim($m[1]).'</code></pre>';
+            // phpBB and SMF store indentation as &nbsp;, which decodes to U+00A0.
+            $codes[$key] = '<pre><code>'.str_replace("\u{00A0}", ' ', trim($m[1])).'</code></pre>';
 
             return $key;
         }, $t);
@@ -93,6 +94,64 @@ class Bbcode
         $t = strtr($t, $codes);
 
         return self::paragraphs($t);
+    }
+
+    /**
+     * phpBB post_text, whichever of its two storage formats a row is in.
+     *
+     * 3.2+ stores s9e XML (`<r>…</r>` / `<t>…</t>`) whose markers keep the
+     * original BBCode, so stripping the tags and decoding once IS the source —
+     * that is phpBB's own unparser.
+     *
+     * 3.0/3.1 (and old posts on a 3.2+ board that were never reparsed) store
+     * the user's text HTML-escaped with `[b:uid]` tags, plus REAL markup phpBB
+     * inserted itself: magic links in `<!-- m -->` comments, smilies as `<img>`,
+     * `[code=php]` highlighting spans. That markup is rewritten to BBCode while
+     * the text is still escaped — so nothing the member typed can be mistaken
+     * for it — and the text is then decoded exactly once.
+     */
+    public static function phpbb(?string $text, string $uid = ''): string
+    {
+        $text = (string) $text;
+        if (preg_match('#^\s*<([rt])[\s>].*</\1>\s*$#s', $text)) {
+            return self::toHtml(html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+        }
+
+        return self::toHtml(self::phpbbLegacy($text, $uid), ['escaped' => true]);
+    }
+
+    /** phpBB 3.0 markup → BBCode, leaving the escaped text escaped. */
+    public static function phpbbLegacy(string $text, string $uid = ''): string
+    {
+        if ($uid !== '') {
+            $text = str_replace(':'.$uid, '', $text);
+        }
+        // The list closers carry a type suffix as well as the uid.
+        $text = str_replace(['[/*:m]', '[/list:u]', '[/list:o]'], ['', '[/list]', '[/list]'], $text);
+
+        // Magic, local and www links, and e-mail addresses.
+        $text = preg_replace_callback('#<a\s[^>]*?href="([^"]*)"[^>]*>(.*?)</a>#is', function ($m) {
+            [$href, $label] = [$m[1], strip_tags($m[2])];
+            if (stripos($href, 'mailto:') === 0) {
+                return $label;
+            }
+            $href = str_replace(['[', ']'], ['%5B', '%5D'], $href);
+            // phpBB shortens a long address's label to "start ... end".
+            if ($label === $href || str_contains($label, ' ... ') || $label === '') {
+                return '[url]'.$href.'[/url]';
+            }
+
+            return '[url='.$href.']'.$label.'[/url]';
+        }, $text) ?? $text;
+
+        $text = preg_replace([
+            '#<img\s[^>]*?alt="([^"]*)"[^>]*>#i', // smilies → their code, which flarum/emoji turns back into an emoji
+            '#<br\s*/?>#i',
+            '#<!--.*?-->#s',
+            '#</?[a-z][^>]*>#i',                    // anything else phpBB inserted
+        ], ['$1', "\n", '', ''], $text) ?? $text;
+
+        return $text;
     }
 
     private static function link(string $href, string $text): string

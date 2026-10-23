@@ -56,7 +56,8 @@
   "require-dev": {
     "flarum/phpstan": "^2.0",
     "flarum/tags": "^2.0",
-    "flarum/testing": "^2.0"
+    "flarum/testing": "^2.0",
+    "flarum/markdown": "^2.0"
   },
   "scripts": {
     "test": [

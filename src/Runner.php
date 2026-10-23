@@ -47,6 +47,8 @@ class Runner
             'processed' => 0,
             'summary' => [],
             'phaseLabel' => $phases[0]->label ?? Src::t('starting'),
+            // Text written by the 0.3.7 converter: importer:repair-text skips it.
+            'textFixed' => true,
         ];
 
         $id = (int) Dst::db()->table('importer_runs')->insertGetId([

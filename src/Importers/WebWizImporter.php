@@ -279,12 +279,24 @@ class WebWizImporter
                         'tid' => (int) $post->{$c['thread_topic']},
                         'pid' => (int) $post->{$c['thread_id']},
                         'uid' => $c['thread_author'] ? $post->{$c['thread_author']} : null,
-                        'html' => Bbcode::toHtml((string) ($post->{$c['thread_body']} ?? '')),
+                        'html' => self::body((string) ($post->{$c['thread_body']} ?? '')),
                         'at' => $c['thread_date'] ? Src::ts($post->{$c['thread_date']} ?? null) : null,
                         'ok' => true,
                     ]
                 )
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Web Wiz saves a post as the HTML its editor produced, not as BBCode, so
+     * escaping it as text put every <br /> and <strong> on the page. Older
+     * rows can still be BBCode.
+     */
+    private static function body(string $body): string
+    {
+        return preg_match('#<(?:br|p|div|span|strong|b|i|em|u|a|img|font|blockquote|ul|ol|li|table)\b#i', $body)
+            ? Src::sanitizeHtml($body)
+            : Bbcode::toHtml($body);
     }
 }

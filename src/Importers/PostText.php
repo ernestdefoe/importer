@@ -81,6 +81,73 @@ class PostText
         return $md;
     }
 
+    /**
+     * A tag of phpBB 3.2+'s stored XML, as it shows in a post imported before
+     * 0.3.7: escaped as `&lt;…&gt;`, or as `\<…\>` once repair-text's
+     * fixEntities() had been over it. Uppercase names are BBCodes (B, QUOTE,
+     * URL, LINK_TEXT, E for a smiley…); r/t are the root, s/e the markers
+     * around the original BBCode, i ignored text, br a line break.
+     */
+    private const XML_TAG = '(?:&lt;|\\\\<)/?(?:[A-Z](?:[A-Z0-9]|\\\\?_)*|[rtsei]|br)(?:\s(?:(?!&gt;|\\\\>).)*?)?\s*/?(?:&gt;|\\\\>)';
+
+    /**
+     * Was this post phpBB 3.2+ XML that arrived as visible text?
+     *
+     * 🚨 Before 0.3.7 the XML was escaped into the text, so the page showed
+     * `<r><QUOTE author="Xeno"><s>` around every reply written after a board's
+     * upgrade to 3.2 (Winckle, 2026-10-24: 190 of 207 replies in one thread).
+     * The 0.3.7 repair knew only phpBB 3.0 markup and marked these done.
+     */
+    public static function hasPhpbbXml(string $md): bool
+    {
+        return (bool) preg_match('#^\s*(?:&lt;|\\\\<)([rt])(?:&gt;|\\\\>).*(?:&lt;|\\\\<)/\1(?:&gt;|\\\\>)\s*$#s', $md);
+    }
+
+    /** A cheap test on a post's STORED content, so a rerun unparses only candidates. */
+    public static function mayHoldPhpbbXml(string $content): bool
+    {
+        return str_contains($content, '</HE>r<HE') || str_contains($content, '</HE>t<HE')
+            || str_contains($content, '&lt;</ESC>r<ESC>') || str_contains($content, '&lt;</ESC>t<ESC>');
+    }
+
+    /**
+     * The post without phpBB's XML tags.
+     *
+     * The BBCode inside the markers was already converted along with the text
+     * (`<s>**</s>bold<e>**</e>`, a quote's `> ` lines), so dropping the tags
+     * leaves the post as it was meant to read: what phpBB's own unparser does.
+     * Text the member typed in angle brackets is not an XML tag name and stays.
+     */
+    public static function repairPhpbbXml(string $md, ?callable $wrote = null): string
+    {
+        // Who a quote quotes survives only on its QUOTE tag; hold it in a
+        // placeholder while the tags go, as a fresh import would print it.
+        $cites = [];
+        $md = preg_replace_callback('#(?:&lt;|\\\\<)QUOTE\s((?:(?!&gt;|\\\\>).)*)(?:&gt;|\\\\>)#s', function ($m) use (&$cites) {
+            if (! preg_match('#author=\\\\?"((?:(?!\\\\?").)*)\\\\?"#', $m[1], $a)) {
+                return '';
+            }
+            $name = html_entity_decode(preg_replace('/\\\\(.)/', '$1', $a[1]) ?? $a[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $cites[] = $name;
+
+            return "\x01".(count($cites) - 1)."\x01";
+        }, $md) ?? $md;
+
+        $md = preg_replace('#'.self::XML_TAG.'#s', '', $md) ?? $md;
+
+        if ($cites !== []) {
+            $md = preg_replace_callback("/\x01(\d+)\x01\s*((?:> ?)+)?/", function ($m) use ($cites, $wrote) {
+                $name = self::escape($cites[(int) $m[1]]);
+                $line = '**'.($wrote ? $wrote($name) : $name.' wrote:').'**';
+                $p = $m[2] ?? '';
+
+                return $p === '' ? "\n\n".$line."\n\n" : "\n\n".$p.$line."\n".rtrim($p)."\n".$p;
+            }, $md) ?? $md;
+        }
+
+        return trim(preg_replace("/\n{3,}/", "\n\n", $md) ?? $md);
+    }
+
     /** Does this unparsed post still carry phpBB 3.0 markup or uid leftovers? */
     public static function hasPhpbbLegacy(string $md): bool
     {

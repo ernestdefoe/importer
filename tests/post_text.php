@@ -119,5 +119,50 @@ foreach ([
 }
 $has('no author, plain quote', Bbcode::toHtml('[quote]hi[/quote]'), '<blockquote>hi</blockquote>');
 
+echo "\nphpBB 3.2+ XML imported as text before 0.3.7 (repair-text)\n";
+// What 0.3.6 stored for real phpBB 3.3 rows, before (entities) and after
+// (backslashes) 0.4.1's repair-text ran over it. Produced by the old code.
+$xmlCases = [
+    'quote+smiley (as imported)' => '&lt;r&gt;&lt;QUOTE author="Xeno"&gt;&lt;s&gt;
+
+> &lt;/s&gt;I am liking the stuff I watched but it is early days. Please don\'t fuck this up.&lt;e&gt;
+
+&lt;/e&gt;&lt;/QUOTE&gt;Has a battlefield game ever had a good launch &lt;E&gt;:slol:&lt;/E&gt;&lt;/r&gt;',
+    'quote+smiley (after 0.4.1 repair)' => '\\<r\\>\\<QUOTE author="Xeno"\\>\\<s\\>
+
+> \\</s\\>I am liking the stuff I watched but it is early days. Please don\'t fuck this up.\\<e\\>
+
+\\</e\\>\\</QUOTE\\>Has a battlefield game ever had a good launch \\<E\\>:slol:\\</E\\>\\</r\\>',
+    'link (as imported)' => '&lt;r&gt;Gameplay leaked, yes that\'s BF -&lt;br/&gt;
+&lt;br/&gt;
+&lt;URL url="https://www.reddit.com/r/Battlefield/comments/1j5sugo/5\\_minutes\\_gameplay\\_thoughts/?utm\\_source=share&amp;utm\\_medium=web3x"&gt;&lt;LINK\\_TEXT text="https://www.reddit.com/r/Battlefield/co ... are\\_button"&gt;https://www.reddit.com/r/Battlefield/comments/1j5sugo/5\\_minutes\\_gameplay\\_thoughts/?utm\\_source=share&amp;utm\\_medium=web3x&lt;/LINK\\_TEXT&gt;&lt;/URL&gt;&lt;/r&gt;',
+    'link (after 0.4.1 repair)' => '\\<r\\>Gameplay leaked, yes that\'s BF -\\<br/\\>
+\\<br/\\>
+\\<URL url="https://www.reddit.com/r/Battlefield/comments/1j5sugo/5_minutes_gameplay_thoughts/?utm_source=share&utm_medium=web3x"\\>\\<LINK\\_TEXT text="https://www.reddit.com/r/Battlefield/co ... are\\_button"\\>https://www.reddit.com/r/Battlefield/comments/1j5sugo/5_minutes_gameplay_thoughts/?utm_source=share&utm_medium=web3x\\</LINK\\_TEXT\\>\\</URL\\>\\</r\\>',
+    'bold+plain (as imported)' => '&lt;r&gt;&lt;B&gt;&lt;s&gt;**&lt;/s&gt;Day one patch&lt;e&gt;**&lt;/e&gt;&lt;/B&gt; is 40GB &amp; it\'s &lt;I&gt;&lt;s&gt;*&lt;/s&gt;still&lt;e&gt;*&lt;/e&gt;&lt;/I&gt; broken &lt;sigh&gt;&lt;/r&gt;',
+    'bold+plain (after 0.4.1 repair)' => '\\<r\\>\\<B\\>\\<s\\>**\\</s\\>Day one patch\\<e\\>**\\</e\\>\\</B\\> is 40GB & it\'s \\<I\\>\\<s\\>*\\</s\\>still\\<e\\>*\\</e\\>\\</I\\> broken \\<sigh\\>\\</r\\>',
+    'plain t (as imported)' => '&lt;t&gt;Just plain text with a 5 &lt; 6 &amp; done&lt;/t&gt;',
+    'plain t (after 0.4.1 repair)' => '\\<t\\>Just plain text with a 5 \\< 6 & done\\</t\\>',
+];
+foreach ($xmlCases as $name => $md) {
+    $check("$name: recognised", PostText::hasPhpbbXml($md));
+    $fixed = PostText::fixEntities(PostText::repairPhpbbXml($md));
+    $check("$name: no phpBB tag left", ! preg_match('#(&lt;|\\<)/?(r|t|s|e|E|B|I|QUOTE|URL|LINK\\?_TEXT|br/?)(\s|&gt;|\\>|/)#', $fixed), $fixed);
+    $check("$name: running twice changes nothing", PostText::fixEntities(PostText::repairPhpbbXml($fixed)) === $fixed, $fixed);
+}
+$q = PostText::fixEntities(PostText::repairPhpbbXml($xmlCases['quote+smiley (after 0.4.1 repair)']));
+$has('a quote keeps who it quotes, inside the quote', $q, "> **Xeno wrote:**\n>\n> I am liking");
+$has('the reply after the quote is outside it', $q, "\n\nHas a battlefield game ever had a good launch :slol:");
+$l = PostText::fixEntities(PostText::repairPhpbbXml($xmlCases['link (as imported)']));
+$check('a shortened link becomes its full address, once', substr_count($l, 'https://www.reddit.com') === 1 && str_contains($l, '5_minutes_gameplay_thoughts/?utm_source=share&utm_medium=web3x'), $l);
+$lacks('the shortened label is gone', $l, ' ... ');
+$b = PostText::fixEntities(PostText::repairPhpbbXml($xmlCases['bold+plain (as imported)']));
+$has('bold and italic come back as Markdown', $b, '**Day one patch** is 40GB & it\'s *still* broken');
+$has('angle brackets the member typed stay, as text', $b, '\<sigh\>');
+$check('a translated "wrote:" is used when given', str_contains(PostText::repairPhpbbXml($xmlCases['quote+smiley (as imported)'], fn ($n) => "$n a écrit :"), '**Xeno a écrit :**'));
+foreach (['Ordinary post with <r> in it', '\<r\>no closing root', 'Text about &lt;r&gt; tags &lt;/r&gt; mid-sentence', '<t>raw XML, never escaped</t>'] as $plain) {
+    $check('not phpBB XML: '.$plain, ! PostText::hasPhpbbXml($plain));
+}
+
 echo $fail ? "\n$fail FAILED\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

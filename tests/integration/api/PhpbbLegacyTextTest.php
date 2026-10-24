@@ -124,4 +124,36 @@ class PhpbbLegacyTextTest extends ConsoleTestCase
         $again = $this->runCommand(['command' => 'importer:repair-text']);
         $this->assertStringContainsString('Repaired 0 of 3', $again, 'Idempotent');
     }
+
+    #[Test]
+    public function the_repair_command_fixes_phpbb_xml_posts_an_earlier_repair_marked_done()
+    {
+        $this->runCommand(['command' => 'importer:run', '--source' => 'phpbb', '--driver' => 'sqlite', '--database' => $this->source, '--prefix' => 'phpbb_']);
+        $db = $this->database();
+        $f = $this->app()->getContainer()->make(Formatter::class);
+
+        // What 0.3.6 stored for a phpBB 3.3 reply, after 0.4.1's repair-text had
+        // turned its entities into backslashes and marked it done (Winckle's board).
+        $old = '\<r\>\<QUOTE author="Xeno"\>\<s\>'."\n\n".'> \</s\>Early days. Please don\'t mess this up.\<e\>'."\n\n".'\</e\>\</QUOTE\>Has a launch ever gone well \<E\>:slol:\</E\> \<B\>\<s\>**\</s\>never\<e\>**\</e\>\</B\> \<sigh\>\</r\>';
+        $s9e = $db->table('posts')->orderBy('number')->skip(1)->value('id');
+        $db->table('posts')->where('id', $s9e)->update(['content' => $f->parse($old, null)]);
+        $db->table('importer_runs')->update(['state' => '{}']);
+        foreach ($db->table('posts')->pluck('id') as $id) {
+            $db->table('importer_map')->insert(['run_id' => 0, 'kind' => 'text-repaired', 'source_id' => (string) $id, 'target_id' => $id]);
+        }
+        $other = $db->table('posts')->orderBy('number')->value('content');
+
+        $out = $this->runCommand(['command' => 'importer:repair-text']);
+        $this->assertStringContainsString('Repaired 1 of', $out);
+
+        $html = $f->render($db->table('posts')->where('id', $s9e)->value('content'), null);
+        $this->assertStringContainsString('<blockquote><p><strong>Xeno wrote:</strong></p>', $html);
+        $this->assertStringContainsString('Early days. Please don\'t mess this up.</p></blockquote>', $html);
+        $this->assertStringContainsString('Has a launch ever gone well :slol: <strong>never</strong> &lt;sigh&gt;', $html);
+        $this->assertDoesNotMatchRegularExpression('#&lt;/?(r|s|e|E|B|QUOTE)(&gt;|\s)#', $html, $html);
+        $this->assertSame($other, $db->table('posts')->orderBy('number')->value('content'), 'A done post with no XML is not touched');
+
+        $again = $this->runCommand(['command' => 'importer:repair-text']);
+        $this->assertStringContainsString('Repaired 0 of', $again, 'Idempotent');
+    }
 }

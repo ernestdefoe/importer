@@ -20,7 +20,7 @@ class Vbulletin5Importer
     private static function typeIds(ConnectionInterface $conn, string $p): array
     {
         $channel = $text = [];
-        foreach ($conn->table($p . 'contenttype')->get(['contenttypeid', 'class']) as $ct) {
+        foreach ($conn->table($p.'contenttype')->get(['contenttypeid', 'class']) as $ct) {
             if ((string) $ct->class === 'Channel') {
                 $channel[] = (int) $ct->contenttypeid;
             } elseif ((string) $ct->class === 'Text') {
@@ -155,12 +155,12 @@ class Vbulletin5Importer
         if (! $channelTypeIds) {
             return [];
         }
-        $ids = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all();
+        $ids = $conn->table($p.'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('nodeid')->map(fn ($v) => (int) $v)->all();
 
-        if (! $conn->getSchemaBuilder()->hasTable($p . 'routenew')) {
+        if (! $conn->getSchemaBuilder()->hasTable($p.'routenew')) {
             return $ids;
         }
-        $forumIds = $conn->table($p . 'routenew')
+        $forumIds = $conn->table($p.'routenew')
             ->where('class', 'vB5_Route_Channel')
             ->where(function ($q) {
                 $q->where('prefix', 'forum')->orWhere('prefix', 'like', 'forum/%');
@@ -188,34 +188,26 @@ class Vbulletin5Importer
      */
     private static function attachmentResolver(ConnectionInterface $conn, string $p): \Closure
     {
-        $imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
         $cache = [];
 
-        return function (string $srcId) use ($conn, $p, $imageExts, &$cache): ?array {
+        return function (string $srcId) use ($conn, $p, &$cache): ?array {
             if (array_key_exists($srcId, $cache)) {
                 return $cache[$srcId];
             }
             if (! ctype_digit($srcId)) {
                 return $cache[$srcId] = null;
             }
-            $row = $conn->table($p . 'attach')->where('nodeid', (int) $srcId)->first(['filedataid', 'filename']);
+            $row = $conn->table($p.'attach')->where('nodeid', (int) $srcId)->first(['filedataid', 'filename']);
             if (! $row) {
                 return $cache[$srcId] = null;
             }
-            $file = $conn->table($p . 'filedata')->where('filedataid', $row->filedataid)->first(['filedata', 'extension']);
+            $file = $conn->table($p.'filedata')->where('filedataid', $row->filedataid)->first(['filedata', 'extension']);
             if (! $file || ! $file->filedata) {
                 return $cache[$srcId] = null;
             }
-            $url = Dst::storeAsset((string) $file->filedata, (string) ($row->filename ?: ('attachment.' . $file->extension)));
-            if (! $url) {
-                return $cache[$srcId] = null;
-            }
+            $stored = Dst::storeAsset((string) $file->filedata, (string) ($row->filename ?: ('attachment.'.$file->extension)));
 
-            return $cache[$srcId] = [
-                'url' => $url,
-                'filename' => (string) $row->filename,
-                'isImage' => in_array(strtolower((string) $file->extension), $imageExts, true),
-            ];
+            return $cache[$srcId] = $stored ? $stored + ['filename' => (string) $row->filename] : null;
         };
     }
 
@@ -225,7 +217,7 @@ class Vbulletin5Importer
         $p = trim((string) ($cfg['prefix'] ?? ''));
         $sb = $conn->getSchemaBuilder();
         foreach (['node', 'text', 'contenttype', 'user'] as $req) {
-            if (! $sb->hasTable($p . $req)) {
+            if (! $sb->hasTable($p.$req)) {
                 throw new \RuntimeException(Src::t('not_source.vbulletin5', ['table' => $p.$req]));
             }
         }
@@ -233,13 +225,13 @@ class Vbulletin5Importer
         $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table($p . 'user')->count(),
+            'users' => (int) $conn->table($p.'user')->count(),
             'categories' => count($channelIds),
             'topics' => $textTypeIds && $channelIds
-                ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
+                ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
                 : 0,
-            'posts' => $textTypeIds ? (int) $conn->table($p . 'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
-            'avatars' => $sb->hasTable($p . 'customavatar') ? (int) $conn->table($p . 'customavatar')->count() : 0,
+            'posts' => $textTypeIds ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
+            'avatars' => $sb->hasTable($p.'customavatar') ? (int) $conn->table($p.'customavatar')->count() : 0,
         ]];
     }
 
@@ -250,7 +242,9 @@ class Vbulletin5Importer
         $hasTags = Dst::hasTags();
 
         return array_merge([
-            new Phase('tags', 'channels',
+            new Phase(
+                'tags',
+                'channels',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
@@ -265,10 +259,10 @@ class Vbulletin5Importer
                     // The whole forum tree is small (rarely more than a few hundred
                     // nodes) — recomputing placement each batch is cheap and avoids
                     // needing to persist it across the many short step requests.
-                    $allNodes = $conn->table($p . 'node')->whereIn('nodeid', $channelIds)->get(['nodeid', 'parentid', 'title'])->all();
+                    $allNodes = $conn->table($p.'node')->whereIn('nodeid', $channelIds)->get(['nodeid', 'parentid', 'title'])->all();
                     $placement = self::tagPlacement($allNodes);
 
-                    $rowsRaw = $conn->table($p . 'node')->whereIn('contenttypeid', $channelTypeIds)->whereIn('nodeid', $channelIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
+                    $rowsRaw = $conn->table($p.'node')->whereIn('contenttypeid', $channelTypeIds)->whereIn('nodeid', $channelIds)->where('nodeid', '>', (int) $cursor)->orderBy('nodeid')->limit($limit)->get();
                     // The tree root (e.g. vBulletin's bare "Forum" container) is
                     // auto-excluded by tagPlacement() — skip it here too, it has no
                     // topics and would otherwise become an empty leftover tag. The
@@ -287,19 +281,17 @@ class Vbulletin5Importer
                     }
                     foreach ($rowsSorted as $c) {
                         $place = $placement[$c->nodeid] ?? ['parentSrcId' => null, 'namePrefix' => ''];
-                        $name = trim((string) ($c->title ?? '')) ?: ('Channel ' . $c->nodeid);
+                        $name = trim((string) ($c->title ?? '')) ?: ('Channel '.$c->nodeid);
                         if ($place['namePrefix'] !== '') {
-                            $name .= ' (' . $place['namePrefix'] . ')';
+                            $name .= ' ('.$place['namePrefix'].')';
                         }
                         $parentTagId = $place['parentSrcId'] !== null
                             ? ($parentTagMap[(string) $place['parentSrcId']] ?? $map[$place['parentSrcId']] ?? null)
                             : null;
-                        // Safety net: if the parent tag genuinely can't be resolved (e.g.
-                        // it lands in a later batch because of an out-of-order nodeid),
-                        // fall back to primary rather than creating an orphaned tag with
-                        // a parent_id that doesn't exist.
-                        $isPrimary = $place['parentSrcId'] === null || $parentTagId === null;
-                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0), $isPrimary, $isPrimary ? null : $parentTagId);
+                        // Safety net: a parent tag that can't be resolved (it lands in a
+                        // later batch because of an out-of-order nodeid) leaves this one a
+                        // top-level tag rather than one pointing at a parent that isn't there.
+                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0), $parentTagId);
                         $map[$c->nodeid] = $tagId;
                         if ($place['parentSrcId'] === null) {
                             // Make this batch's own primary tags resolvable as a parent
@@ -314,12 +306,14 @@ class Vbulletin5Importer
                 }
             ),
 
-            new Phase('users', 'members',
-                fn () => (int) Src::connect($cfg)->table($p . 'user')->count(),
+            new Phase(
+                'users',
+                'members',
+                fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
-                    $hasDisplayName = $conn->getSchemaBuilder()->hasColumn($p . 'user', 'displayname');
-                    $rows = $conn->table($p . 'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
+                    $hasDisplayName = $conn->getSchemaBuilder()->hasColumn($p.'user', 'displayname');
+                    $rows = $conn->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -359,15 +353,17 @@ class Vbulletin5Importer
             // directory, we read the file `customavatar.filename` names.
             // vBulletin "preset gallery" avatars (mo_vb3_avatar) aren't user
             // uploads and have no per-user image data, so they're skipped.
-            new Phase('avatars', 'avatars',
+            new Phase(
+                'avatars',
+                'avatars',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
                     $conn = $ctx->src();
-                    if (! $conn->getSchemaBuilder()->hasTable($p . 'customavatar')) {
+                    if (! $conn->getSchemaBuilder()->hasTable($p.'customavatar')) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
                     $avatarDir = rtrim((string) ($cfg['avatar_path'] ?? ''), '/');
-                    $rows = $conn->table($p . 'customavatar')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get(['userid', 'filedata', 'filename']);
+                    $rows = $conn->table($p.'customavatar')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get(['userid', 'filedata', 'filename']);
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $n = $skip = 0;
                     foreach ($rows as $row) {
@@ -375,7 +371,7 @@ class Vbulletin5Importer
                         $uid = $userMap[(string) $row->userid] ?? null;
                         $bytes = (string) ($row->filedata ?? '');
                         if ($bytes === '' && $avatarDir !== '' && ($row->filename ?? '')) {
-                            $path = $avatarDir . '/' . basename((string) $row->filename);
+                            $path = $avatarDir.'/'.basename((string) $row->filename);
                             $bytes = is_file($path) ? (@file_get_contents($path) ?: '') : '';
                         }
                         if ($uid && Dst::avatarBytes((int) $uid, $bytes)) {
@@ -391,7 +387,9 @@ class Vbulletin5Importer
 
             // Thread starters: Text nodes whose parent is a Channel. The node's own
             // text row is the discussion's first post (#1).
-            new Phase('topics', 'topics',
+            new Phase(
+                'topics',
+                'topics',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $cfg) {
                     $conn = $ctx->src();
@@ -408,14 +406,14 @@ class Vbulletin5Importer
                         }
                         $limit = min($limit, $maxTopics - $already);
                     }
-                    $rows = $conn->table($p . 'node')
-                        ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
-                        ->whereIn($p . 'node.contenttypeid', $textTypeIds)
-                        ->whereIn($p . 'node.parentid', $channelIds)
-                        ->where($p . 'node.approved', 1)
-                        ->where($p . 'node.nodeid', '>', (int) $cursor)
-                        ->orderBy($p . 'node.nodeid')
-                        ->select($p . 'node.*', $p . 'text.rawtext', $p . 'text.htmlstate')
+                    $rows = $conn->table($p.'node')
+                        ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
+                        ->whereIn($p.'node.contenttypeid', $textTypeIds)
+                        ->whereIn($p.'node.parentid', $channelIds)
+                        ->where($p.'node.approved', 1)
+                        ->where($p.'node.nodeid', '>', (int) $cursor)
+                        ->orderBy($p.'node.nodeid')
+                        ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
                         ->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
@@ -448,7 +446,9 @@ class Vbulletin5Importer
 
             // Replies: Text nodes whose parent is a thread starter (not a Channel).
             // They continue each discussion's numbering after the starter (#1).
-            new Phase('posts', 'posts',
+            new Phase(
+                'posts',
+                'posts',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
@@ -460,14 +460,14 @@ class Vbulletin5Importer
                     $cur = is_array($cursor) ? $cursor : ['nid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
 
-                    $rows = $conn->table($p . 'node')
-                        ->join($p . 'text', $p . 'text.nodeid', '=', $p . 'node.nodeid')
-                        ->whereIn($p . 'node.contenttypeid', $textTypeIds)
-                        ->when($channelIds, fn ($q) => $q->whereNotIn($p . 'node.parentid', $channelIds))
-                        ->where($p . 'node.approved', 1)
-                        ->where($p . 'node.nodeid', '>', (int) $cur['nid'])
-                        ->orderBy($p . 'node.nodeid')
-                        ->select($p . 'node.*', $p . 'text.rawtext', $p . 'text.htmlstate')
+                    $rows = $conn->table($p.'node')
+                        ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
+                        ->whereIn($p.'node.contenttypeid', $textTypeIds)
+                        ->when($channelIds, fn ($q) => $q->whereNotIn($p.'node.parentid', $channelIds))
+                        ->where($p.'node.approved', 1)
+                        ->where($p.'node.nodeid', '>', (int) $cur['nid'])
+                        ->orderBy($p.'node.nodeid')
+                        ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
                         ->limit($limit)->get();
 
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());

@@ -19,8 +19,8 @@ class Bbcode
      *   attachment  fn(string $sourceId): ?array{url:string,filename:string,isImage:bool} —
      *               resolves a source attachment id (e.g. vBulletin's
      *               [ATTACH]123[/ATTACH] or [ATTACH=JSON]{"data-attachmentid":"123"}[/ATTACH])
-     *               to an already-rehosted file. Returning null renders the reference
-     *               as plain text instead of a broken link/image.
+     *               to an already-rehosted file. Returning null drops the reference
+     *               instead of leaving a broken link/image.
      */
     public static function toHtml(?string $text, array $opts = []): string
     {
@@ -49,23 +49,20 @@ class Bbcode
             return $key;
         }, $t);
 
-        // vBulletin attachment references — [ATTACH=JSON]{"data-attachmentid":"123",…}[/ATTACH]
-        // or the older [ATTACH]123[/ATTACH]. Resolved via the caller-supplied callback
-        // (which knows how to look the id up in the source forum's own DB); left as
-        // plain text if no resolver was given or it can't find a match, rather than
-        // ever leaking the raw JSON/id into the post.
-        $t = preg_replace_callback('#\[ATTACH(?:=JSON)?\](.*?)\[/ATTACH\]#is', function ($m) use ($opts) {
-            $resolver = $opts['attachment'] ?? null;
-            if (! $resolver) {
-                return '';
-            }
+        // vBulletin attachment references — [ATTACH=JSON]{"data-attachmentid":"123",…}[/ATTACH],
+        // [ATTACH=CONFIG]n123[/ATTACH] or [ATTACH]123[/ATTACH]. Only when the importer
+        // supplies a resolver (which looks the id up in the source forum's own DB): one it
+        // can't find is dropped rather than leaking the raw JSON/id. Importers without a
+        // resolver (XenForo uses the same tag) keep the text as it was.
+        $resolver = $opts['attachment'] ?? null;
+        $t = ! $resolver ? $t : preg_replace_callback('#\[ATTACH(?:=(?:JSON|CONFIG))?\](.*?)\[/ATTACH\]#is', function ($m) use ($resolver) {
             $raw = trim($m[1]);
             $srcId = null;
             $decoded = json_decode(html_entity_decode($raw, ENT_QUOTES | ENT_HTML5, 'UTF-8'), true);
             if (is_array($decoded) && isset($decoded['data-attachmentid'])) {
                 $srcId = (string) $decoded['data-attachmentid'];
-            } elseif (preg_match('/^\d+$/', $raw)) {
-                $srcId = $raw;
+            } elseif (preg_match('/^n?(\d+)$/', $raw, $id)) {
+                $srcId = $id[1]; // vB5 writes [ATTACH=CONFIG]n123[/ATTACH]
             }
             if ($srcId === null) {
                 return '';
@@ -76,11 +73,11 @@ class Bbcode
             }
             $url = htmlspecialchars($found['url'], ENT_QUOTES);
             if (! empty($found['isImage'])) {
-                return '<img src="' . $url . '" alt="">';
+                return '<img src="'.$url.'" alt="">';
             }
             $label = htmlspecialchars($found['filename'] ?? $found['url'], ENT_QUOTES);
 
-            return '<a href="' . $url . '" rel="nofollow noopener" target="_blank">' . $label . '</a>';
+            return '<a href="'.$url.'" rel="nofollow noopener" target="_blank">'.$label.'</a>';
         }, $t);
 
         // Inline formatting (repeat a few times for simple nesting).

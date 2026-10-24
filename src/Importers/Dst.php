@@ -3,12 +3,9 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Flarum\Formatter\Formatter;
-use Flarum\User\AvatarUploader;
-use Flarum\User\User as FlarumUser;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
-use Intervention\Image\ImageManager;
 use League\HTMLToMarkdown\HtmlConverter;
 
 /**
@@ -86,31 +83,27 @@ class Dst
 
     /* ── Tags (categories) ──────────────────────────────────────────────── */
 
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, bool $isPrimary = true, ?int $parentId = null): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
             return (int) $id;
         }
 
-        $row = [
+        // A positioned tag is in the primary tree — a child of a primary tag
+        // too, exactly as flarum/tags' own OrderTagsController stores it.
+        return (int) $db->table('tags')->insertGetId([
             'name' => Str::limit($name, 100, ''),
             'slug' => $slug,
             'description' => $desc !== null ? Str::limit(strip_tags($desc), 700, '') : null,
             'color' => Src::color($color),
             'position' => $position,
+            'parent_id' => $parentId,
+            'is_primary' => true,
             'is_restricted' => 0,
             'is_hidden' => 0,
             'discussion_count' => 0,
-        ];
-        if (self::hasColumn('tags', 'is_primary')) {
-            $row['is_primary'] = $isPrimary;
-        }
-        if ($parentId !== null && self::hasColumn('tags', 'parent_id')) {
-            $row['parent_id'] = $parentId;
-        }
-
-        return (int) $db->table('tags')->insertGetId($row);
+        ]);
     }
 
     /* ── Users ──────────────────────────────────────────────────────────── */
@@ -137,7 +130,7 @@ class Dst
             'is_email_confirmed' => 1,
             'password' => Src::password($passwordHash),
             'joined_at' => $joinedAt,
-            'last_seen_at' => $lastSeenAt ?? $joinedAt,
+            'last_seen_at' => $lastSeenAt,
         ]);
     }
 
@@ -157,73 +150,6 @@ class Dst
         $exists = $db->table('group_user')->where('user_id', $userId)->where('group_id', $groupId)->exists();
         if (! $exists) {
             $db->table('group_user')->insert(['user_id' => $userId, 'group_id' => $groupId]);
-        }
-    }
-
-    /**
-     * Store raw avatar image bytes for an already-imported user, going through
-     * Flarum's own AvatarUploader so it gets resized/re-encoded and its @2x/@3x
-     * variants generated exactly like a normal upload would.
-     *
-     * Best-effort: skips silently (returns false) on empty/undecodable/corrupt
-     * image data — one bad avatar must never abort an import run. A user who
-     * already has an avatar (e.g. re-running an import) is left untouched.
-     */
-    public static function avatarBytes(int $userId, string $binaryData): bool
-    {
-        if ($binaryData === '') {
-            return false;
-        }
-        /** @var FlarumUser|null $user */
-        $user = FlarumUser::find($userId);
-        if (! $user || $user->getRawOriginal('avatar_url')) {
-            return false;
-        }
-        try {
-            $image = resolve(ImageManager::class)->read($binaryData);
-            resolve(AvatarUploader::class)->upload($user, $image);
-            $user->save();
-
-            return true;
-        } catch (\Throwable) {
-            // Corrupt/unsupported source image (bad GIF, truncated JPEG, …) —
-            // skip this one avatar rather than failing the whole batch.
-            return false;
-        }
-    }
-
-    /**
-     * Store arbitrary file bytes (an old forum post's attachment, not an
-     * avatar) onto Flarum's own generic public asset disk (`flarum-assets`,
-     * served from `assets/`) and return its public URL. Used to rehost
-     * embedded images/files a source forum's posts reference, since
-     * Flarum's post content just needs an `<img src>`/link — no upload
-     * extension is required to *display* something already on disk.
-     *
-     * A random filename prefix avoids collisions between posts and hides
-     * the old forum's internal numbering; the original filename is kept as
-     * a suffix (sanitised) purely so a downloaded file looks reasonable.
-     * Best-effort: returns null on empty input or a write failure — one
-     * broken attachment must never abort the import run.
-     */
-    public static function storeAsset(string $binaryData, string $filename): ?string
-    {
-        if ($binaryData === '') {
-            return null;
-        }
-        $ext = pathinfo($filename, PATHINFO_EXTENSION);
-        $ext = preg_match('/^[a-zA-Z0-9]{1,10}$/', $ext) ? '.' . strtolower($ext) : '';
-        $safeName = preg_replace('/[^a-zA-Z0-9_-]+/', '-', pathinfo($filename, PATHINFO_FILENAME));
-        $safeName = trim(Str::limit($safeName ?: 'file', 60, ''), '-');
-        $path = 'attachments/' . Str::random(16) . '-' . $safeName . $ext;
-
-        try {
-            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-assets');
-            $disk->put($path, $binaryData);
-
-            return $disk->url($path);
-        } catch (\Throwable) {
-            return null;
         }
     }
 
@@ -257,50 +183,98 @@ class Dst
             $source = rtrim($assetsBase, '/').'/'.ltrim($source, '/');
         }
 
+        // 3MB ceiling: an avatar is rendered at 96px and a board being
+        // migrated is not the place to discover somebody uploaded a
+        // twenty-megabyte PNG.
+        $bytes = SafeFetch::get($source, 3_000_000, 15, (string) parse_url($assetsBase, PHP_URL_HOST));
+
+        return $bytes !== null && self::avatarBytes($userId, $bytes);
+    }
+
+    /**
+     * Store an avatar the old board kept itself (a database blob, or a file
+     * on disk that importer:run --avatar-path points at).
+     *
+     * Only a real PNG/JPEG/GIF/WebP under 3MB is kept, stored under a random
+     * name with the extension its CONTENT says, on the `flarum-avatars` disk
+     * core writes to — so the file lands where core expects and is served by
+     * the same URL generator rather than a path guessed here.
+     */
+    public static function avatarBytes(int $userId, string $bytes): bool
+    {
+        if ($userId <= 0 || self::$dryRun || strlen($bytes) < 64 || strlen($bytes) > 3_000_000) {
+            return false;
+        }
+
+        $ext = self::imageExt($bytes);
+
+        if ($ext === null) {
+            return false;
+        }
+
         try {
-            $bytes = SafeFetch::get($source, 3_000_000, 15, (string) parse_url($assetsBase, PHP_URL_HOST));
-
-            // 3MB ceiling: an avatar is rendered at 96px and a board being
-            // migrated is not the place to discover somebody uploaded a
-            // twenty-megabyte PNG.
-            if ($bytes === null || strlen($bytes) < 64) {
-                return false;
-            }
-
-            $info = @getimagesizefromstring($bytes);
-
-            if ($info === false) {
-                return false;
-            }
-
-            $ext = match ($info['mime']) {
-                'image/png' => 'png',
-                'image/jpeg' => 'jpg',
-                'image/gif' => 'gif',
-                'image/webp' => 'webp',
-                default => null,
-            };
-
-            if ($ext === null) {
-                return false;
-            }
-
             $name = Str::random(20).'.'.$ext;
-
-            /*
-             * The `flarum-avatars` disk, the same one core writes to, so the
-             * files land where core expects and are served by the same URL
-             * generator rather than a path guessed here.
-             */
-            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-avatars');
-            $disk->put($name, $bytes);
-
+            resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-avatars')->put($name, $bytes);
             self::db()->table('users')->where('id', $userId)->update(['avatar_url' => $name]);
 
             return true;
         } catch (\Throwable) {
             return false;
         }
+    }
+
+    /** Extensions an attachment that is not an image may keep; anything else is stored as .bin. */
+    private const SAFE_FILE_EXTS = ['pdf', 'txt', 'csv', 'zip', 'gz', 'tar', '7z', 'rar', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'mp3', 'ogg', 'wav', 'mp4', 'webm', 'mov'];
+
+    /**
+     * Rehost a post attachment the old board kept in its database onto the
+     * public `flarum-assets` disk and return its URL.
+     *
+     * 🚨 That disk is served straight from the web root, so the extension is
+     * never taken on trust from the old board: an image keeps the extension
+     * its content proves, a known document type keeps its own, and anything
+     * else (.php, .html, .svg, …) is stored as .bin so it can only ever be
+     * downloaded, never executed or rendered on the forum's origin.
+     *
+     * @return array{url:string,isImage:bool}|null
+     */
+    public static function storeAsset(string $bytes, string $filename): ?array
+    {
+        if ($bytes === '' || self::$dryRun) {
+            return null;
+        }
+
+        $ext = self::imageExt($bytes);
+        $isImage = $ext !== null;
+        if (! $isImage) {
+            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+            $ext = in_array($ext, self::SAFE_FILE_EXTS, true) ? $ext : 'bin';
+        }
+        $safeName = trim(Str::limit((string) preg_replace('/[^a-zA-Z0-9_-]+/', '-', pathinfo($filename, PATHINFO_FILENAME)), 60, ''), '-') ?: 'file';
+        $path = 'attachments/'.Str::random(16).'-'.$safeName.'.'.$ext;
+
+        try {
+            $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-assets');
+            $disk->put($path, $bytes);
+
+            return ['url' => $disk->url($path), 'isImage' => $isImage];
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /** png / jpg / gif / webp when the bytes really are that image, else null. */
+    private static function imageExt(string $bytes): ?string
+    {
+        $info = @getimagesizefromstring($bytes);
+
+        return match ($info['mime'] ?? null) {
+            'image/png' => 'png',
+            'image/jpeg' => 'jpg',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+            default => null,
+        };
     }
 
     /**

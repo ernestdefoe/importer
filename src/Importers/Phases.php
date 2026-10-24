@@ -131,7 +131,9 @@ class Phases
     public static function pruneEmptyTags(): array
     {
         return [
-            new Phase('prune-empty-tags', 'prune_tags',
+            new Phase(
+                'prune-empty-tags',
+                'prune_tags',
                 fn () => 0,
                 function ($cursor, $limit, Ctx $ctx) {
                     if (! Dst::hasTags()) {

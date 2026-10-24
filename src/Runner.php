@@ -174,10 +174,13 @@ class Runner
         return Dst::db()->table('importer_runs')->where(fn ($q) => $q->where('id', $baseId)->orWhere('base_run_id', $baseId));
     }
 
-    /** The connection the last run in the chain used, as kept after it finished (no password). */
+    /**
+     * The connection the last SUCCESSFUL run in the chain used, as kept after
+     * it finished (no password) — a failed sync may have been pointed wrong.
+     */
     private static function storedConfig(int $baseId): array
     {
-        return json_decode((string) self::chain($baseId)->whereNotNull('config')->orderByDesc('id')->value('config'), true) ?: [];
+        return json_decode((string) self::chain($baseId)->where('status', 'done')->whereNotNull('config')->orderByDesc('id')->value('config'), true) ?: [];
     }
 
     /** Stored settings, overlaid with whatever was supplied now; refuses when what is missing cannot be guessed. */
@@ -394,7 +397,7 @@ class Runner
             'done' => $status === 'done',
             'failed' => $status === 'failed',
             'percent' => $pct,
-            'status' => $status === 'failed' ? Src::t('failed', ['error' => $error]) : ($status === 'done' ? Src::t('complete') : ($state['phaseLabel'] ?? Src::t('working'))),
+            'status' => $status === 'failed' ? Src::t('failed', ['error' => $error]) : ($status === 'done' ? Src::t($sync ? 'sync.complete' : 'complete') : ($state['phaseLabel'] ?? Src::t('working'))),
             'summary' => $summary,
             'source' => null,
             'sync' => $sync,

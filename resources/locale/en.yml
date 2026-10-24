@@ -82,6 +82,7 @@ ernestdefoe-importer:
     failed: "Import failed: {error}"
     busy: "Import #{id} is still running. Let it finish (or reset it) before starting another."
     sync:
+      complete: Sync complete.
       no_base: There is no finished import to sync. Run an import first.
       unsupported: "Syncing is not available for {source} yet. Its import still works; run it again into a fresh forum to pick up new content."
       needs_password: The source database password is not kept after a run. Enter it again to sync.

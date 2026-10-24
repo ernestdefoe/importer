@@ -89,7 +89,8 @@ export default class ImporterPage extends Component {
   }
 
   cfg(): SourceConfig {
-    return { ...this.config, driver: SOURCES[this.source].driver };
+    // A sync keeps the driver the import used (an import from a converted dump reads SQLite).
+    return { ...this.config, driver: (this.syncMode && this.config.driver) || SOURCES[this.source].driver };
   }
 
   pickSource(key: string) {

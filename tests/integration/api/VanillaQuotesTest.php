@@ -51,7 +51,9 @@ class VanillaQuotesTest extends TestCase
     /** An import writes each post it brings across: one insert per post is the job, not an N+1. */
     protected function allowedRepeatedQueries(): array
     {
-        return ['insert into "posts"'];
+        // The importer writes one post per source record by design; match the
+        // insert whatever the table prefix and identifier quoting.
+        return ['posts" ("discussion_id", "number"', 'posts` (`discussion_id`, `number`'];
     }
 
     protected function tearDown(): void

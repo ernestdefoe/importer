@@ -116,6 +116,48 @@ class Phases
     }
 
     /**
+     * Opt-in cleanup phase: delete tags this run created that ended up with
+     * zero discussions (a category whose vBulletin/phpBB/etc. equivalent
+     * genuinely had no topics, or a placement fold that only ever produced
+     * empty intermediate nodes). Only ever touches tags in *this* run's own
+     * importer_map — never pre-existing tags the admin created by hand.
+     * Call from an importer's phases() only when the caller opts in (e.g.
+     * --prune-empty-tags on the CLI), never unconditionally: silently
+     * deleting content a fresh admin panel run didn't ask for is a bad
+     * default even though it's harmless here (tags carry no other data).
+     *
+     * @return Phase[]
+     */
+    public static function pruneEmptyTags(): array
+    {
+        return [
+            new Phase('prune-empty-tags', 'prune_tags',
+                fn () => 0,
+                function ($cursor, $limit, Ctx $ctx) {
+                    if (! Dst::hasTags()) {
+                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    $db = Dst::db();
+                    $tagIds = $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'tag')->pluck('target_id');
+                    $emptyIds = $db->table('tags')->whereIn('id', $tagIds)
+                        ->where('discussion_count', 0)
+                        // A primary tag with empty secondaries under it should keep
+                        // those secondaries visible for now — only remove a tag with
+                        // no discussions AND no children relying on it as a parent.
+                        ->whereNotIn('id', $db->table('tags')->whereNotNull('parent_id')->pluck('parent_id'))
+                        ->pluck('id');
+                    $n = $emptyIds->count();
+                    if ($n) {
+                        $db->table('tags')->whereIn('id', $emptyIds)->delete();
+                    }
+
+                    return ['cursor' => null, 'processed' => $n, 'done' => true, 'summary' => ['pruned_tags' => $n]];
+                }
+            ),
+        ];
+    }
+
+    /**
      * The posts phase shared by phpBB / XenForo / vBulletin 3–4 / MyBB / SMF /
      * Invision / Discourse / Convoro / Web Wiz — plus, where the source keeps
      * an edit time, the phase that copies edits across on a sync.

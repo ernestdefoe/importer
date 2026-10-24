@@ -35,6 +35,9 @@ class RunImportCommand extends AbstractCommand
             ->addOption('password', null, InputOption::VALUE_REQUIRED, 'DB password', '')
             ->addOption('prefix', null, InputOption::VALUE_REQUIRED, 'Source table prefix', '')
             ->addOption('assets-base', null, InputOption::VALUE_REQUIRED, 'Origin for RELATIVE image paths on the old board, e.g. https://old.example.com. Absolute URLs are used as they are; without this, relative ones are skipped.', '')
+            ->addOption('avatar-path', null, InputOption::VALUE_REQUIRED, 'Local filesystem path to the source forum\'s avatar directory (vBulletin customavatars/, etc.) — only needed when avatars aren\'t stored as DB blobs.', '')
+            ->addOption('prune-empty-tags', null, InputOption::VALUE_NONE, 'After import, delete tags this run created that ended up with zero discussions and no children (e.g. an empty vBulletin sub-forum). Never touches pre-existing tags.')
+            ->addOption('max-topics', null, InputOption::VALUE_REQUIRED, 'Import at most this many topics (oldest-id-first) instead of the whole forum — a fast, representative subset for testing a patch or a fresh source connection before committing to a full run.', '')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.')
             ->addOption('sync', null, InputOption::VALUE_NONE, 'Bring across only what the old forum gained since the last import (and edits, where the source records them). Reuses that import\'s connection settings; pass any that changed, and --password if the source has one.')
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'With --sync: count what would be imported, then roll it all back.');
@@ -63,6 +66,9 @@ class RunImportCommand extends AbstractCommand
         foreach (self::CONNECTION as $opt => $key) {
             $cfg[$key] = (string) $this->input->getOption($opt);
         }
+        $cfg['avatar_path'] = (string) $this->input->getOption('avatar-path');
+        $cfg['prune_empty_tags'] = (bool) $this->input->getOption('prune-empty-tags');
+        $cfg['max_topics'] = (string) $this->input->getOption('max-topics');
 
         try {
             if ($this->input->getOption('test')) {

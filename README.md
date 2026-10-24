@@ -57,6 +57,33 @@ Categories are imported as **tags** (requires `flarum/tags`); if tags aren't ins
 - **Faithful content** — post bodies go source → HTML/Markdown → Flarum's formatter, landing in Flarum's native stored format so they render as proper rich text.
 - **Relations preserved** — members, tags, discussions, first/last-post pointers, comment counts and participant counts are all rebuilt.
 
+## Keeping the old forum in sync
+
+Import once, then keep the old forum running while you set Flarum up, and sync as often as you like before you switch over. A sync copies only what the old forum has gained since the last run:
+
+- **new members, categories, discussions and replies** — a reply in an old topic lands in the discussion that topic became, numbered after whatever is there now (including replies written on Flarum);
+- **edits** made on the old forum, for phpBB, XenForo, MyBB, SMF and Invision (they record an edit time). An edit is only copied over a post nobody has edited on Flarum — if somebody has, the Flarum edit wins and the sync counts it as kept;
+- the **counters** of whatever it touched: discussion reply counts and last posts, member post counts, tag counts. The old-link redirects pick up the new discussions on their own.
+
+Nothing written on Flarum is changed or removed, and nothing deleted on the old forum is deleted here. Run it as many times as you like: what is already here is never copied twice.
+
+**In the admin:** Admin → Importer shows **Keep the old forum in sync** once an import has finished (also on the finished-import screen). Click **Sync new content**, enter the old database's password again (it is never stored after a run), and click **Sync now**. An import made with 0.3.7 or earlier kept no connection settings, so the first time you fill in the same details as the import.
+
+**From the command line:**
+
+```bash
+php flarum importer:run --sync --password=secret             # reuses the last import's settings
+php flarum importer:run --sync --dry-run --password=secret   # counts what would come across, saves nothing
+# an import made with 0.3.7 or earlier: give the connection once, as for the import
+php flarum importer:run --sync --host=127.0.0.1 --database=my_old_forum --username=root --password=secret --prefix=phpbb_
+```
+
+Good to know:
+
+- A sync reads only what is past the last thing it imported (plus a few hundred ids back, for posts and topics approved late), so it is quick. The **first** sync of an import made with 0.3.7 or earlier reads every post once, to learn which ones are already here.
+- Only one import or sync runs at a time.
+- Not yet for Vanilla, NodeBB or vBulletin 5 (vBulletin 3/4 syncs new content, without edits; so do Discourse, Convoro and Web Wiz). Changes to members, titles or categories on the old forum, and deletions, are not synced.
+
 ## Requirements & tips
 
 - Import into a **fresh Flarum** for the cleanest result.

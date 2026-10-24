@@ -13,7 +13,15 @@ class Ctx
 {
     private ?ConnectionInterface $src = null;
 
-    public function __construct(public int $runId, public array $cfg)
+    /**
+     * @param  int  $runId  the run whose id map this step reads and writes —
+     *                      for a sync, the import it continues, so one map
+     *                      holds everything that board has ever sent here
+     * @param  array|null  $sync  set on a sync run: where each phase starts,
+     *                            the edit cut-off and the Flarum post id
+     *                            high-water (see {@see \ErnestDefoe\Importer\Runner::sync()})
+     */
+    public function __construct(public int $runId, public array $cfg, public ?array $sync = null)
     {
     }
 
@@ -23,15 +31,19 @@ class Ctx
         return $this->src ??= Src::connect($this->cfg);
     }
 
-    /** Record source→target id mappings (batched insert). */
-    public function mapPut(string $kind, array $srcToTarget): void
+    /**
+     * Record source→target id mappings (batched insert).
+     *
+     * @param  array<string,string>  $hashes  source_id => sha1 of the content written (posts)
+     */
+    public function mapPut(string $kind, array $srcToTarget, array $hashes = []): void
     {
         if (! $srcToTarget) {
             return;
         }
         $rows = [];
         foreach ($srcToTarget as $srcId => $targetId) {
-            $rows[] = ['run_id' => $this->runId, 'kind' => $kind, 'source_id' => (string) $srcId, 'target_id' => (int) $targetId];
+            $rows[] = ['run_id' => $this->runId, 'kind' => $kind, 'source_id' => (string) $srcId, 'target_id' => (int) $targetId, 'hash' => $hashes[$srcId] ?? null];
         }
         // Chunk to stay well under any prepared-statement / packet limits.
         foreach (array_chunk($rows, 500) as $chunk) {
@@ -46,6 +58,27 @@ class Ctx
      */
     public function mapGet(string $kind, array $srcIds): array
     {
+        return array_map(fn ($r) => $r[0], $this->mapRows($kind, $srcIds));
+    }
+
+    /**
+     * On a sync, which of these source ids were imported already (so a
+     * catch-up pass skips them). Outside a sync: none, and no query.
+     *
+     * @return array<string,int>
+     */
+    public function known(string $kind, iterable $srcIds): array
+    {
+        return $this->sync ? $this->mapGet($kind, is_array($srcIds) ? $srcIds : iterator_to_array($srcIds)) : [];
+    }
+
+    /**
+     * Like {@see mapGet()}, with the stored content hash.
+     *
+     * @return array<string,array{0:int,1:?string}>  source_id => [target_id, hash]
+     */
+    public function mapRows(string $kind, array $srcIds): array
+    {
         $srcIds = array_values(array_unique(array_filter(array_map('strval', $srcIds), fn ($v) => $v !== '')));
         if (! $srcIds) {
             return [];
@@ -55,9 +88,9 @@ class Ctx
             $rows = Dst::db()->table('importer_map')
                 ->where('run_id', $this->runId)->where('kind', $kind)
                 ->whereIn('source_id', $chunk)
-                ->get(['source_id', 'target_id']);
+                ->get(['source_id', 'target_id', 'hash']);
             foreach ($rows as $r) {
-                $out[(string) $r->source_id] = (int) $r->target_id;
+                $out[(string) $r->source_id] = [(int) $r->target_id, $r->hash];
             }
         }
 

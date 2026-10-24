@@ -115,8 +115,12 @@ class VbulletinImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forumid')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('threadid'));
                     foreach ($rows as $t) {
                         $cursor = $t->threadid;
+                        if (isset($known[(string) $t->threadid])) {
+                            continue;
+                        }
                         if ((int) ($t->visible ?? 1) !== 1) {
                             continue;
                         }
@@ -133,24 +137,16 @@ class VbulletinImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                $p.'post',
+                'threadid',
+                'postid',
                 fn () => (int) Src::connect($cfg)->table($p.'post')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p.'post')
-                        ->where(fn ($q) => $q->where('threadid', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('threadid', (int) $cur['tid'])->where('postid', '>', (int) $cur['pid'])))
-                        ->orderBy('threadid')->orderBy('postid')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->threadid, 'pid' => (int) $post->postid, 'uid' => $post->userid,
-                        'html' => Bbcode::toHtml($post->pagetext ?? ''), 'at' => Src::ts($post->dateline ?? null),
-                        'ok' => (int) ($post->visible ?? 1) === 1,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->threadid, 'pid' => (int) $post->postid, 'uid' => $post->userid,
+                    'html' => Bbcode::toHtml($post->pagetext ?? ''), 'at' => Src::ts($post->dateline ?? null),
+                    'ok' => (int) ($post->visible ?? 1) === 1,
+                ],
             ),
         ], Phases::tail());
     }

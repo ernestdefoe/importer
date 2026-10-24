@@ -23,6 +23,15 @@ class StartImportController implements RequestHandlerInterface
         $source = (string) Arr::get($body, 'source', '');
         $cfg = (array) Arr::get($body, 'config', []);
 
+        if (Arr::get($body, 'sync')) {
+            // Continues the last finished import; its source is not the caller's to choose.
+            try {
+                return new JsonResponse(Runner::sync(array_map(fn ($v) => is_scalar($v) ? (string) $v : '', $cfg)));
+            } catch (\Throwable $e) {
+                return new JsonResponse(['error' => Src::explain($e)], 422);
+            }
+        }
+
         if (! Registry::get($source)) {
             return new JsonResponse(['error' => Src::t('unknown_source')], 422);
         }

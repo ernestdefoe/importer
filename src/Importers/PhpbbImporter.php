@@ -106,11 +106,12 @@ class PhpbbImporter
                     $rows = $conn->table($p.'topics')->where('topic_id', '>', (int) $cursor)->orderBy('topic_id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('topic_poster')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forum_id')->all()) : [];
+                    $known = $ctx->known('topic', $rows->pluck('topic_id'));
                     $map = [];
                     $n = 0;
                     foreach ($rows as $t) {
                         $cursor = $t->topic_id;
-                        if ($visCol && (int) ($t->$visCol ?? 1) !== 1) {
+                        if (isset($known[(string) $t->topic_id]) || $visCol && (int) ($t->$visCol ?? 1) !== 1) {
                             continue;
                         }
                         $did = Dst::discussion($t->topic_title ?: 'Untitled', $userMap[(string) $t->topic_poster] ?? null, Src::ts($t->topic_time ?? null), (int) ($t->topic_type ?? 0) >= 1);
@@ -126,31 +127,19 @@ class PhpbbImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                $p.'posts',
+                'topic_id',
+                'post_id',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->count(),
-                function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $sb = $ctx->src()->getSchemaBuilder();
-                    $visCol = $sb->hasColumn($p.'posts', 'post_visibility') ? 'post_visibility'
-                        : ($sb->hasColumn($p.'posts', 'post_approved') ? 'post_approved' : null);
-
-                    return Phases::postsBatch(
-                        $cursor,
-                        $limit,
-                        $ctx,
-                        fn ($conn, $cur, $lim) => $conn->table($p.'posts')
-                            ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
-                                ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('post_id', '>', (int) $cur['pid'])))
-                            ->orderBy('topic_id')->orderBy('post_id')->limit($lim)->get(),
-                        fn ($post) => [
-                            'tid' => (int) $post->topic_id, 'pid' => (int) $post->post_id, 'uid' => $post->poster_id,
-                            'html' => Bbcode::phpbb($post->post_text ?? '', (string) ($post->bbcode_uid ?? '')),
-                            'at' => Src::ts($post->post_time ?? null),
-                            'ok' => ! ($visCol && (int) ($post->$visCol ?? 1) !== 1),
-                        ]
-                    );
-                }
+                fn ($post) => [
+                    'tid' => (int) $post->topic_id, 'pid' => (int) $post->post_id, 'uid' => $post->poster_id,
+                    'html' => Bbcode::phpbb($post->post_text ?? '', (string) ($post->bbcode_uid ?? '')),
+                    'at' => Src::ts($post->post_time ?? null),
+                    'ok' => (int) ($post->post_visibility ?? $post->post_approved ?? 1) === 1,
+                ],
+                null,
+                'post_edit_time',
             ),
         ], Phases::tail());
     }

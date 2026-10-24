@@ -115,8 +115,12 @@ class XenForoImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('node_id')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('thread_id'));
                     foreach ($rows as $t) {
                         $cursor = $t->thread_id;
+                        if (isset($known[(string) $t->thread_id])) {
+                            continue;
+                        }
                         if (($t->discussion_state ?? 'visible') !== 'visible') {
                             continue;
                         }
@@ -133,24 +137,18 @@ class XenForoImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                'xf_post',
+                'thread_id',
+                'post_id',
                 fn () => (int) Src::connect($cfg)->table('xf_post')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table('xf_post')
-                        ->where(fn ($q) => $q->where('thread_id', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('thread_id', (int) $cur['tid'])->where('post_id', '>', (int) $cur['pid'])))
-                        ->orderBy('thread_id')->orderBy('post_id')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->thread_id, 'pid' => (int) $post->post_id, 'uid' => $post->user_id,
-                        'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->post_date ?? null),
-                        'ok' => ($post->message_state ?? 'visible') === 'visible',
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->thread_id, 'pid' => (int) $post->post_id, 'uid' => $post->user_id,
+                    'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->post_date ?? null),
+                    'ok' => ($post->message_state ?? 'visible') === 'visible',
+                ],
+                null,
+                'last_edit_date',
             ),
         ], Phases::tail());
     }

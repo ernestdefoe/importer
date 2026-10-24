@@ -21,6 +21,7 @@ class Phase
         public string $label,
         public \Closure $count,
         public \Closure $batch,
+        public bool $syncable = false, // set by Phases::posts(): this importer can sync
     ) {
         $this->label = Src::t('phase.'.$label);
     }

@@ -106,8 +106,12 @@ class MybbImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('fid')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('tid'));
                     foreach ($rows as $t) {
                         $cursor = $t->tid;
+                        if (isset($known[(string) $t->tid])) {
+                            continue;
+                        }
                         $did = Dst::discussion($t->subject ?: 'Untitled', $userMap[(string) $t->uid] ?? null, Src::ts($t->dateline ?? null), (bool) ($t->sticky ?? false));
                         $map[$t->tid] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->fid])) {
@@ -121,23 +125,17 @@ class MybbImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                $p.'posts',
+                'tid',
+                'pid',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p.'posts')->where('visible', 1)
-                        ->where(fn ($q) => $q->where('tid', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('tid', (int) $cur['tid'])->where('pid', '>', (int) $cur['pid'])))
-                        ->orderBy('tid')->orderBy('pid')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->tid, 'pid' => (int) $post->pid, 'uid' => $post->uid,
-                        'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->dateline ?? null), 'ok' => true,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->tid, 'pid' => (int) $post->pid, 'uid' => $post->uid,
+                    'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->dateline ?? null), 'ok' => true,
+                ],
+                fn ($q) => $q->where('visible', 1),
+                'edittime',
             ),
         ], Phases::tail());
     }

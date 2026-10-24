@@ -209,8 +209,12 @@ class ConvoroImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck($at['topicForum'])->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('id'));
                     foreach ($rows as $t) {
                         $cursor = $t->id;
+                        if (isset($known[(string) $t->id])) {
+                            continue;
+                        }
                         $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->created_at ?? null), (bool) ($t->is_pinned ?? false), (bool) ($t->is_locked ?? false));
                         $map[$t->id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->{$at['topicForum']}])) {
@@ -224,23 +228,15 @@ class ConvoroImporter
                 }
             ),
 
-            new Phase(
+            ...Phases::posts(
                 'posts',
-                'posts',
+                'topic_id',
+                'id',
                 fn () => (int) Src::connect($cfg)->table('posts')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table('posts')
-                        ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('id', '>', (int) $cur['pid'])))
-                        ->orderBy('topic_id')->orderBy('id')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
-                        'html' => (string) ($post->{$at['postHtml']} ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
+                    'html' => (string) ($post->{$at['postHtml']} ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
+                ],
             ),
         ], Phases::tail());
     }

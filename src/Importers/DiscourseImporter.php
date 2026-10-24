@@ -115,8 +115,12 @@ class DiscourseImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('category_id')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('id'));
                     foreach ($rows as $t) {
                         $cursor = $t->id;
+                        if (isset($known[(string) $t->id])) {
+                            continue;
+                        }
                         $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->created_at ?? null), ! empty($t->pinned_at));
                         $map[$t->id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->category_id])) {
@@ -130,23 +134,16 @@ class DiscourseImporter
                 }
             ),
 
-            new Phase(
+            ...Phases::posts(
                 'posts',
-                'posts',
+                'topic_id',
+                'id',
                 fn () => (int) Src::connect($cfg)->table('posts')->whereNull('deleted_at')->where('post_type', 1)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table('posts')->whereNull('deleted_at')->where('post_type', 1)
-                        ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('id', '>', (int) $cur['pid'])))
-                        ->orderBy('topic_id')->orderBy('id')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
-                        'html' => Src::sanitizeHtml($post->cooked ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
+                    'html' => Src::sanitizeHtml($post->cooked ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
+                ],
+                fn ($q) => $q->whereNull('deleted_at')->where('post_type', 1),
             ),
         ], Phases::tail());
     }

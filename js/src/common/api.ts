@@ -27,6 +27,18 @@ export interface ImportStatus {
   status?: string | null;
   summary?: Record<string, number>;
   lastStatus?: string | null;
+  sync?: boolean;
+  syncInfo?: SyncInfo | null;
+}
+
+/** The finished import a sync would continue, and the connection it would reuse (never the password). */
+export interface SyncInfo {
+  baseRunId: number;
+  source: string;
+  config: SourceConfig;
+  needsPassword: boolean;
+  upload: boolean;
+  last: string;
 }
 
 const base = (): string => app.forum.attribute('apiUrl');
@@ -51,6 +63,11 @@ export function uploadDump(source: string, prefix: string, file: File): Promise<
 
 export function startImport(source: string, config: SourceConfig): Promise<ImportStatus> {
   return app.request({ method: 'POST', url: `${base()}/importer/start`, body: { source, config } });
+}
+
+/** Start a sync of the last finished import; `config` overrides its stored settings (the password, at least). */
+export function startSync(config: SourceConfig): Promise<ImportStatus> {
+  return app.request({ method: 'POST', url: `${base()}/importer/start`, body: { sync: true, config } });
 }
 
 /** Process one bounded batch of a running import. */

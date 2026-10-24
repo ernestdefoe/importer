@@ -21,6 +21,9 @@ class Dst
     private static ?Formatter $formatter = null;
     private static ?HtmlConverter $html = null;
 
+    /** A dry run (importer:run --sync --dry-run) rolls the database back; files it would write are skipped. */
+    public static bool $dryRun = false;
+
     public static function reset(): void
     {
         self::$db = null;
@@ -143,7 +146,7 @@ class Dst
     {
         $source = trim((string) $source);
 
-        if ($source === '' || $userId <= 0) {
+        if ($source === '' || $userId <= 0 || self::$dryRun) {
             return false;
         }
 
@@ -213,7 +216,7 @@ class Dst
     {
         $source = trim((string) $source);
 
-        if ($source === '' || $tagId <= 0) {
+        if ($source === '' || $tagId <= 0 || self::$dryRun) {
             return false;
         }
 
@@ -289,13 +292,19 @@ class Dst
 
     public static function post(int $discussionId, int $number, ?int $userId, string $html, Carbon $createdAt): int
     {
+        return self::postContent($discussionId, $number, $userId, self::content($html), $createdAt);
+    }
+
+    /** Insert a post whose body is already in Flarum's stored form (see {@see content()}). */
+    public static function postContent(int $discussionId, int $number, ?int $userId, string $content, Carbon $createdAt): int
+    {
         return (int) self::db()->table('posts')->insertGetId([
             'discussion_id' => $discussionId,
             'number' => $number,
             'created_at' => $createdAt,
             'user_id' => $userId,
             'type' => 'comment',
-            'content' => self::content($html),
+            'content' => $content,
             'is_private' => 0,
         ]);
     }
@@ -308,12 +317,16 @@ class Dst
     public static function finalizeDiscussion(int $did): void
     {
         $db = self::db();
-        $agg = $db->table('posts')->where('discussion_id', $did)->where('type', 'comment')
-            ->selectRaw('COUNT(*) c, MIN(id) first_id, COUNT(DISTINCT user_id) parts')->first();
+        // Visible comments only, as core counts them (Discussion::comments()) —
+        // a discussion a sync adds to may hold hidden replies and event posts
+        // written on this forum.
+        $comments = fn () => $db->table('posts')->where('discussion_id', $did)->where('type', 'comment')
+            ->whereNull('hidden_at')->where('is_private', false);
+        $agg = $comments()->selectRaw('COUNT(*) c, MIN(id) first_id, COUNT(DISTINCT user_id) parts')->first();
         if (! $agg || ! $agg->c) {
             return;
         }
-        $last = $db->table('posts')->where('discussion_id', $did)->orderByDesc('number')->orderByDesc('id')
+        $last = $comments()->orderByDesc('number')->orderByDesc('id')
             ->first(['id', 'number', 'user_id', 'created_at']);
         $db->table('discussions')->where('id', $did)->update([
             'first_post_id' => $agg->first_id,

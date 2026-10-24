@@ -5,18 +5,20 @@ import {
   testConnection,
   uploadDump,
   startImport,
+  startSync,
   stepImport,
   importStatus,
   resetImport,
   type ImportStatus,
   type TestResult,
   type SourceConfig,
+  type SyncInfo,
 } from '../../common/api';
 
 declare const m: any;
 const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importer.admin.' + k, p);
 // Row-count keys the server sends (test counts + import summary); anything else shows as-is.
-const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped'];
+const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped', 'edited', 'kept'];
 const countLabel = (k: string): any => (COUNTS.includes(k) ? t('count.' + k) : k);
 
 interface Source {
@@ -65,10 +67,14 @@ export default class ImporterPage extends Component {
   status: ImportStatus = {};
   runId: number | null = null;
   stopped = false;
+  syncInfo: SyncInfo | null = null;
+  syncMode = false;
 
   oninit(vnode: any) {
     super.oninit(vnode);
     importStatus().then((s) => {
+      this.syncInfo = s.syncInfo || null;
+      m.redraw();
       if (s.runId && s.running) {
         this.status = s;
         this.runId = s.runId;
@@ -94,6 +100,17 @@ export default class ImporterPage extends Component {
     this.config.prefix = s.prefix || '';
     this.config.port = s.port || '3306';
     if (s.noUpload) this.mode = 'connect';
+  }
+
+  /** Open the wizard on the last import's settings, to sync it. */
+  openSync() {
+    const info = this.syncInfo!;
+    this.pickSource(info.source);
+    this.config = { ...this.config, ...info.config, password: '' };
+    this.mode = info.upload ? 'upload' : 'connect';
+    this.syncMode = true;
+    this.status = {};
+    this.runId = null;
   }
 
   setMode(mode: 'connect' | 'upload') {
@@ -132,10 +149,10 @@ export default class ImporterPage extends Component {
   }
 
   start() {
-    if (!confirm(t('confirm_start'))) return;
+    if (!confirm(this.syncMode ? t('sync.confirm') : t('confirm_start'))) return;
     const config: SourceConfig = this.mode === 'upload' ? { file: this.handle!, prefix: this.config.prefix } : this.cfg();
     this.starting = true;
-    startImport(this.source, config)
+    (this.syncMode ? startSync(config) : startImport(this.source, config))
       .then((s) => {
         this.runId = s.runId ?? null;
         this.status = s;
@@ -157,6 +174,7 @@ export default class ImporterPage extends Component {
       try {
         const s = await stepImport(this.runId);
         this.status = s;
+        if (s.done) importStatus().then((r) => (this.syncInfo = r.syncInfo || null));
         m.redraw();
         await sleep(s.skipped ? 1200 : 250);
       } catch (e: any) {
@@ -168,15 +186,19 @@ export default class ImporterPage extends Component {
     }
   }
 
+  /** Back to the wizard. A finished run is kept — its map is what syncs and redirects read; a failed one is cleared. */
   reset() {
-    resetImport(this.runId ?? undefined).then(() => {
+    const clear = () => {
       this.runId = null;
       this.status = {};
       this.testResult = null;
       this.handle = null;
       this.file = null;
+      this.syncMode = false;
       m.redraw();
-    });
+    };
+    if (this.status.done) clear();
+    else resetImport(this.runId ?? undefined).then(clear);
   }
 
   view() {
@@ -184,7 +206,9 @@ export default class ImporterPage extends Component {
     const done = !!this.status.done;
     const failed = !!this.status.failed;
     const src = SOURCES[this.source];
-    const canStart = !!this.testResult && this.testResult.ok && (this.mode === 'connect' || !!this.handle);
+    const canStart = this.syncMode
+      ? this.mode === 'connect' || !!this.handle
+      : !!this.testResult && this.testResult.ok && (this.mode === 'connect' || !!this.handle);
 
     return m('.ImporterPage', [
       m('.ImporterPage-intro', [m('h2', t('title')), m('p.helpText', t('intro'))]),
@@ -193,17 +217,19 @@ export default class ImporterPage extends Component {
         !done &&
         !failed &&
         m('.ImporterPage-wizard', [
+          this.renderSyncIntro(),
           m('.Form-group', [
             m('label', t('source')),
             m(
               'select.FormControl',
-              { value: this.source, onchange: (e: any) => this.pickSource(e.target.value) },
+              { value: this.source, disabled: this.syncMode, onchange: (e: any) => this.pickSource(e.target.value) },
               Object.keys(SOURCES).map((k) => m('option', { value: k }, SOURCES[k].label))
             ),
           ]),
 
           // mode toggle (upload is mysqldump-only, so hidden for Redis/PostgreSQL sources)
           !src.noUpload &&
+            !this.syncMode &&
             m('.ImporterPage-modes', { role: 'tablist' }, [
               m(
                 'button',
@@ -236,6 +262,7 @@ export default class ImporterPage extends Component {
                 this.field('database', src.driver === 'redis' ? t('database_redis') : t('database'), 'text'),
                 !src.noUsername && this.field('username', t('username'), 'text'),
                 this.field('password', t('password'), 'password'),
+                this.syncMode && m('p.helpText.ImporterPage-full', t('sync.password_help')),
                 src.needsPrefix && this.field('prefix', t('prefix'), 'text', '160px'),
               ])
             : m('.ImporterPage-upload', [
@@ -255,7 +282,12 @@ export default class ImporterPage extends Component {
             this.mode === 'connect'
               ? m(Button, { className: 'Button', loading: this.testing, onclick: () => this.test() }, t('test'))
               : m(Button, { className: 'Button', loading: this.uploading, disabled: !this.file, onclick: () => this.upload() }, t('upload')),
-            m(Button, { className: 'Button Button--primary', loading: this.starting, disabled: !canStart, onclick: () => this.start() }, t('start')),
+            m(
+              Button,
+              { className: 'Button Button--primary', loading: this.starting, disabled: !canStart, onclick: () => this.start() },
+              this.syncMode ? t('sync.start') : t('start')
+            ),
+            this.syncMode && m(Button, { className: 'Button Button--link', onclick: () => (this.syncMode = false) }, t('sync.cancel')),
           ]),
 
           this.testResult && this.renderTestResult(this.testResult),
@@ -263,6 +295,21 @@ export default class ImporterPage extends Component {
         ]),
 
       (running || done || failed) && this.renderProgress(running, done, failed),
+    ]);
+  }
+
+  /** The offer to sync the last import (or, once accepted, what the form below is for). */
+  renderSyncIntro() {
+    const info = this.syncInfo;
+    if (!info) return null;
+    const label = SOURCES[info.source]?.label || info.source;
+    return m('.ImporterPage-sync', [
+      m('h3', t('sync.title')),
+      m('p.helpText', t('sync.intro', { source: label })),
+      info.last && m('p.helpText', t('sync.last', { date: new Date(info.last.replace(' ', 'T') + 'Z').toLocaleString() })),
+      this.syncMode
+        ? m('p.helpText', info.upload ? t('sync.upload_help') : null)
+        : m(Button, { className: 'Button Button--primary', icon: 'fas fa-rotate', onclick: () => this.openSync() }, t('sync.open')),
     ]);
   }
 
@@ -290,7 +337,10 @@ export default class ImporterPage extends Component {
     const summary = this.status.summary || {};
     return m('.ImporterPage-progress', [
       m('.ImporterPage-progressHead', [
-        m('strong', running ? t('running') : failed ? t('failed') : t('complete')),
+        m(
+          'strong',
+          running ? t(this.status.sync ? 'sync.running' : 'running') : failed ? t('failed') : t(this.status.sync ? 'sync.complete' : 'complete')
+        ),
         m('span.ImporterPage-pct', pct + '%'),
       ]),
       m('.ImporterPage-bar', m('.ImporterPage-barFill', { className: failed ? 'is-failed' : '', style: `width:${pct}%` })),
@@ -301,7 +351,13 @@ export default class ImporterPage extends Component {
           Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', countLabel(k)]))
         ),
       this.status.lastStatus && m('p.helpText', this.status.lastStatus),
-      (done || failed) && m('.ImporterPage-actions', [m(Button, { className: 'Button', onclick: () => this.reset() }, t('import_another'))]),
+      (done || failed) &&
+        m('.ImporterPage-actions', [
+          done &&
+            this.syncInfo &&
+            m(Button, { className: 'Button Button--primary', icon: 'fas fa-rotate', onclick: () => this.openSync() }, t('sync.open')),
+          m(Button, { className: 'Button', onclick: () => this.reset() }, t('import_another')),
+        ]),
     ]);
   }
 }

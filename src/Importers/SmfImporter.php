@@ -131,8 +131,12 @@ class SmfImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('id_board')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('id_topic'));
                     foreach ($rows as $t) {
                         $cursor = $t->id_topic;
+                        if (isset($known[(string) $t->id_topic])) {
+                            continue;
+                        }
                         $fm = $firstMsg[(string) $t->id_first_msg] ?? null;
                         $title = self::decode((string) ($fm->subject ?? '')) ?: 'Untitled';
                         $did = Dst::discussion($title, $userMap[(string) $t->id_member_started] ?? null, Src::ts($fm->poster_time ?? null), (bool) ($t->is_sticky ?? false));
@@ -148,23 +152,17 @@ class SmfImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                $p.'messages',
+                'id_topic',
+                'id_msg',
                 fn () => (int) Src::connect($cfg)->table($p.'messages')->where('approved', 1)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p.'messages')->where('approved', 1)
-                        ->where(fn ($q) => $q->where('id_topic', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('id_topic', (int) $cur['tid'])->where('id_msg', '>', (int) $cur['pid'])))
-                        ->orderBy('id_topic')->orderBy('id_msg')->limit($lim)->get(),
-                    fn ($m) => [
-                        'tid' => (int) $m->id_topic, 'pid' => (int) $m->id_msg, 'uid' => $m->id_member,
-                        'html' => self::body($m->body ?? ''), 'at' => Src::ts($m->poster_time ?? null), 'ok' => true,
-                    ]
-                )
+                fn ($m) => [
+                    'tid' => (int) $m->id_topic, 'pid' => (int) $m->id_msg, 'uid' => $m->id_member,
+                    'html' => self::body($m->body ?? ''), 'at' => Src::ts($m->poster_time ?? null), 'ok' => true,
+                ],
+                fn ($q) => $q->where('approved', 1),
+                'modified_time',
             ),
         ], Phases::tail());
     }

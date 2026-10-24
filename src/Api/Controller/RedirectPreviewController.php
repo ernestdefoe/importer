@@ -125,12 +125,15 @@ class RedirectPreviewController implements RequestHandlerInterface
      */
     protected function runs(): array
     {
-        $rows = Dst::db()->table('importer_runs')->orderByDesc('id')->get();
+        // Not syncs: they write into the map of the import they continue.
+        $rows = Dst::db()->table('importer_runs')->whereNull('base_run_id')->orderByDesc('id')->get();
 
         $counts = [];
 
-        foreach (Dst::db()->table('importer_map')->get() as $m) {
-            $counts[(int) $m->run_id][(string) $m->kind] = ($counts[(int) $m->run_id][(string) $m->kind] ?? 0) + 1;
+        // Counted in the database: the map holds a row per imported post.
+        foreach (Dst::db()->table('importer_map')->whereIn('kind', ['topic', 'tag', 'user'])
+            ->groupBy('run_id', 'kind')->selectRaw('run_id, kind, COUNT(*) n')->get() as $m) {
+            $counts[(int) $m->run_id][(string) $m->kind] = (int) $m->n;
         }
 
         $out = [];

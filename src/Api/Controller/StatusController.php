@@ -20,6 +20,7 @@ class StatusController implements RequestHandlerInterface
         $runId = (int) Arr::get($request->getQueryParams(), 'runId', 0);
         $res = $runId ? Runner::status($runId) : (Runner::latest() ?? ['runId' => null, 'running' => false, 'percent' => 0, 'status' => null, 'summary' => []]);
 
-        return new JsonResponse($res);
+        // Whether the last finished import can be kept in sync, for the wizard's button.
+        return new JsonResponse($res + ['syncInfo' => Runner::syncInfo()]);
     }
 }

@@ -234,9 +234,13 @@ class WebWizImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck($c['topic_forum'])->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck($c['topic_id']));
                     foreach ($rows as $t) {
                         $id = (int) $t->{$c['topic_id']};
                         $cursor = $id;
+                        if (isset($known[(string) $id])) {
+                            continue;
+                        }
 
                         // A "moved" topic is a pointer left behind when a topic
                         // was relocated — its content lives under the target id,
@@ -263,27 +267,19 @@ class WebWizImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                $p.'Thread',
+                $c['thread_topic'],
+                $c['thread_id'],
                 fn () => (int) Src::connect($cfg)->table($p.'Thread')->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table($p.'Thread')
-                        ->where(fn ($q) => $q->where($c['thread_topic'], '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where($c['thread_topic'], (int) $cur['tid'])->where($c['thread_id'], '>', (int) $cur['pid'])))
-                        ->orderBy($c['thread_topic'])->orderBy($c['thread_id'])->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->{$c['thread_topic']},
-                        'pid' => (int) $post->{$c['thread_id']},
-                        'uid' => $c['thread_author'] ? $post->{$c['thread_author']} : null,
-                        'html' => self::body((string) ($post->{$c['thread_body']} ?? '')),
-                        'at' => $c['thread_date'] ? Src::ts($post->{$c['thread_date']} ?? null) : null,
-                        'ok' => true,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->{$c['thread_topic']},
+                    'pid' => (int) $post->{$c['thread_id']},
+                    'uid' => $c['thread_author'] ? $post->{$c['thread_author']} : null,
+                    'html' => self::body((string) ($post->{$c['thread_body']} ?? '')),
+                    'at' => $c['thread_date'] ? Src::ts($post->{$c['thread_date']} ?? null) : null,
+                    'ok' => true,
+                ],
             ),
         ], Phases::tail());
     }

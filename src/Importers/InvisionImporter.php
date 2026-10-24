@@ -105,8 +105,12 @@ class InvisionImporter
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forum_id')->all()) : [];
                     $map = [];
                     $n = 0;
+                    $known = $ctx->known('topic', $rows->pluck('tid'));
                     foreach ($rows as $t) {
                         $cursor = $t->tid;
+                        if (isset($known[(string) $t->tid])) {
+                            continue;
+                        }
                         if (($t->state ?? 'open') === 'link' || trim((string) ($t->moved_to ?? '')) !== '') {
                             continue; // moved/redirect pointer
                         }
@@ -123,24 +127,18 @@ class InvisionImporter
                 }
             ),
 
-            new Phase(
-                'posts',
-                'posts',
+            ...Phases::posts(
+                'forums_posts',
+                'topic_id',
+                'pid',
                 fn () => (int) Src::connect($cfg)->table('forums_posts')->where('queued', 0)->count(),
-                fn ($cursor, $limit, Ctx $ctx) => Phases::postsBatch(
-                    $cursor,
-                    $limit,
-                    $ctx,
-                    fn ($conn, $cur, $lim) => $conn->table('forums_posts')->where('queued', 0)
-                        ->where(fn ($q) => $q->where('topic_id', '>', (int) $cur['tid'])
-                            ->orWhere(fn ($q2) => $q2->where('topic_id', (int) $cur['tid'])->where('pid', '>', (int) $cur['pid'])))
-                        ->orderBy('topic_id')->orderBy('pid')->limit($lim)->get(),
-                    fn ($post) => [
-                        'tid' => (int) $post->topic_id, 'pid' => (int) $post->pid, 'uid' => $post->author_id,
-                        'html' => self::ipsHtml($post->post ?? ''), 'at' => Src::ts($post->post_date ?? null),
-                        'ok' => (int) ($post->pdelete_time ?? 0) === 0,
-                    ]
-                )
+                fn ($post) => [
+                    'tid' => (int) $post->topic_id, 'pid' => (int) $post->pid, 'uid' => $post->author_id,
+                    'html' => self::ipsHtml($post->post ?? ''), 'at' => Src::ts($post->post_date ?? null),
+                    'ok' => (int) ($post->pdelete_time ?? 0) === 0,
+                ],
+                fn ($q) => $q->where('queued', 0),
+                'edit_time',
             ),
         ], Phases::tail());
     }

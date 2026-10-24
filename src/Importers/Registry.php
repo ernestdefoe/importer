@@ -48,6 +48,17 @@ class Registry
         ];
     }
 
+    /**
+     * Sources whose import can be kept in sync afterwards (their posts phase
+     * is {@see Phases::posts()}). Vanilla, NodeBB and vBulletin 5 write the
+     * first post in the topics phase, and cannot be synced yet; nor can a
+     * vBulletin 5 board reached through 'vbulletin' (the runner checks).
+     */
+    public static function syncable(string $key): bool
+    {
+        return isset(self::map()[$key]) && ! in_array($key, ['vanilla', 'nodebb', 'vbulletin5'], true);
+    }
+
     public static function get(string $key): ?string
     {
         return self::map()[$key] ?? null;

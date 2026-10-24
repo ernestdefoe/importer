@@ -87,12 +87,12 @@ class Bbcode
             '#\[u\](.*?)\[/u\]#is' => '<u>$1</u>',
             '#\[(?:s|strike|del)\](.*?)\[/(?:s|strike|del)\]#is' => '<del>$1</del>',
             '#\[center\](.*?)\[/center\]#is' => '<div style="text-align:center">$1</div>',
-            '#\[quote(?:=&quot;?([^\]&]*)&quot;?(?:;[^\]]*)?|=([^\]]*))?\](.*?)\[/quote\]#is' => '<blockquote>$3</blockquote>',
             '~\[color=([#\w]+)\](.*?)\[/color\]~is' => '<span style="color:$1">$2</span>',
             '#\[size=(\d+)\](.*?)\[/size\]#is' => '<span>$2</span>',
         ];
         for ($i = 0; $i < 4; $i++) {
             $t = preg_replace(array_keys($pairs), array_values($pairs), $t);
+            $t = preg_replace_callback('#\[quote(\s[^\]]*|=[^\]]*)?\](.*?)\[/quote\]#is', fn ($m) => self::quote($m[1], $m[2]), $t);
         }
 
         // Links + images.
@@ -188,6 +188,28 @@ class Bbcode
         ], ['$1', "\n", '', ''], $text) ?? $text;
 
         return $text;
+    }
+
+    /**
+     * A quote keeps who it quotes, as data-cite — Dst::content() turns that into
+     * the attribution line, in the forum's language. The attribute arrives
+     * HTML-escaped, in whichever form the board wrote it:
+     *   [quote="Kryptos;c-123"]  Vanilla      [quote=Kryptos;123]  vBulletin
+     *   [quote="Kryptos" post_id=1 time=… user_id=…]  phpBB 3.2+
+     *   [quote='Kryptos' pid='1' dateline='…']  MyBB   [quote author=Kryptos link=… date=…]  SMF
+     */
+    private static function quote(string $attr, string $body): string
+    {
+        $a = trim(html_entity_decode($attr, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $name = match (true) {
+            (bool) preg_match('/^=\s*(["\'])(.*?)\1/s', $a, $m) => $m[2],
+            (bool) preg_match('/^=(.*?)(?=\s+\w+=|$)/s', $a, $m) => $m[1],
+            (bool) preg_match('/^author=(.*?)(?=\s+\w+=|$)/s', $a, $m) => $m[1],
+            default => '',
+        };
+        $name = trim((string) preg_replace('/;.*$/s', '', $name)); // ;123 / ;c-123 is the quoted post
+
+        return '<blockquote'.($name !== '' ? ' data-cite="'.htmlspecialchars($name, ENT_QUOTES, 'UTF-8').'"' : '').'>'.$body.'</blockquote>';
     }
 
     private static function link(string $href, string $text): string

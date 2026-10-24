@@ -91,6 +91,8 @@ ernestdefoe-importer:
       summary: "Synced {topics} new discussions, {posts} new posts, {users} new members, {edited} edited posts ({kept} edits kept because the post was changed here)."
     summary: "Imported {topics} discussions, {posts} posts, {users} members."
     summary_with_tags: "Imported {topics} discussions, {posts} posts, {users} members, {categories} tags."
+    # The line opening an imported quote; it becomes bold text in the post.
+    quote_wrote: "{name} wrote:"
     sqlsrv_missing: "This server cannot connect to SQL Server directly: the PHP extension pdo_sqlsrv is not installed. Export the source database to a dump or CSV and use the file-upload import instead."
     dump_unreadable: Could not open the uploaded dump.
     scratch_failed: "Could not create a scratch database at {path}"

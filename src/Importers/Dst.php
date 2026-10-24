@@ -41,6 +41,22 @@ class Dst
         return self::$formatter ??= resolve(Formatter::class);
     }
 
+    /**
+     * Two things the Markdown converter gets wrong, fixed in the HTML first:
+     * - a quote's author (`<blockquote data-cite="…">`, written by the
+     *   importers) becomes a bold "Kryptos wrote:" line in the forum's language;
+     * - a link with no address (Vanilla's quote header has one) was kept as raw
+     *   `<a rel="nofollow">` markup, which the forum then showed as text.
+     */
+    private static function prepare(string $html): string
+    {
+        $html = preg_replace_callback('#<blockquote\b[^>]*?\sdata-cite="([^"]*)"[^>]*>#i', fn ($m) => '<blockquote><p><strong>'
+            .htmlspecialchars(Src::t('quote_wrote', ['name' => html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8')]), ENT_QUOTES, 'UTF-8')
+            .'</strong></p>', $html) ?? $html;
+
+        return preg_replace('#<a\b(?![^>]*\bhref\s*=)[^>]*>(.*?)</a>#is', '$1', $html) ?? $html;
+    }
+
     private static function html(): HtmlConverter
     {
         return self::$html ??= new HtmlConverter([
@@ -68,7 +84,7 @@ class Dst
     /** Convert an HTML body into Flarum's stored (parsed) content form. */
     public static function content(string $html): string
     {
-        $md = trim(PostText::fixEntities(self::html()->convert($html !== '' ? $html : ' ')));
+        $md = trim(PostText::fixEntities(self::html()->convert($html !== '' ? self::prepare($html) : ' ')));
         if ($md === '') {
             $md = '​'; // zero-width space so the post isn't empty
         }

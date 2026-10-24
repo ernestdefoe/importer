@@ -187,11 +187,19 @@ class VanillaImporter
         switch (strtolower(trim((string) $format))) {
             case 'html':
             case 'wysiwyg':
-                return Src::sanitizeHtml($body);
+                // Vanilla's Quotes plugin keeps the author in rel=: <blockquote class="Quote" rel="Kryptos">.
+                return Src::sanitizeHtml(preg_replace('#<blockquote\b([^>]*?)\srel="([^"]*)"#i', '<blockquote$1 data-cite="$2"', $body) ?? $body);
             case 'bbcode':
                 return Bbcode::toHtml($body);
             case 'markdown':
-                return Src::markdown($body);
+                // ...and in Markdown opens the quote with "> @Kryptos said:" (in the board's
+                // language). Left as it is, Flarum reads @Kryptos as a mention and links it
+                // to whichever member now has that username — or, for "@John Smith", to John.
+                return preg_replace_callback(
+                    '#(<blockquote>\s*<p>)@([^\n<]{1,100}:)(?:\n|(?=</p>))#u',
+                    fn ($m) => $m[1].'<strong>'.str_replace('&quot;', '', $m[2]).'</strong><br>',
+                    Src::markdown($body)
+                ) ?? '';
             case 'rich':
             case 'rich2':
                 return self::richToHtml($body);

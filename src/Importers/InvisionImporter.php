@@ -244,9 +244,7 @@ class InvisionImporter
                 $bq->removeAttribute($attr->nodeName);
             }
             if ($user !== '') {
-                $cite = $dom->createElement('p');
-                $cite->appendChild($dom->createElement('strong', $user.' wrote:'));
-                $bq->insertBefore($cite, $bq->firstChild);
+                $bq->setAttribute('data-cite', $user); // Dst::content() writes the attribution
             }
         }
 
@@ -254,7 +252,7 @@ class InvisionImporter
         foreach (iterator_to_array($dom->getElementsByTagName('*')) as $el) {
             foreach (iterator_to_array($el->attributes) as $attr) {
                 $name = $attr->nodeName;
-                if ($name === 'class' || $name === 'style' || str_starts_with($name, 'data-')) {
+                if ($name === 'class' || $name === 'style' || (str_starts_with($name, 'data-') && $name !== 'data-cite')) {
                     $el->removeAttribute($name);
                 }
             }

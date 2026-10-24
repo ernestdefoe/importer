@@ -61,7 +61,7 @@ $h = Bbcode::phpbb("[list:$uid][*:$uid]one[/*:m:$uid][*:$uid]two[/*:m:$uid][/lis
 $check('lists with :m :u :o suffixes', $h === '<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>', $h);
 
 $h = Bbcode::phpbb("[quote=&quot;Ada&quot;:$uid][quote=&quot;Bob&quot;:$uid]inner[/quote:$uid]outer[/quote:$uid]", $uid);
-$check('nested quotes with uid', $h === '<blockquote><blockquote>inner</blockquote>outer</blockquote>', $h);
+$check('nested quotes with uid', $h === '<blockquote data-cite="Ada"><blockquote data-cite="Bob">inner</blockquote>outer</blockquote>', $h);
 
 $h = Bbcode::phpbb("[code:$uid]&lt;?php echo &quot;a&amp;b&quot;;&nbsp;&nbsp;// &#91;b&#93; ?&gt;[/code:$uid]", $uid);
 $check('code: entities decoded once, brackets kept', $h === '<pre><code>&lt;?php echo &quot;a&amp;b&quot;;  // [b] ?&gt;</code></pre>', $h);
@@ -87,7 +87,7 @@ $h = Bbcode::phpbb('<r>Hello <B><s>[b]</s>world<e>[/b]</e></B> <URL url="https:/
 $has('bold', $h, '<strong>world</strong>');
 $has('magic link left for the autolinker', $h, 'https://example.com/?a=1&amp;b=2');
 $has('escaped text stays text', $h, '&lt;script&gt; &amp;lt;');
-$has('quote', $h, '<blockquote>hi</blockquote>');
+$has('quote', $h, '<blockquote data-cite="Ada">hi</blockquote>');
 $lacks('no XML left', $h, '&lt;B&gt;');
 $check('plain <t> post', Bbcode::phpbb('<t>Just text &amp; more</t>') === '<p>Just text &amp; more</p>', Bbcode::phpbb('<t>Just text &amp; more</t>'));
 
@@ -105,6 +105,19 @@ $fixed = PostText::fixEntities(PostText::repairPhpbb($bad));
 $check('rebuilt', $fixed === "See [https://www.ea.com/games/battle\\_field?a=1&b=2](https://www.ea.com/games/battle_field?a=1&b=2). Nice :)\n- one\n- two\n", $fixed);
 $check('idempotent', PostText::fixEntities(PostText::repairPhpbb($fixed)) === PostText::fixEntities($fixed) && ! PostText::hasPhpbbLegacy($fixed));
 $check('clean post not detected', ! PostText::hasPhpbbLegacy('Just a post with [a link](https://x.example) &amp; text'));
+
+echo "Quotes keep their author\n";
+foreach ([
+    'Vanilla' => ['[quote="Kryptos;c-5"]hi[/quote]', 'Kryptos'],
+    'vBulletin' => ['[quote=Ana Maria;123]hi[/quote]', 'Ana Maria'],
+    'phpBB 3.2' => ['[quote="Kryptos" post_id=4 time=1600000000 user_id=2]hi[/quote]', 'Kryptos'],
+    'MyBB' => ["[quote='Kryptos' pid='4' dateline='1600000000']hi[/quote]", 'Kryptos'],
+    'SMF' => ['[quote author=Kryptos link=msg=4 date=1600000000]hi[/quote]', 'Kryptos'],
+    'escaped name' => ['[quote="<b>x</b>"]hi[/quote]', '&lt;b&gt;x&lt;/b&gt;'],
+] as $board => [$src, $cite]) {
+    $has($board, Bbcode::toHtml($src), '<blockquote data-cite="'.$cite.'">hi</blockquote>');
+}
+$has('no author, plain quote', Bbcode::toHtml('[quote]hi[/quote]'), '<blockquote>hi</blockquote>');
 
 echo $fail ? "\n$fail FAILED\n" : "\nAll passed\n";
 exit($fail ? 1 : 0);

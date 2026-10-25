@@ -30,7 +30,12 @@ class NodebbMessagesTest extends TestCase
             $this->markTestSkipped('No phpredis.');
         }
         $r = new \Redis;
-        if (! @$r->connect('127.0.0.1', 6379, 1.0) || ! $r->select(self::DB) || $r->dbSize() > 0) {
+        try {
+            $usable = @$r->connect('127.0.0.1', 6379, 1.0) && $r->select(self::DB) && $r->dbSize() === 0;
+        } catch (\Throwable) {
+            $usable = false; // phpredis throws when nothing is listening
+        }
+        if (! $usable) {
             $this->markTestSkipped('No empty Redis database '.self::DB.' on 127.0.0.1:6379.');
         }
         $this->redis = $r;

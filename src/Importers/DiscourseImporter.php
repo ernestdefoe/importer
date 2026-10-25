@@ -147,4 +147,70 @@ class DiscourseImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * Personal messages are topics with `archetype` 'private_message'; who is
+     * in one is `topic_allowed_users` (a member who removes themselves is taken
+     * off it) plus the members of any `topic_allowed_groups` group, and how far
+     * each has read is `topic_users.last_read_post_number`. Messages the system
+     * itself started (welcome messages, user id below 1) are not conversations
+     * anybody had; nor are deleted ones, or whispers and small actions.
+     */
+    public static function privateMessages(array $rawCfg): array
+    {
+        $cfg = self::cfg($rawCfg);
+        $pms = fn ($conn) => $conn->table('posts')->join('topics', 'topics.id', '=', 'posts.topic_id')
+            ->where('topics.archetype', 'private_message')->whereNull('topics.deleted_at')->where('topics.user_id', '>', 0)
+            ->whereNull('posts.deleted_at')->where('posts.post_type', 1);
+
+        return [
+            'count' => function () use ($cfg, $pms) {
+                $conn = Src::connect($cfg);
+
+                return $conn->getSchemaBuilder()->hasTable('topic_allowed_users') ? (int) $pms($conn)->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($pms) {
+                $conn = $ctx->src();
+                $sb = $conn->getSchemaBuilder();
+                if (! $sb->hasTable('topic_allowed_users')) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $pms($conn)->where('posts.id', '>', $after)->orderBy('posts.id')->limit($limit)
+                    ->get(['posts.id', 'posts.topic_id', 'posts.user_id', 'posts.cooked', 'posts.created_at', 'posts.post_number', 'topics.title']);
+                $ids = $rows->pluck('topic_id')->unique()->values()->all();
+                $who = $read = [];
+                foreach ($ids ? $conn->table('topic_allowed_users')->whereIn('topic_id', $ids)->get(['topic_id', 'user_id']) : [] as $r) {
+                    $who[$r->topic_id][] = $r->user_id;
+                }
+                if ($ids && $sb->hasTable('topic_allowed_groups') && $sb->hasTable('group_users')) {
+                    foreach ($conn->table('topic_allowed_groups')->join('group_users', 'group_users.group_id', '=', 'topic_allowed_groups.group_id')
+                        ->whereIn('topic_allowed_groups.topic_id', $ids)->get(['topic_allowed_groups.topic_id', 'group_users.user_id']) as $r) {
+                        $who[$r->topic_id][] = $r->user_id;
+                    }
+                }
+                if ($ids && $sb->hasTable('topic_users')) {
+                    foreach ($conn->table('topic_users')->whereIn('topic_id', $ids)->get(['topic_id', 'user_id', 'last_read_post_number']) as $r) {
+                        $read[$r->topic_id][$r->user_id] = (int) $r->last_read_post_number;
+                    }
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->id;
+                    $in = $who[$m->topic_id] ?? [];
+                    $out[] = [
+                        'id' => (string) $m->id,
+                        'conv' => (string) $m->topic_id,
+                        'title' => (string) ($m->title ?? ''),
+                        'uid' => $m->user_id,
+                        'people' => $in,
+                        'keep' => $in,
+                        'unread' => array_filter($in, fn ($u) => ($read[$m->topic_id][$u] ?? 0) < (int) $m->post_number),
+                        'html' => Src::sanitizeHtml($m->cooked ?? ''),
+                        'at' => Src::ts($m->created_at ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

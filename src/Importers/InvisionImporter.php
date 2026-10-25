@@ -149,6 +149,61 @@ class InvisionImporter
      *
      * @return array{0:array<int,string>,1:array<int,string>} [names, descs]
      */
+    /**
+     * Messenger: `core_message_topics` (a conversation: `mt_title`,
+     * `mt_is_draft`), `core_message_posts` (its messages) and
+     * `core_message_topic_user_map` (a row per participant: `map_user_active`
+     * 0 once they left or were removed, `map_read_time`). Drafts never went out.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('core_message_posts') && $conn->getSchemaBuilder()->hasTable('core_message_topic_user_map');
+
+        return [
+            'count' => function () use ($cfg, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table('core_message_posts')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table('core_message_posts')->where('msg_id', '>', $after)->orderBy('msg_id')->limit($limit)->get();
+                $ids = $rows->pluck('msg_topic_id')->unique()->values()->all();
+                $topics = $ids ? $conn->table('core_message_topics')->whereIn('mt_id', $ids)->get()->keyBy('mt_id') : collect();
+                $who = [];
+                foreach ($ids ? $conn->table('core_message_topic_user_map')->whereIn('map_topic_id', $ids)->get() : [] as $r) {
+                    $who[$r->map_topic_id][] = $r;
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->msg_id;
+                    $t = $topics->get($m->msg_topic_id);
+                    if (! $t || (int) ($t->mt_is_draft ?? 0)) {
+                        continue;
+                    }
+                    $rs = $who[$m->msg_topic_id] ?? [];
+                    $active = array_filter($rs, fn ($r) => (int) ($r->map_user_active ?? 1) === 1);
+                    $out[] = [
+                        'id' => (string) $m->msg_id,
+                        'conv' => (string) $m->msg_topic_id,
+                        'title' => (string) ($t->mt_title ?? ''),
+                        'uid' => $m->msg_author_id,
+                        'people' => array_map(fn ($r) => $r->map_user_id, $rs),
+                        'keep' => array_map(fn ($r) => $r->map_user_id, $active),
+                        'unread' => array_map(fn ($r) => $r->map_user_id, array_filter($active, fn ($r) => (int) ($r->map_read_time ?? 0) < (int) $m->msg_date)),
+                        'html' => self::ipsHtml($m->msg_post ?? ''),
+                        'at' => Src::ts($m->msg_date ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
+
     private static function forumWords(ConnectionInterface $conn, array $ids): array
     {
         $names = $descs = [];

@@ -9,6 +9,7 @@ export interface SourceConfig {
   password?: string;
   prefix?: string;
   file?: string; // handle from an uploaded dump
+  private_messages?: string; // '1' to bring private messages across (the default), '0' to leave them
 }
 
 export interface TestResult {
@@ -39,6 +40,7 @@ export interface SyncInfo {
   needsPassword: boolean;
   upload: boolean;
   last: string;
+  messagesOnly?: boolean; // the source's content does not sync yet; only its private messages come across
 }
 
 const base = (): string => app.forum.attribute('apiUrl');

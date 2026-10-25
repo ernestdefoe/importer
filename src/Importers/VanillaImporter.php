@@ -177,6 +177,60 @@ class VanillaImporter
         ], Phases::tail());
     }
 
+    /**
+     * Conversations: `Conversation` (`Subject`, often empty), `ConversationMessage`
+     * (`Body` in the row's `Format`) and `UserConversation`, a row per
+     * participant: `Deleted` once they left it, `DateCleared` when they cleared
+     * everything before that moment, `DateLastViewed` how far they have read.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'ConversationMessage') && $conn->getSchemaBuilder()->hasTable($p.'UserConversation');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'ConversationMessage')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table($p.'ConversationMessage')->where('MessageID', '>', $after)->orderBy('MessageID')->limit($limit)->get();
+                $ids = $rows->pluck('ConversationID')->unique()->values()->all();
+                $subjects = $ids && $conn->getSchemaBuilder()->hasTable($p.'Conversation')
+                    ? $conn->table($p.'Conversation')->whereIn('ConversationID', $ids)->pluck('Subject', 'ConversationID')->all() : [];
+                $who = [];
+                foreach ($ids ? $conn->table($p.'UserConversation')->whereIn('ConversationID', $ids)->get() : [] as $r) {
+                    $who[$r->ConversationID][] = $r;
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->MessageID;
+                    $at = Src::ts($m->DateInserted ?? null);
+                    $rs = $who[$m->ConversationID] ?? [];
+                    $kept = array_filter($rs, fn ($r) => ! (int) ($r->Deleted ?? 0) && (empty($r->DateCleared) || Src::ts($r->DateCleared) < $at));
+                    $out[] = [
+                        'id' => (string) $m->MessageID,
+                        'conv' => (string) $m->ConversationID,
+                        'title' => (string) ($subjects[$m->ConversationID] ?? ''),
+                        'uid' => $m->InsertUserID,
+                        'people' => array_map(fn ($r) => $r->UserID, $rs),
+                        'keep' => array_map(fn ($r) => $r->UserID, $kept),
+                        'unread' => array_map(fn ($r) => $r->UserID, array_filter($kept, fn ($r) => empty($r->DateLastViewed) || Src::ts($r->DateLastViewed) < $at)),
+                        'html' => self::body($m->Body ?? '', $m->Format ?? ''),
+                        'at' => $at,
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
+
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {

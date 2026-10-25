@@ -62,6 +62,41 @@ class Ctx
     }
 
     /**
+     * {@see mapGet()} for several kinds at once: one query (a few on a very
+     * large batch) where a call per kind would be one each.
+     *
+     * @param  array<string,array>  $want  kind => source ids
+     * @return array<string,array<string,int>>  kind => [source_id => target_id]
+     */
+    public function mapMany(array $want): array
+    {
+        $out = array_fill_keys(array_keys($want), []);
+        $pairs = [];
+        foreach ($want as $kind => $ids) {
+            foreach (array_unique(array_filter(array_map('strval', $ids), fn ($v) => $v !== '')) as $id) {
+                $pairs[] = [$kind, $id];
+            }
+        }
+        // Well under SQLite's 999 bound parameters per statement.
+        foreach (array_chunk($pairs, 800) as $chunk) {
+            $byKind = [];
+            foreach ($chunk as [$kind, $id]) {
+                $byKind[$kind][] = $id;
+            }
+            $q = Dst::db()->table('importer_map')->where('run_id', $this->runId)->where(function ($w) use ($byKind) {
+                foreach ($byKind as $kind => $ids) {
+                    $w->orWhere(fn ($k) => $k->where('kind', $kind)->whereIn('source_id', $ids));
+                }
+            });
+            foreach ($q->get(['kind', 'source_id', 'target_id']) as $r) {
+                $out[$r->kind][(string) $r->source_id] = (int) $r->target_id;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * On a sync, which of these source ids were imported already (so a
      * catch-up pass skips them). Outside a sync: none, and no query.
      *

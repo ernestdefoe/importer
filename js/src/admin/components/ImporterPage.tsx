@@ -1,6 +1,7 @@
 import app from 'flarum/admin/app';
 import Component from 'flarum/common/Component';
 import Button from 'flarum/common/components/Button';
+import Switch from 'flarum/common/components/Switch';
 import {
   testConnection,
   uploadDump,
@@ -18,7 +19,16 @@ import {
 declare const m: any;
 const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importer.admin.' + k, p);
 // Row-count keys the server sends (test counts + import summary); anything else shows as-is.
-const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped', 'edited', 'kept'];
+const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped', 'edited', 'kept', 'messages', 'conversations', 'pm_groups_skipped'];
+// Flags in the summary rather than counts: explained in the closing line instead.
+const HIDDEN = ['pms_unavailable'];
+const enabled = (id: string): boolean => {
+  try {
+    return JSON.parse(app.data.settings.extensions_enabled || '[]').includes(id);
+  } catch (e) {
+    return false;
+  }
+};
 const countLabel = (k: string): any => (COUNTS.includes(k) ? t('count.' + k) : k);
 
 interface Source {
@@ -69,6 +79,7 @@ export default class ImporterPage extends Component {
   stopped = false;
   syncInfo: SyncInfo | null = null;
   syncMode = false;
+  pms = true;
 
   oninit(vnode: any) {
     super.oninit(vnode);
@@ -90,7 +101,7 @@ export default class ImporterPage extends Component {
 
   cfg(): SourceConfig {
     // A sync keeps the driver the import used (an import from a converted dump reads SQLite).
-    return { ...this.config, driver: (this.syncMode && this.config.driver) || SOURCES[this.source].driver };
+    return { ...this.config, driver: (this.syncMode && this.config.driver) || SOURCES[this.source].driver, private_messages: this.pms ? '1' : '0' };
   }
 
   pickSource(key: string) {
@@ -151,7 +162,8 @@ export default class ImporterPage extends Component {
 
   start() {
     if (!confirm(this.syncMode ? t('sync.confirm') : t('confirm_start'))) return;
-    const config: SourceConfig = this.mode === 'upload' ? { file: this.handle!, prefix: this.config.prefix } : this.cfg();
+    const config: SourceConfig =
+      this.mode === 'upload' ? { file: this.handle!, prefix: this.config.prefix, private_messages: this.pms ? '1' : '0' } : this.cfg();
     this.starting = true;
     (this.syncMode ? startSync(config) : startImport(this.source, config))
       .then((s) => {
@@ -279,6 +291,8 @@ export default class ImporterPage extends Component {
                 src.needsPrefix && this.field('prefix', t('prefix'), 'text', '160px'),
               ]),
 
+          this.renderMessages(),
+
           m('.ImporterPage-actions', [
             this.mode === 'connect'
               ? m(Button, { className: 'Button', loading: this.testing, onclick: () => this.test() }, t('test'))
@@ -306,11 +320,21 @@ export default class ImporterPage extends Component {
     const label = SOURCES[info.source]?.label || info.source;
     return m('.ImporterPage-sync', [
       m('h3', t('sync.title')),
-      m('p.helpText', t('sync.intro', { source: label })),
+      m('p.helpText', t(info.messagesOnly ? 'sync.messages_only_intro' : 'sync.intro', { source: label })),
       info.last && m('p.helpText', t('sync.last', { date: new Date(info.last.replace(' ', 'T') + 'Z').toLocaleString() })),
       this.syncMode
         ? m('p.helpText', info.upload ? t('sync.upload_help') : null)
         : m(Button, { className: 'Button Button--primary', icon: 'fas fa-rotate', onclick: () => this.openSync() }, t('sync.open')),
+    ]);
+  }
+
+  /** Whether private messages come across: on by default when Messages is enabled. */
+  renderMessages() {
+    if (!enabled('flarum-messages')) return m('p.helpText.ImporterPage-pms', t('pm.unavailable'));
+    return m('.Form-group.ImporterPage-pms', [
+      m(Switch, { state: this.pms, onchange: (v: boolean) => (this.pms = v) }, t('pm.include')),
+      m('p.helpText', t('pm.help')),
+      this.pms && !enabled('ernestdefoe-group-messages') && m('p.helpText', t('pm.no_groups')),
     ]);
   }
 
@@ -349,7 +373,9 @@ export default class ImporterPage extends Component {
       Object.keys(summary).length > 0 &&
         m(
           '.ImporterPage-counts',
-          Object.keys(summary).map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', countLabel(k)]))
+          Object.keys(summary)
+            .filter((k) => !HIDDEN.includes(k))
+            .map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', countLabel(k)]))
         ),
       this.status.lastStatus && m('p.helpText', this.status.lastStatus),
       (done || failed) &&

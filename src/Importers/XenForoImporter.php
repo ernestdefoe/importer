@@ -152,4 +152,59 @@ class XenForoImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * Conversations: `xf_conversation_master` (title, starter),
+     * `xf_conversation_message` and `xf_conversation_recipient` — one row per
+     * participant, `recipient_state` 'active', or 'deleted' / 'deleted_ignored'
+     * once they deleted or left it, and `last_read_date`. XenForo has no drafts
+     * in these tables and never deletes single messages.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('xf_conversation_message') && $conn->getSchemaBuilder()->hasTable('xf_conversation_recipient');
+
+        return [
+            'count' => function () use ($cfg, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table('xf_conversation_message')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $state = $conn->getSchemaBuilder()->hasColumn('xf_conversation_message', 'message_state');
+                $rows = $conn->table('xf_conversation_message')->where('message_id', '>', $after)->orderBy('message_id')->limit($limit)->get();
+                $convIds = $rows->pluck('conversation_id')->unique()->values()->all();
+                $titles = $convIds ? $conn->table('xf_conversation_master')->whereIn('conversation_id', $convIds)->pluck('title', 'conversation_id')->all() : [];
+                $who = [];
+                foreach ($convIds ? $conn->table('xf_conversation_recipient')->whereIn('conversation_id', $convIds)->get() : [] as $r) {
+                    $who[$r->conversation_id][] = $r;
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->message_id;
+                    if ($state && ($m->message_state ?? 'visible') !== 'visible') {
+                        continue;
+                    }
+                    $rs = $who[$m->conversation_id] ?? [];
+                    $active = array_filter($rs, fn ($r) => ($r->recipient_state ?? 'active') === 'active');
+                    $out[] = [
+                        'id' => (string) $m->message_id,
+                        'conv' => (string) $m->conversation_id,
+                        'title' => (string) ($titles[$m->conversation_id] ?? ''),
+                        'uid' => $m->user_id,
+                        'people' => array_map(fn ($r) => $r->user_id, $rs),
+                        'keep' => array_map(fn ($r) => $r->user_id, $active),
+                        'unread' => array_map(fn ($r) => $r->user_id, array_filter($active, fn ($r) => (int) ($r->last_read_date ?? 0) < (int) $m->message_date)),
+                        'html' => Bbcode::toHtml($m->message ?? ''),
+                        'at' => Src::ts($m->message_date ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

@@ -166,4 +166,59 @@ class SmfImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * `personal_messages` (one row per message: sender, `deleted_by_sender`,
+     * `id_pm_head` threading it) and `pm_recipients` (one row per recipient:
+     * `bcc`, `is_read`, `deleted`). SMF removes the message once everybody
+     * has deleted it; drafts live in `user_drafts`.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'personal_messages') && $conn->getSchemaBuilder()->hasTable($p.'pm_recipients');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'personal_messages')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table($p.'personal_messages')->where('id_pm', '>', $after)->orderBy('id_pm')->limit($limit)->get();
+                $to = [];
+                foreach ($rows->isEmpty() ? [] : $conn->table($p.'pm_recipients')->whereIn('id_pm', $rows->pluck('id_pm')->all())->get() as $r) {
+                    $to[$r->id_pm][] = $r;
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->id_pm;
+                    $rs = $to[$m->id_pm] ?? [];
+                    $open = array_filter($rs, fn ($r) => ! (int) ($r->bcc ?? 0));
+                    $people = array_merge([$m->id_member_from], array_map(fn ($r) => $r->id_member, $open));
+                    $keep = array_map(fn ($r) => $r->id_member, array_filter($rs, fn ($r) => ! (int) ($r->deleted ?? 0)));
+                    if (! (int) ($m->deleted_by_sender ?? 0)) {
+                        $keep[] = $m->id_member_from;
+                    }
+                    $out[] = [
+                        'id' => (string) $m->id_pm,
+                        'conv' => PrivateMessages::conv((string) ((int) ($m->id_pm_head ?? 0) ?: $m->id_pm), $people),
+                        'title' => self::decode((string) ($m->subject ?? '')),
+                        'uid' => $m->id_member_from,
+                        'people' => $people,
+                        'bcc' => array_map(fn ($r) => $r->id_member, array_filter($rs, fn ($r) => (bool) ($r->bcc ?? 0))),
+                        'keep' => $keep,
+                        'unread' => array_map(fn ($r) => $r->id_member, array_filter($rs, fn ($r) => ! (int) ($r->is_read ?? 1))),
+                        'html' => self::body($m->body ?? ''),
+                        'at' => Src::ts($m->msgtime ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

@@ -42,7 +42,9 @@
         "color": "#fff"
       },
       "optional-dependencies": [
-        "flarum/tags"
+        "flarum/tags",
+        "flarum/messages",
+        "ernestdefoe/group-messages"
       ]
     },
     "flarum-cli": {
@@ -57,7 +59,9 @@
     "flarum/phpstan": "^2.0",
     "flarum/tags": "^2.0",
     "flarum/testing": "^2.0",
-    "flarum/markdown": "^2.0"
+    "flarum/markdown": "^2.0",
+    "flarum/messages": "^2.0",
+    "ernestdefoe/group-messages": "^2.1"
   },
   "scripts": {
     "test": [

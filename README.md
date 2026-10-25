@@ -57,11 +57,49 @@ Categories are imported as **tags** (requires `flarum/tags`); if tags aren't ins
 - **Faithful content** — post bodies go source → HTML/Markdown → Flarum's formatter, landing in Flarum's native stored format so they render as proper rich text.
 - **Relations preserved** — members, tags, discussions, first/last-post pointers, comment counts and participant counts are all rebuilt.
 
+## Private messages
+
+Private messages come across too, into Flarum's own **Messages** (`flarum/messages`, bundled with Flarum 2). They are on by default whenever Messages is enabled. Switch **Bring private messages across** off in the wizard, or pass `--no-private-messages` on the command line, to leave them behind. If Messages is not enabled, the import says so in its summary and moves on.
+
+| Platform | Where they come from |
+|----------|----------------------|
+| phpBB 3.x | `privmsgs` + `privmsgs_to` |
+| vBulletin 3 / 4 | `pmtext` + `pm` |
+| vBulletin 5 / 6 | `privatemessage` nodes + `sentto` (system notifications and requests are left out) |
+| XenForo 1.x / 2.x | `xf_conversation_master` + `xf_conversation_message` + `xf_conversation_recipient` |
+| MyBB 1.8 | `privatemessages` (each member's copies are recognised as one message; drafts are left out) |
+| SMF 2.0 / 2.1 | `personal_messages` + `pm_recipients` |
+| Invision Community | `core_message_topics` + `core_message_posts` + `core_message_topic_user_map` (drafts are left out) |
+| Discourse | personal-message topics, with `topic_allowed_users` and the members of `topic_allowed_groups` (messages the system sent itself, whispers and deleted posts are left out) |
+| NodeBB | chat rooms and their messages (NodeBB 3's public chat channels are not private, so they are left out) |
+| Vanilla | `Conversation` + `ConversationMessage` + `UserConversation` |
+| Web Wiz Forums | `tblPMMessage` |
+| Convoro | the messenger (Convoro 1.x and 2) |
+
+How they land:
+
+- **Two people:** the conversation between those two members in Messages, with every message in order and its original author and date. Flarum keeps one conversation per pair of members, so every old thread between the same two people ends up in it, in date order. Text is converted exactly as posts are. Flarum's direct messages have no titles, so old subjects are not kept for them.
+- **Three or more people:** a group conversation, named after the old subject, when [Group Messages](https://github.com/ernestdefoe/group-messages) is installed and enabled. Without it they are **skipped and counted**: the summary says how many. They are never split into separate two-person conversations, because that would show people messages that were addressed to others as well. Install Group Messages later and run a sync: the skipped ones come across then.
+- **Blind copies** (phpBB, vBulletin, MyBB, SMF): a member who was blind-copied gets the message in their own conversation with the sender, so the other recipients never see that they had it.
+- **Deleted messages:** a message that every participant deleted is not imported, and nor is a draft. Messages has no way to hide one conversation from one member, so the closest thing is used instead: a member who deleted their copies of a conversation, or left it, is not added to it here. A member who kept any part of a two-person conversation sees all of it, because that is how Flarum shows a conversation.
+- **Deleted accounts:** messages from members who were not imported show as written by a deleted member, exactly as their posts do. A deleted account is never added as a member.
+- **Read and unread:** where the old forum recorded it, a message somebody had not read yet arrives unread for them. Everything else arrives read, so a whole history does not land as unread.
+- **Privacy:** only the people in a conversation can see it. Nothing else on the forum shows it, and the import never logs or reports what a message says, only counts. Members are not notified when old messages arrive.
+
+**Already imported before this version?** Run a sync and the messages come across: all of them the first time, then only new ones after that. A message is never brought across twice.
+
+```bash
+php flarum importer:run --sync --dry-run --password=secret   # counts them, saves nothing
+php flarum importer:run --sync --password=secret
+```
+
+Or use **Sync new content** in the admin. For Vanilla, NodeBB and vBulletin 5, whose other content cannot be synced yet, a sync brings across the private messages only.
+
 ## Keeping the old forum in sync
 
 Import once, then keep the old forum running while you set Flarum up, and sync as often as you like before you switch over. A sync copies only what the old forum has gained since the last run:
 
-- **new members, categories, discussions and replies** — a reply in an old topic lands in the discussion that topic became, numbered after whatever is there now (including replies written on Flarum);
+- **new members, categories, discussions, replies and private messages** — a reply in an old topic lands in the discussion that topic became, numbered after whatever is there now (including replies written on Flarum);
 - **edits** made on the old forum, for phpBB, XenForo, MyBB, SMF and Invision (they record an edit time). An edit is only copied over a post nobody has edited on Flarum — if somebody has, the Flarum edit wins and the sync counts it as kept;
 - the **counters** of whatever it touched: discussion reply counts and last posts, member post counts, tag counts. The old-link redirects pick up the new discussions on their own.
 
@@ -82,7 +120,7 @@ Good to know:
 
 - A sync reads only what is past the last thing it imported (plus a few hundred ids back, for posts and topics approved late), so it is quick. The **first** sync of an import made with 0.3.7 or earlier reads every post once, to learn which ones are already here.
 - Only one import or sync runs at a time.
-- Not yet for Vanilla, NodeBB or vBulletin 5 (vBulletin 3/4 syncs new content, without edits; so do Discourse, Convoro and Web Wiz). Changes to members, titles or categories on the old forum, and deletions, are not synced.
+- Not yet for Vanilla, NodeBB or vBulletin 5, apart from their private messages (vBulletin 3/4 syncs new content, without edits; so do Discourse, Convoro and Web Wiz). Changes to members, titles or categories on the old forum, and deletions, are not synced.
 
 ## Requirements & tips
 

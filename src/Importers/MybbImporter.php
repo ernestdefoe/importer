@@ -139,4 +139,79 @@ class MybbImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * `privatemessages` keeps a separate COPY per member: `uid` is the copy's
+     * owner, `fromid`/`toid` the sender and recipient, `recipients` a
+     * serialized ['to' => [...], 'bcc' => [...]], `folder` 1 inbox · 2 sent ·
+     * 3 drafts · 4 trash, `status` 0 while unread. Copies of one message share
+     * sender, time and subject; the lowest `pmid` among them stands for it.
+     * A copy in the trash (or with a `deletetime`) counts as deleted by its
+     * owner; drafts were never sent.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'privatemessages');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'privatemessages')->where('folder', '!=', 3)->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table($p.'privatemessages')->where('pmid', '>', $after)->orderBy('pmid')->limit($limit)->get();
+                $sent = $rows->where('folder', '!=', 3);
+                $copies = [];
+                if ($sent->isNotEmpty()) {
+                    foreach ($conn->table($p.'privatemessages')->where('folder', '!=', 3)
+                        ->whereIn('fromid', $sent->pluck('fromid')->unique()->values()->all())
+                        ->whereIn('dateline', $sent->pluck('dateline')->unique()->values()->all())
+                        ->orderBy('pmid')->get() as $c) {
+                        $copies[$c->fromid.'|'.$c->dateline.'|'.$c->subject][] = $c;
+                    }
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->pmid;
+                    $all = $copies[$m->fromid.'|'.$m->dateline.'|'.$m->subject] ?? [];
+                    if ((int) $m->folder === 3 || ! $all || (int) $all[0]->pmid !== (int) $m->pmid) {
+                        continue; // a draft, or a copy of a message read already
+                    }
+                    $to = $bcc = [];
+                    foreach ($all as $c) {
+                        $r = @unserialize((string) ($c->recipients ?? ''), ['allowed_classes' => false]);
+                        if (is_array($r)) {
+                            $to = array_merge($to, array_values((array) ($r['to'] ?? [])));
+                            $bcc = array_merge($bcc, array_values((array) ($r['bcc'] ?? [])));
+                        }
+                        if ((int) $c->uid !== (int) $c->fromid) {
+                            $to[] = $c->uid;
+                        }
+                    }
+                    $bcc = PrivateMessages::ids($bcc);
+                    $people = array_diff(PrivateMessages::ids(array_merge([$m->fromid], $to)), $bcc);
+                    $kept = array_filter($all, fn ($c) => (int) $c->folder !== 4 && ! (int) ($c->deletetime ?? 0));
+                    $out[] = [
+                        'id' => $m->fromid.':'.$m->dateline.':'.substr(md5((string) $m->subject), 0, 12),
+                        'conv' => PrivateMessages::conv('', $people),
+                        'title' => (string) ($m->subject ?? ''),
+                        'uid' => $m->fromid,
+                        'people' => array_values($people),
+                        'bcc' => $bcc,
+                        'keep' => array_map(fn ($c) => $c->uid, $kept),
+                        'unread' => array_map(fn ($c) => $c->uid, array_filter($all, fn ($c) => (int) ($c->status ?? 1) === 0)),
+                        'html' => Bbcode::toHtml($m->message ?? ''),
+                        'at' => Src::ts($m->dateline ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

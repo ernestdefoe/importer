@@ -507,4 +507,66 @@ class Vbulletin5Importer
             ),
         ], Phases::tail(), ! empty($cfg['prune_empty_tags']) ? Phases::pruneEmptyTags() : []);
     }
+    /**
+     * vBulletin 5/6 private messages are nodes too: `privatemessage` marks a
+     * node as one (`msgtype` 'message'; 'notification' and 'request' are the
+     * system's own), its text is in `text`, a reply's `starter` is the first
+     * message, and `sentto` holds a row per participant's copy (`msgread`,
+     * `deleted` once they deleted it).
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'privatemessage') && $conn->getSchemaBuilder()->hasTable($p.'sentto');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'privatemessage')->where('msgtype', 'message')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table($p.'privatemessage')
+                    ->join($p.'node', $p.'node.nodeid', '=', $p.'privatemessage.nodeid')
+                    ->leftJoin($p.'text', $p.'text.nodeid', '=', $p.'privatemessage.nodeid')
+                    ->where($p.'privatemessage.msgtype', 'message')
+                    ->where($p.'privatemessage.nodeid', '>', $after)
+                    ->orderBy($p.'privatemessage.nodeid')
+                    ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
+                    ->limit($limit)->get();
+                $copies = [];
+                $deleted = $conn->getSchemaBuilder()->hasColumn($p.'sentto', 'deleted');
+                foreach ($rows->isEmpty() ? [] : $conn->table($p.'sentto')->whereIn('nodeid', $rows->pluck('nodeid')->all())->get() as $c) {
+                    $copies[$c->nodeid][] = $c;
+                }
+                $out = [];
+                foreach ($rows as $n) {
+                    $after = (int) $n->nodeid;
+                    $mine = $copies[$n->nodeid] ?? [];
+                    $people = array_merge([$n->userid], array_map(fn ($c) => $c->userid, $mine));
+                    $keep = array_map(fn ($c) => $c->userid, array_filter($mine, fn ($c) => ! $deleted || ! (int) $c->deleted));
+                    if (! in_array((int) $n->userid, array_map(fn ($c) => (int) $c->userid, $mine), true)) {
+                        $keep[] = $n->userid; // no copy of their own to delete
+                    }
+                    $out[] = [
+                        'id' => (string) $n->nodeid,
+                        'conv' => PrivateMessages::conv((string) ((int) ($n->starter ?? 0) ?: $n->nodeid), $people),
+                        'title' => (string) ($n->title ?? ''),
+                        'uid' => $n->userid,
+                        'people' => $people,
+                        'keep' => $keep,
+                        'unread' => array_map(fn ($c) => $c->userid, array_filter($mine, fn ($c) => ! (int) ($c->msgread ?? 1))),
+                        'html' => self::body($n->rawtext ?? '', $n->htmlstate ?? ''),
+                        'at' => Src::ts($n->publishdate ?? $n->created ?? null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

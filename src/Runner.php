@@ -4,6 +4,7 @@ namespace ErnestDefoe\Importer;
 
 use ErnestDefoe\Importer\Importers\Ctx;
 use ErnestDefoe\Importer\Importers\Dst;
+use ErnestDefoe\Importer\Importers\PrivateMessages;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
@@ -30,7 +31,7 @@ class Runner
         $cfg = Upload::resolve($cfg); // an uploaded-dump run carries a {file} handle → sqlite
         Dst::reset();
 
-        $phases = $importer::phases($cfg);
+        $phases = Registry::phases($source, $cfg);
         $totals = [];
         $grand = 0;
         foreach ($phases as $ph) {
@@ -82,15 +83,22 @@ class Runner
         }
         $importer = Registry::get($base->source);
         $label = Registry::catalog()[$base->source]['label'] ?? $base->source;
-        if (! $importer || ! Registry::syncable($base->source)) {
+        if (! $importer || ! Registry::syncable($base->source) && ! self::messagesOnly($base->source)) {
             throw new \RuntimeException(Src::t('sync.unsupported', ['source' => $label]));
         }
         $cfg = Upload::resolve(self::syncConfig(self::storedConfig((int) $base->id), $override));
         Dst::reset();
 
-        $phases = $importer::phases($cfg);
-        if (! array_filter($phases, fn ($ph) => $ph->syncable)) {
-            throw new \RuntimeException(Src::t('sync.unsupported', ['source' => $label])); // vBulletin 5, reached through 'vbulletin'
+        // A source whose content cannot be synced yet (Vanilla, NodeBB, vBulletin 5)
+        // can still have its private messages brought across: those phases alone.
+        $phases = Registry::phases($base->source, $cfg);
+        $only = null;
+        if (! Registry::syncable($base->source) || ! array_filter($phases, fn ($ph) => $ph->syncable && $ph->key !== 'pms')) {
+            if (! self::messagesOnly($base->source)) {
+                throw new \RuntimeException(Src::t('sync.unsupported', ['source' => $label])); // vBulletin 5, reached through 'vbulletin'
+            }
+            $only = ['pms', 'pms-finish'];
+            $phases = Registry::phases($base->source, $cfg, ['sync' => ['only' => $only]]);
         }
 
         $hw = [];
@@ -107,12 +115,15 @@ class Runner
                 'users' => $hw['user'],
                 'topics' => max(0, $hw['topic'] - self::CATCHUP),
                 'posts' => $hw['post'] ? max(0, $hw['post'] - self::CATCHUP) : 0,
+                // An import from before messages came across: all of them, once.
+                'pms' => PrivateMessages::syncFrom((int) $base->id),
             ],
             // Edits since the previous run began, with an hour's slack for clocks.
             'since' => $last ? Carbon::parse($last)->getTimestamp() - 3600 : 0,
             // Everything above this was written by this sync (or by members
             // meanwhile): the recounts look no further than that.
             'postHw' => (int) Dst::db()->table('posts')->max('id'),
+            'only' => $only,
         ];
 
         $state = [
@@ -143,7 +154,7 @@ class Runner
     public static function syncInfo(): ?array
     {
         $base = self::syncBase();
-        if (! $base || ! Registry::syncable($base->source)) {
+        if (! $base || ! Registry::syncable($base->source) && ! self::messagesOnly($base->source)) {
             return null;
         }
         $cfg = self::storedConfig((int) $base->id);
@@ -155,9 +166,19 @@ class Runner
             'source' => $base->source,
             'config' => array_intersect_key($cfg, array_flip($keys)),
             'needsPassword' => ! empty($cfg['password_wiped']) || ! $cfg,
+            // Only the private messages can come across (the content of this source does not sync yet).
+            'messagesOnly' => ! Registry::syncable($base->source),
             'upload' => $upload,
             'last' => (string) self::chain((int) $base->id)->where('status', 'done')->orderByDesc('id')->value('updated_at'),
         ];
+    }
+
+    /** A source whose content does not sync, but whose private messages can be brought across. */
+    private static function messagesOnly(string $source): bool
+    {
+        $importer = Registry::get($source);
+
+        return $importer && PrivateMessages::supported($importer) && PrivateMessages::enabled();
     }
 
     /** Rows re-read below a high-water mark, for content approved after it was passed. */
@@ -292,7 +313,7 @@ class Runner
 
             Dst::reset();
             $ctx = new Ctx((int) ($state['sync']['base'] ?? $runId), $cfg, $state['sync'] ?? null);
-            $phases = $importer::phases($cfg);
+            $phases = Registry::phases($run->source, $cfg, $state);
             $i = (int) ($state['phaseIndex'] ?? 0);
 
             if ($i >= count($phases)) {
@@ -408,10 +429,21 @@ class Runner
     private static function summaryLine(array $s, bool $sync = false): string
     {
         $params = ['topics' => $s['topics'] ?? 0, 'posts' => $s['posts'] ?? 0, 'users' => $s['users'] ?? 0, 'categories' => $s['categories'] ?? 0];
-        if ($sync) {
-            return Src::t('sync.summary', $params + ['edited' => $s['edited'] ?? 0, 'kept' => $s['kept'] ?? 0]);
+        $line = $sync
+            ? Src::t('sync.summary', $params + ['edited' => $s['edited'] ?? 0, 'kept' => $s['kept'] ?? 0])
+            : Src::t(isset($s['categories']) ? 'summary_with_tags' : 'summary', $params);
+
+        // Private messages, when the source has them and they were asked for.
+        if (isset($s['messages']) || isset($s['conversations'])) {
+            $line .= ' '.Src::t('pm.summary', ['messages' => $s['messages'] ?? 0, 'conversations' => $s['conversations'] ?? 0]);
+        }
+        if (! empty($s['pm_groups_skipped'])) {
+            $line .= ' '.Src::t('pm.groups_skipped', ['count' => $s['pm_groups_skipped']]);
+        }
+        if (! empty($s['pms_unavailable'])) {
+            $line .= ' '.Src::t('pm.unavailable');
         }
 
-        return Src::t(isset($s['categories']) ? 'summary_with_tags' : 'summary', $params);
+        return $line;
     }
 }

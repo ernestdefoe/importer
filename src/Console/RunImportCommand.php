@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Console;
 
 use ErnestDefoe\Importer\Importers\Dst;
+use ErnestDefoe\Importer\Importers\PrivateMessages;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Runner;
@@ -38,6 +39,7 @@ class RunImportCommand extends AbstractCommand
             ->addOption('avatar-path', null, InputOption::VALUE_REQUIRED, 'Local filesystem path to the source forum\'s avatar directory (vBulletin customavatars/, etc.) — only needed when avatars aren\'t stored as DB blobs.', '')
             ->addOption('prune-empty-tags', null, InputOption::VALUE_NONE, 'After import, delete tags this run created that ended up with zero discussions and no children (e.g. an empty vBulletin sub-forum). Never touches pre-existing tags.')
             ->addOption('max-topics', null, InputOption::VALUE_REQUIRED, 'Import at most this many topics (oldest-id-first) instead of the whole forum — a fast, representative subset for testing a patch or a fresh source connection before committing to a full run.', '')
+            ->addOption('no-private-messages', null, InputOption::VALUE_NONE, 'Leave private messages behind. They come across by default when flarum/messages is enabled (conversations of three or more people need ernestdefoe/group-messages).')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.')
             ->addOption('sync', null, InputOption::VALUE_NONE, 'Bring across only what the old forum gained since the last import (and edits, where the source records them). Reuses that import\'s connection settings; pass any that changed, and --password if the source has one.')
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'With --sync: count what would be imported, then roll it all back.');
@@ -69,11 +71,13 @@ class RunImportCommand extends AbstractCommand
         $cfg['avatar_path'] = (string) $this->input->getOption('avatar-path');
         $cfg['prune_empty_tags'] = (bool) $this->input->getOption('prune-empty-tags');
         $cfg['max_topics'] = (string) $this->input->getOption('max-topics');
+        $cfg['private_messages'] = $this->input->getOption('no-private-messages') ? '0' : '1';
 
         try {
             if ($this->input->getOption('test')) {
                 $r = $importer::test($cfg);
-                $this->info('Connection OK — '.json_encode($r['counts'] ?? []));
+                $pms = PrivateMessages::count($importer, $cfg);
+                $this->info('Connection OK — '.json_encode(($r['counts'] ?? []) + ($pms !== null ? ['messages' => $pms] : [])));
 
                 return 0;
             }
@@ -97,6 +101,9 @@ class RunImportCommand extends AbstractCommand
             if ($this->input->hasParameterOption('--'.$opt)) {
                 $cfg[$key] = (string) $this->input->getOption($opt);
             }
+        }
+        if ($this->input->getOption('no-private-messages')) {
+            $cfg['private_messages'] = '0';
         }
         $dry = (bool) $this->input->getOption('dry-run');
         $db = resolve(ConnectionInterface::class);

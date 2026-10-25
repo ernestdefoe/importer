@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Api\Controller;
 
+use ErnestDefoe\Importer\Importers\PrivateMessages;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
@@ -29,7 +30,13 @@ class TestConnectionController implements RequestHandlerInterface
         }
 
         try {
-            return new JsonResponse($importer::test($cfg));
+            $res = $importer::test($cfg);
+            // Private messages too, where the source keeps them.
+            if (($pms = PrivateMessages::count($importer, $cfg)) !== null && isset($res['counts'])) {
+                $res['counts']['messages'] = $pms;
+            }
+
+            return new JsonResponse($res);
         } catch (\Throwable $e) {
             // 200 with ok=false so the wizard shows the message inline.
             return new JsonResponse(['ok' => false, 'error' => Src::explain($e)]);

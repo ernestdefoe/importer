@@ -59,6 +59,26 @@ class Registry
         return isset(self::map()[$key]) && ! in_array($key, ['vanilla', 'nodebb', 'vbulletin5'], true);
     }
 
+    /**
+     * An importer's phases, with the private-message phases on the end where
+     * the source has messages. A sync that can only bring messages across
+     * (`state.sync.only`) runs just those.
+     *
+     * @return Phase[]
+     */
+    public static function phases(string $key, array $cfg, array $state = []): array
+    {
+        $importer = self::get($key);
+        if (! $importer) {
+            return [];
+        }
+        /** @var Phase[] $phases */
+        $phases = array_merge($importer::phases($cfg), PrivateMessages::phases($importer, $cfg));
+        $only = (array) ($state['sync']['only'] ?? []);
+
+        return $only ? array_values(array_filter($phases, fn (Phase $ph) => in_array($ph->key, $only, true))) : $phases;
+    }
+
     public static function get(string $key): ?string
     {
         return self::map()[$key] ?? null;

@@ -254,6 +254,72 @@ class NodebbImporter
      * @param  array<int>  $discussionIds
      * @return array<int,int>
      */
+    /**
+     * Chats. Each message is the hash `message:<mid>` (`fromuid`, `content`
+     * in Markdown, `timestamp` in ms, `roomId`, `deleted`, `system`), mids
+     * counted up by `global.nextMid`; a room is `chat:room:<id>` (`roomName`,
+     * `public` for the open chat channels of NodeBB 3, which are not private)
+     * with its members in the sorted set `chat:room:<id>:uids` — leaving a room
+     * takes you off it. How far a member has read is `uid:<uid>:chat:rooms:read`
+     * (room => ms). Messages from before rooms (NodeBB 0.x) name a `touid`.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        return [
+            'count' => fn () => (int) (self::redis($cfg)->hGet('global', 'nextMid') ?: 0),
+            'fetch' => function (int $after, int $limit) use ($cfg) {
+                $r = self::redis($cfg);
+                $last = (int) ($r->hGet('global', 'nextMid') ?: 0);
+                $upto = min($last, $after + $limit);
+                $rooms = $members = $read = [];
+                $out = [];
+                for ($mid = $after + 1; $mid <= $upto; $mid++) {
+                    $m = self::hash($r, "message:{$mid}");
+                    if (! $m || ($m['deleted'] ?? '0') === '1' || ! empty($m['system'])) {
+                        continue;
+                    }
+                    $room = (string) ($m['roomId'] ?? '');
+                    if ($room === '') {
+                        $people = $keep = [$m['fromuid'] ?? '', $m['touid'] ?? ''];
+                        $title = '';
+                    } else {
+                        $rooms[$room] ??= self::hash($r, "chat:room:{$room}");
+                        if (! $rooms[$room] || ($rooms[$room]['public'] ?? '0') === '1') {
+                            continue;
+                        }
+                        $members[$room] ??= array_map('strval', $r->zRange("chat:room:{$room}:uids", 0, -1) ?: []);
+                        $people = array_merge([$m['fromuid'] ?? ''], $members[$room]);
+                        $keep = $members[$room];
+                        $title = (string) ($rooms[$room]['roomName'] ?? '');
+                    }
+                    $at = (int) ($m['timestamp'] ?? 0);
+                    $unread = [];
+                    if ($room !== '') {
+                        foreach ($keep as $u) {
+                            $read[$u][$room] ??= (int) ($r->hGet("uid:{$u}:chat:rooms:read", $room) ?: 0);
+                            if ($read[$u][$room] > 0 && $read[$u][$room] < $at) {
+                                $unread[] = $u;
+                            }
+                        }
+                    }
+                    $out[] = [
+                        'id' => (string) $mid,
+                        'conv' => $room !== '' ? $room : PrivateMessages::conv('', $people),
+                        'title' => $title,
+                        'uid' => $m['fromuid'] ?? null,
+                        'people' => $people,
+                        'keep' => $keep,
+                        'unread' => $unread,
+                        'html' => Src::markdown($m['content'] ?? ''),
+                        'at' => self::ts($m['timestamp'] ?? null),
+                    ];
+                }
+
+                return ['cursor' => $upto, 'rows' => max(0, $upto - $after), 'done' => $upto >= $last, 'messages' => $out];
+            },
+        ];
+    }
+
     private static function maxPostNumbers(array $discussionIds): array
     {
         if (! $discussionIds) {

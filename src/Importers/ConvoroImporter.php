@@ -240,4 +240,68 @@ class ConvoroImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * The messenger. Convoro 2: `conversations` (`subject`),
+     * `conversation_participants` (`has_left`, `last_read_at`) and `messages`
+     * (`content_html`). Convoro 1.x: `conversations` (`title`),
+     * `conversation_user` (`last_read_at`) and `messages` (`body_html`).
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $layout = function ($conn) {
+            $sb = $conn->getSchemaBuilder();
+            if (! $sb->hasTable('messages') || ! $sb->hasTable('conversations')) {
+                return null;
+            }
+            $who = $sb->hasTable('conversation_participants') ? 'conversation_participants' : ($sb->hasTable('conversation_user') ? 'conversation_user' : null);
+
+            return $who ? [
+                'who' => $who,
+                'left' => $sb->hasColumn($who, 'has_left'),
+                'html' => $sb->hasColumn('messages', 'content_html') ? 'content_html' : 'body_html',
+                'title' => $sb->hasColumn('conversations', 'subject') ? 'subject' : 'title',
+            ] : null;
+        };
+
+        return [
+            'count' => function () use ($cfg, $layout) {
+                $conn = Src::connect($cfg);
+
+                return $layout($conn) ? (int) $conn->table('messages')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($layout) {
+                $conn = $ctx->src();
+                if (! $at = $layout($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table('messages')->where('id', '>', $after)->orderBy('id')->limit($limit)->get();
+                $ids = $rows->pluck('conversation_id')->unique()->values()->all();
+                $titles = $ids ? $conn->table('conversations')->whereIn('id', $ids)->pluck($at['title'], 'id')->all() : [];
+                $who = [];
+                foreach ($ids ? $conn->table($at['who'])->whereIn('conversation_id', $ids)->get() : [] as $r) {
+                    $who[$r->conversation_id][] = $r;
+                }
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->id;
+                    $at2 = Src::ts($m->created_at ?? null);
+                    $rs = $who[$m->conversation_id] ?? [];
+                    $in = array_filter($rs, fn ($r) => ! $at['left'] || ! (int) $r->has_left);
+                    $out[] = [
+                        'id' => (string) $m->id,
+                        'conv' => (string) $m->conversation_id,
+                        'title' => (string) ($titles[$m->conversation_id] ?? ''),
+                        'uid' => $m->user_id,
+                        'people' => array_map(fn ($r) => $r->user_id, $rs),
+                        'keep' => array_map(fn ($r) => $r->user_id, $in),
+                        'unread' => array_map(fn ($r) => $r->user_id, array_filter($in, fn ($r) => empty($r->last_read_at) || Src::ts($r->last_read_at) < $at2)),
+                        'html' => (string) ($m->{$at['html']} ?? ''),
+                        'at' => $at2,
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
 }

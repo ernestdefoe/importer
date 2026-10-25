@@ -289,6 +289,77 @@ class WebWizImporter
      * escaping it as text put every <br /> and <strong> on the page. Older
      * rows can still be BBCode.
      */
+    /**
+     * `tblPMMessage` holds each message once, between two members: `From_ID`
+     * sent it to `Author_ID`. `Inbox` / `Outbox` say whether the recipient and
+     * the sender still have it (a deleted copy is switched off), `Read_Post`
+     * whether the recipient has read it. Column names vary by version, so each
+     * is looked up; the title is `PM_Tittle` (sic) on most installs.
+     */
+    public static function privateMessages(array $cfg): array
+    {
+        $t = self::prefix($cfg).'PMMessage';
+        $cols = function ($conn) use ($t) {
+            if (! $conn->getSchemaBuilder()->hasTable($t)) {
+                return null;
+            }
+            $c = [
+                'id' => self::col($conn, $t, ['PM_ID']),
+                'to' => self::col($conn, $t, ['Author_ID']),
+                'from' => self::col($conn, $t, ['From_ID']),
+                'title' => self::col($conn, $t, ['PM_Tittle', 'PM_Title', 'Title']),
+                'body' => self::col($conn, $t, ['PM_Message', 'Message']),
+                'date' => self::col($conn, $t, ['PM_Message_Date', 'PM_Message_date', 'Message_date']),
+                'read' => self::col($conn, $t, ['Read_Post']),
+                'inbox' => self::col($conn, $t, ['Inbox']),
+                'outbox' => self::col($conn, $t, ['Outbox']),
+            ];
+
+            return $c['id'] && $c['to'] && $c['from'] && $c['body'] ? $c : null;
+        };
+
+        return [
+            'count' => function () use ($cfg, $t, $cols) {
+                $conn = Src::connect($cfg);
+
+                return $cols($conn) ? (int) $conn->table($t)->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($t, $cols) {
+                $conn = $ctx->src();
+                if (! $c = $cols($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
+                }
+                $rows = $conn->table($t)->where($c['id'], '>', $after)->orderBy($c['id'])->limit($limit)->get();
+                $out = [];
+                foreach ($rows as $m) {
+                    $after = (int) $m->{$c['id']};
+                    $to = $m->{$c['to']};
+                    $from = $m->{$c['from']};
+                    $keep = [];
+                    if (! $c['inbox'] || (int) $m->{$c['inbox']}) {
+                        $keep[] = $to;
+                    }
+                    if (! $c['outbox'] || (int) $m->{$c['outbox']}) {
+                        $keep[] = $from;
+                    }
+                    $out[] = [
+                        'id' => (string) $after,
+                        'conv' => '',
+                        'title' => $c['title'] ? (string) $m->{$c['title']} : '',
+                        'uid' => $from,
+                        'people' => [$to],
+                        'keep' => $keep,
+                        'unread' => $c['read'] && ! (int) $m->{$c['read']} ? [$to] : [],
+                        'html' => self::body((string) $m->{$c['body']}),
+                        'at' => Src::ts($c['date'] ? $m->{$c['date']} : null),
+                    ];
+                }
+
+                return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
+            },
+        ];
+    }
+
     private static function body(string $body): string
     {
         return preg_match('#<(?:br|p|div|span|strong|b|i|em|u|a|img|font|blockquote|ul|ol|li|table)\b#i', $body)

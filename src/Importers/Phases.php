@@ -238,6 +238,7 @@ class Phases
             try {
                 $content = Dst::content($m['html']);
                 $ids[$m['pid']] = Dst::postContent($did, $num, $userMap[(string) $m['uid']] ?? null, $content, $m['at']);
+                Dst::ref('post', (string) $m['pid'], $ids[$m['pid']]);
                 $hashes[$m['pid']] = sha1($content);
                 $n++;
             } catch (\Throwable) {
@@ -321,6 +322,7 @@ class Phases
 
                 try {
                     $ids[$key] = Dst::postContent($m['did'], $num, $userMap[(string) $m['uid']] ?? null, $content, $m['at']);
+                    Dst::ref('post', (string) $key, $ids[$key]);
                 } catch (\Throwable) {
                     continue; // as a full import does: one bad row is not the whole sync
                 }

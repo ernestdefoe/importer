@@ -76,6 +76,11 @@ class MentionsAndLinksTest extends TestCase
         $this->assertMatchesRegularExpression('#class="UserMention[^"]*"[^>]*>@ada<#', $html);
         $this->assertStringContainsString('PostMention', $html);
 
+        // A post quoting one imported earlier in the same batch.
+        Dst::ref('post', '13', 99);
+        $db->table('posts')->insert(['id' => 99, 'discussion_id' => 7, 'number' => 9, 'created_at' => '2020-01-01 00:00:00', 'user_id' => 3, 'type' => 'comment', 'content' => '<t>Earlier</t>']);
+        $this->assertStringContainsString('id="99"', Dst::content(Bbcode::toHtml('[QUOTE="Ada, post: 13, member: 10"]x[/QUOTE]')));
+
         $md = Dst::content(end($bodies));
         $this->assertStringContainsString('<USERMENTION displayname="bob" id="4">', $md, 'A NodeBB/Vanilla @name is matched by username');
         $this->assertStringContainsString('@nobody', $render($md));

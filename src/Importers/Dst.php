@@ -95,6 +95,12 @@ class Dst
         self::$refs = $refs;
     }
 
+    /** A post written earlier in this same batch can already be quoted by a later one. */
+    public static function ref(string $kind, string $srcId, int $targetId): void
+    {
+        self::$refs[$kind][$srcId] = $targetId;
+    }
+
     /** The text the forum's formatter is given for a body: written for whichever editor the forum uses. */
     public static function text(string $html): string
     {

@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 require __DIR__.'/../src/Importers/Bbcode.php';
 require __DIR__.'/../src/Markup/Html.php';
+require __DIR__.'/../src/Markup/Smilies.php';
 require __DIR__.'/../src/Importers/PostText.php';
 
 use ErnestDefoe\Importer\Importers\Bbcode;
@@ -50,7 +51,10 @@ $h = Bbcode::phpbb('Mail <!-- e --><a href="mailto:ada@example.com">ada@example.
 $check('e-mail becomes the address', $h === '<p>Mail ada@example.com</p>', $h);
 
 $h = Bbcode::phpbb('Hi <!-- s:) --><img src="{SMILIES_PATH}/icon_e_smile.gif" alt=":)" title="Smile" /><!-- s:) --> there <!-- s:lol: --><img src="{SMILIES_PATH}/icon_lol.gif" alt=":lol:" title="Laughing" /><!-- s:lol: -->', $uid);
-$check('smilies become their codes', $h === '<p>Hi :) there :lol:</p>', $h);
+$check('smilies become their emoji', $h === '<p>Hi 🙂 there 😆</p>', $h);
+$h = Bbcode::phpbb('Custom <!-- s:party: --><img src="{SMILIES_PATH}/party.gif" alt=":party:" title="Party" /><!-- s:party: -->', $uid);
+$check('a board\'s own smiley keeps its code', $h === '<p>Custom :party:</p>', $h);
+$check('codes in text become emoji, whole words only', \ErnestDefoe\Importer\Markup\Smilies::inText('Ha :lol: and :mrgreen:, not a:lol:b or :party: or 12:30:45') === 'Ha 😆 and 😁, not a:lol:b or :party: or 12:30:45');
 
 $h = Bbcode::phpbb("[b:$uid]bold[/b:$uid] [i:$uid]it[/i:$uid] [size=150:$uid]big[/size:$uid] [color=#FF0000:$uid]red[/color:$uid]", $uid);
 $check('uid stripped from inline tags', $h === '<p><strong>bold</strong> <em>it</em> <span data-size="21">big</span> <span data-color="#ff0000">red</span></p>', $h);

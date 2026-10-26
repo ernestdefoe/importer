@@ -348,7 +348,7 @@ final class Html
             return;
         }
         if ($tag === 'img' && $this->isEmoji($n, $class)) {
-            $to->appendChild($this->doc->createTextNode($this->emojiText($n)));
+            $to->appendChild($this->doc->createTextNode(Smilies::code($this->emojiText($n))));
 
             return;
         }

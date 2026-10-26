@@ -119,12 +119,14 @@ class Bbcode
             return '[url='.$href.']'.$label.'[/url]';
         }, $text) ?? $text;
 
+        // Smilies → the emoji they stand for; a board's own custom smiley keeps its code.
+        $text = preg_replace_callback('#<img\s[^>]*?alt="([^"]*)"[^>]*>#i', fn ($m) => \ErnestDefoe\Importer\Markup\Smilies::code(html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8')), $text) ?? $text;
+
         $text = preg_replace([
-            '#<img\s[^>]*?alt="([^"]*)"[^>]*>#i', // smilies → their code, which flarum/emoji turns back into an emoji
             '#<br\s*/?>#i',
             '#<!--.*?-->#s',
             '#</?[a-z][^>]*>#i',                    // anything else phpBB inserted
-        ], ['$1', "\n", '', ''], $text) ?? $text;
+        ], ["\n", '', ''], $text) ?? $text;
 
         return $text;
     }

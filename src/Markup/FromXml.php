@@ -75,12 +75,12 @@ final class FromXml
                     if ($i > 0) {
                         $to->appendChild($this->doc->createElement('br'));
                     }
-                    $to->appendChild($this->doc->createTextNode($line));
+                    $to->appendChild($this->doc->createTextNode(Smilies::inText($line)));
                 }
 
                 return;
             }
-            $to->appendChild($this->doc->createTextNode($n->data));
+            $to->appendChild($this->doc->createTextNode(Smilies::inText($n->data)));
 
             return;
         }
@@ -126,7 +126,7 @@ final class FromXml
                 return;
             case 'E':
             case 'EMOJI':
-                $to->appendChild($this->doc->createTextNode($a('alt') ?: $this->text($n)));
+                $to->appendChild($this->doc->createTextNode(Smilies::code($a('alt') ?: $this->text($n))));
 
                 return;
             case 'CODE':

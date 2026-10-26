@@ -54,6 +54,10 @@ $h = Bbcode::phpbb('Hi <!-- s:) --><img src="{SMILIES_PATH}/icon_e_smile.gif" al
 $check('smilies become their emoji', $h === '<p>Hi 🙂 there 😆</p>', $h);
 $h = Bbcode::phpbb('Custom <!-- s:party: --><img src="{SMILIES_PATH}/party.gif" alt=":party:" title="Party" /><!-- s:party: -->', $uid);
 $check('a board\'s own smiley keeps its code', $h === '<p>Custom :party:</p>', $h);
+\ErnestDefoe\Importer\Markup\Smilies::setOwn([':lol:', 'shock']);
+$check('a code the forum has its own emoji for is left for that emoji', \ErnestDefoe\Importer\Markup\Smilies::inText('Ha :lol: :shock: :cry:') === 'Ha :lol: :shock: 😢');
+$check('own emoji also win for smiley images', \ErnestDefoe\Importer\Markup\Smilies::code(':lol:') === ':lol:');
+\ErnestDefoe\Importer\Markup\Smilies::setOwn([]);
 $check('codes in text become emoji, whole words only', \ErnestDefoe\Importer\Markup\Smilies::inText('Ha :lol: and :mrgreen:, not a:lol:b or :party: or 12:30:45') === 'Ha 😆 and 😁, not a:lol:b or :party: or 12:30:45');
 
 $h = Bbcode::phpbb("[b:$uid]bold[/b:$uid] [i:$uid]it[/i:$uid] [size=150:$uid]big[/size:$uid] [color=#FF0000:$uid]red[/color:$uid]", $uid);

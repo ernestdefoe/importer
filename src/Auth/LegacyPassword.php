@@ -103,7 +103,11 @@ final class LegacyPassword
         return self::eq(hash($func, hash($func, $pw).$salt), strtolower($hash));
     }
 
-    /** `$pbkdf2-sha256$i=600000,l=32$` in salt's place carries the algorithm; old rows had none (64,000 rounds of sha256). */
+    /**
+     * `$pbkdf2-sha256$i=600000,l=32$` in salt's place carries the algorithm;
+     * old rows had none (64,000 rounds of sha256). Rounds are capped: every
+     * sign-in attempt on such an account runs them, until its first success.
+     */
     private static function discourse(string $pw, string $hash, string $salt): bool
     {
         [$salt, $algo] = array_pad(explode('|', $salt, 2), 2, '');
@@ -113,7 +117,7 @@ final class LegacyPassword
         if (preg_match('/^\$pbkdf2-(\w+)\$i=(\d+),l=(\d+)\$$/', $algo, $m)) {
             [$func, $rounds, $len] = [$m[1], (int) $m[2], (int) $m[3]];
         }
-        if (! in_array($func, hash_hmac_algos(), true) || $rounds < 1 || $rounds > 5_000_000 || $len < 16 || $len > 64) {
+        if (! in_array($func, hash_hmac_algos(), true) || $rounds < 1 || $rounds > 2_000_000 || $len < 16 || $len > 64) {
             return false;
         }
 
@@ -123,7 +127,7 @@ final class LegacyPassword
     private static function django(string $pw, string $hash): bool
     {
         $parts = explode('$', $hash);
-        if (count($parts) !== 4 || $parts[0] !== 'pbkdf2_sha256' || (int) $parts[1] < 1 || (int) $parts[1] > 5_000_000) {
+        if (count($parts) !== 4 || $parts[0] !== 'pbkdf2_sha256' || (int) $parts[1] < 1 || (int) $parts[1] > 2_000_000) {
             return false;
         }
 

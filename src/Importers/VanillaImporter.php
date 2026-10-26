@@ -2,6 +2,9 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use ErnestDefoe\Importer\Markup\Html;
+use ErnestDefoe\Importer\Markup\VanillaRich;
+
 /**
  * Vanilla Forums → Flarum.
  *   GDN_Category → tags · GDN_User → users · GDN_Discussion → discussions (Body = post #1) · GDN_Comment → replies
@@ -85,7 +88,7 @@ class VanillaImporter
                         }
 
                         try {
-                            $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null));
+                            $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null), null, self::legacy($u));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -106,6 +109,11 @@ class VanillaImporter
                     $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('CategoryID')->all()) : [];
+                    $bodies = [];
+                    foreach ($rows as $d) {
+                        $bodies[$d->DiscussionID] = self::body($d->Body ?? '', $d->Format ?? '') ?: '<p></p>';
+                    }
+                    Dst::prepare($ctx, $bodies);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $d) {
@@ -118,7 +126,7 @@ class VanillaImporter
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
                         }
-                        Dst::post($did, 1, $uid, self::body($d->Body ?? '', $d->Format ?? '') ?: '<p></p>', $created);
+                        Dst::post($did, 1, $uid, $bodies[$d->DiscussionID], $created);
                         $n++;
                     }
                     $ctx->mapPut('topic', $map);
@@ -141,6 +149,13 @@ class VanillaImporter
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
+                    $bodies = [];
+                    foreach ($rows as $c) {
+                        if (isset($topicMap[(string) $c->DiscussionID])) {
+                            $bodies[$c->CommentID] = self::body($c->Body ?? '', $c->Format ?? '') ?: '<p></p>';
+                        }
+                    }
+                    Dst::prepare($ctx, $bodies);
                     $db = Dst::db();
                     $n = 0;
                     foreach ($rows as $c) {
@@ -159,7 +174,7 @@ class VanillaImporter
                         $created = Src::ts($c->DateInserted ?? null);
 
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, self::body($c->Body ?? '', $c->Format ?? '') ?: '<p></p>', $created);
+                            Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies[$c->CommentID], $created);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;
@@ -231,6 +246,23 @@ class VanillaImporter
         ];
     }
 
+    /** Vanilla's HashMethod says how Password was made; the ones it can be checked against are kept. */
+    private static function legacy(object $u): ?array
+    {
+        $hash = (string) ($u->Password ?? '');
+        $method = strtolower((string) ($u->HashMethod ?? 'vanilla'));
+        if ($hash === '') {
+            return null;
+        }
+
+        return match ($method) {
+            'vanilla', 'phpbb', 'wordpress', '' => Src::legacy($hash, str_starts_with($hash, '$2') && ! preg_match('#^\$2[aby]\$\d\d\$.{53}$#', $hash) ? 'native' : null),
+            'django' => ['scheme' => 'django', 'hash' => $hash, 'salt' => null],
+            'md5' => ['scheme' => 'md5', 'hash' => $hash, 'salt' => null],
+            default => ['scheme' => 'unknown', 'hash' => $hash, 'salt' => null],
+        };
+    }
+
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {
@@ -242,7 +274,7 @@ class VanillaImporter
             case 'html':
             case 'wysiwyg':
                 // Vanilla's Quotes plugin keeps the author in rel=: <blockquote class="Quote" rel="Kryptos">.
-                return Src::sanitizeHtml(preg_replace('#<blockquote\b([^>]*?)\srel="([^"]*)"#i', '<blockquote$1 data-cite="$2"', $body) ?? $body);
+                return Html::textMentions($body);
             case 'bbcode':
                 return Bbcode::toHtml($body);
             case 'markdown':
@@ -250,15 +282,15 @@ class VanillaImporter
                 // language). Left as it is, Flarum reads @Kryptos as a mention and links it
                 // to whichever member now has that username — or, for "@John Smith", to John.
                 return preg_replace_callback(
-                    '#(<blockquote>\s*<p>)@([^\n<]{1,100}:)(?:\n|(?=</p>))#u',
+                    '#(<blockquote>\s*<p>)@([^\n<]{1,100}:)(?:<br>\n?|\n|(?=</p>))#u',
                     fn ($m) => $m[1].'<strong>'.str_replace('&quot;', '', $m[2]).'</strong><br>',
-                    Src::markdown($body)
+                    Src::markdown($body, ['html' => true])
                 ) ?? '';
             case 'rich':
             case 'rich2':
-                return self::richToHtml($body);
-            default: // 'text' and anything unknown
-                return self::textToHtml($body);
+                return VanillaRich::toHtml($body) ?? self::textToHtml($body);
+            default: // 'text', 'textex' and anything unknown
+                return Html::textMentions(self::textToHtml($body));
         }
     }
 
@@ -273,26 +305,5 @@ class VanillaImporter
         }
 
         return $out;
-    }
-
-    /** Vanilla "Rich"/"Rich2" bodies are a Quill delta — pull out the text, safely. */
-    private static function richToHtml(string $json): string
-    {
-        $data = json_decode($json, true);
-        $ops = is_array($data) ? ($data['ops'] ?? $data) : null;
-        if (! is_array($ops)) {
-            return self::textToHtml($json);
-        }
-        $text = '';
-        foreach ($ops as $op) {
-            $insert = is_array($op) ? ($op['insert'] ?? '') : '';
-            if (is_string($insert)) {
-                $text .= $insert;
-            } elseif (is_array($insert) && isset($insert['url'])) {
-                $text .= ' '.$insert['url'].' ';
-            }
-        }
-
-        return self::textToHtml($text);
     }
 }

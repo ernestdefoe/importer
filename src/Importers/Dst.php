@@ -2,33 +2,44 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use ErnestDefoe\Importer\Markup\Html;
+use ErnestDefoe\Importer\Markup\Target;
+use ErnestDefoe\Importer\Markup\Writer;
 use Flarum\Formatter\Formatter;
+use Flarum\Http\UrlGenerator;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
-use League\HTMLToMarkdown\HtmlConverter;
 
 /**
  * Destination writer — turns the platform-agnostic rows the importers produce
  * into Flarum records (tags, users, discussions, posts). This is the part that
  * differs from Convoro: everything writes into Flarum's schema, and post bodies
- * are HTML → Markdown → run through Flarum's formatter so they store in the
- * parsed `content` form Flarum expects (`<t>…</t>` / `<r>…</r>`).
+ * are canonical HTML ({@see Html}) written in whatever syntax this forum's
+ * editor uses ({@see Writer}), then run through Flarum's formatter so they
+ * store in the parsed `content` form Flarum expects (`<t>…</t>` / `<r>…</r>`).
  */
 class Dst
 {
     private static ?ConnectionInterface $db = null;
     private static ?Formatter $formatter = null;
-    private static ?HtmlConverter $html = null;
 
     /** A dry run (importer:run --sync --dry-run) rolls the database back; files it would write are skipped. */
     public static bool $dryRun = false;
+
+    /** The old board's address (the run's assets_base), for its relative links and images. */
+    public static string $base = '';
+
+    /** Source ids in the batch being written → Flarum ids, for mentions, quoted posts and topic links. */
+    private static array $refs = [];
 
     public static function reset(): void
     {
         self::$db = null;
         self::$formatter = null;
-        self::$html = null;
+        self::$refs = [];
+        self::$base = '';
+        Target::set(null);
     }
 
     public static function db(): ConnectionInterface
@@ -42,29 +53,64 @@ class Dst
     }
 
     /**
-     * Two things the Markdown converter gets wrong, fixed in the HTML first:
-     * - a quote's author (`<blockquote data-cite="…">`, written by the
-     *   importers) becomes a bold "Kryptos wrote:" line in the forum's language;
-     * - a link with no address (Vanilla's quote header has one) was kept as raw
-     *   `<a rel="nofollow">` markup, which the forum then showed as text.
+     * Look up, in one go for a whole batch, everything its posts point at:
+     * mentioned members (by source id or by name), quoted posts and linked
+     * topics. {@see content()} then writes `@"Ada"#12` and `@"Ada"#p45`
+     * without a query per post.
+     *
+     * @param  string[]  $htmls  the batch's canonical HTML
+     * @param  bool  $posts  false for private messages: a quoted message is not a post
      */
-    private static function prepare(string $html): string
+    public static function prepare(Ctx $ctx, array $htmls, bool $posts = true): void
     {
-        $html = preg_replace_callback('#<blockquote\b[^>]*?\sdata-cite="([^"]*)"[^>]*>#i', fn ($m) => '<blockquote><p><strong>'
-            .htmlspecialchars(Src::t('quote_wrote', ['name' => html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8')]), ENT_QUOTES, 'UTF-8')
-            .'</strong></p>', $html) ?? $html;
-
-        return preg_replace('#<a\b(?![^>]*\bhref\s*=)[^>]*>(.*?)</a>#is', '$1', $html) ?? $html;
+        $want = ['user' => [], 'post' => [], 'topic' => []];
+        $names = [];
+        foreach ($htmls as $h) {
+            if (! str_contains((string) $h, 'data-')) {
+                continue;
+            }
+            preg_match_all('/data-(user|post|topic)="([^"]+)"/', (string) $h, $m, PREG_SET_ORDER);
+            foreach ($m as [, $kind, $id]) {
+                if ($kind !== 'post' || $posts) {
+                    $want[$kind][] = $id;
+                }
+            }
+            preg_match_all('/data-user-name="([^"]+)"/', (string) $h, $m);
+            foreach ($m[1] as $n) {
+                $names[] = html_entity_decode($n, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }
+        }
+        $refs = array_filter($want) ? $ctx->mapMany(array_filter($want)) : [];
+        if ($names) {
+            $byName = [];
+            foreach (array_unique($names) as $n) {
+                $byName[Src::username($n, 0)] = mb_strtolower($n);
+            }
+            foreach (array_chunk(array_keys($byName), 500) as $chunk) {
+                foreach (self::db()->table('users')->whereIn('username', $chunk)->get(['id', 'username']) as $u) {
+                    $refs['name'][$byName[$u->username] ?? mb_strtolower($u->username)] = (int) $u->id;
+                }
+            }
+        }
+        self::$refs = $refs;
     }
 
-    private static function html(): HtmlConverter
+    /** The text the forum's formatter is given for a body: written for whichever editor the forum uses. */
+    public static function text(string $html): string
     {
-        return self::$html ??= new HtmlConverter([
-            'strip_tags' => true,
-            'hard_break' => true,
-            'use_autolinks' => false,
-            'header_style' => 'atx',
-        ]);
+        $root = Html::cleanRoot($html, ['base' => self::$base]);
+        $text = $root ? Writer::write($root, Target::current(), self::$refs, self::topicUrl(...)) : '';
+
+        return $text !== '' ? $text : "\u{200B}"; // zero-width space so the post isn't empty
+    }
+
+    private static function topicUrl(int $did): string
+    {
+        try {
+            return resolve(UrlGenerator::class)->to('forum')->route('discussion', ['id' => $did]);
+        } catch (\Throwable) {
+            return '/d/'.$did;
+        }
     }
 
     public static function hasTags(): bool
@@ -84,16 +130,11 @@ class Dst
     /** Convert an HTML body into Flarum's stored (parsed) content form. */
     public static function content(string $html): string
     {
-        $md = trim(PostText::fixEntities(self::html()->convert($html !== '' ? self::prepare($html) : ' ')));
-        if ($md === '') {
-            $md = '​'; // zero-width space so the post isn't empty
-        }
-
         try {
-            return self::formatter()->parse($md, null);
+            return self::formatter()->parse(self::text($html), null);
         } catch (\Throwable) {
             // Never let one weird post kill the run — fall back to plain text.
-            return self::formatter()->parse(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8') ?: '​', null);
+            return self::formatter()->parse(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8') ?: "\u{200B}", null);
         }
     }
 
@@ -124,7 +165,12 @@ class Dst
 
     /* ── Users ──────────────────────────────────────────────────────────── */
 
-    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt, ?Carbon $lastSeenAt = null): int
+    /**
+     * @param  array{scheme:string,hash:string,salt?:?string}|null  $legacy
+     *         the old board's hash when Flarum cannot check it itself; kept in
+     *         importer_passwords for the member's first sign-in ({@see \ErnestDefoe\Importer\Auth\LegacyPasswordChecker})
+     */
+    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt, ?Carbon $lastSeenAt = null, ?array $legacy = null): int
     {
         $db = self::db();
         $email = mb_strtolower(trim($email));
@@ -140,14 +186,27 @@ class Dst
             $name = Str::limit($base, 26, '').'_'.(++$n);
         }
 
-        return (int) $db->table('users')->insertGetId([
+        $id = (int) $db->table('users')->insertGetId([
             'username' => $name,
             'email' => $email,
             'is_email_confirmed' => 1,
-            'password' => Src::password($passwordHash),
+            // A legacy hash is never copied here: Flarum would compare the
+            // typed password with it directly, so an md5 could sign in alone.
+            'password' => Src::password($legacy ? null : $passwordHash),
             'joined_at' => $joinedAt,
             'last_seen_at' => $lastSeenAt,
         ]);
+        if ($legacy && ($legacy['hash'] ?? '') !== '' && ($legacy['scheme'] ?? 'unknown') !== 'unknown' && $db->getSchemaBuilder()->hasTable('importer_passwords')) {
+            $db->table('importer_passwords')->insert([
+                'user_id' => $id,
+                'scheme' => $legacy['scheme'],
+                'hash' => Str::limit((string) $legacy['hash'], 255, ''),
+                'salt' => isset($legacy['salt']) ? Str::limit((string) $legacy['salt'], 255, '') : null,
+                'created_at' => Carbon::now(),
+            ]);
+        }
+
+        return $id;
     }
 
     /**

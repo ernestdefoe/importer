@@ -80,6 +80,13 @@ class DiscourseImporter
                         }
                     }
                     $hasInlineEmail = $sb->hasColumn('users', 'email');
+                    // The PBKDF2 hash: user_passwords since 2024, users before.
+                    $pw = [];
+                    if (count($rows) && $sb->hasTable('user_passwords')) {
+                        foreach ($conn->table('user_passwords')->whereIn('user_id', $rows->pluck('id')->all())->get(['user_id', 'password_hash', 'password_salt', 'password_algorithm']) as $r) {
+                            $pw[(string) $r->user_id] = [$r->password_hash, $r->password_salt, $r->password_algorithm];
+                        }
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -92,7 +99,9 @@ class DiscourseImporter
                         }
 
                         try {
-                            $map[$u->id] = Dst::user(Src::username($u->username ?? ($u->name ?? null), (int) $u->id), $email, null, Src::ts($u->created_at ?? null));
+                            [$hash, $salt, $algo] = $pw[(string) $u->id] ?? [$u->password_hash ?? null, $u->salt ?? null, $u->password_algorithm ?? null];
+                            $legacy = $hash ? ['scheme' => 'discourse', 'hash' => (string) $hash, 'salt' => (string) $salt.'|'.(string) $algo] : null;
+                            $map[$u->id] = Dst::user(Src::username($u->username ?? ($u->name ?? null), (int) $u->id), $email, null, Src::ts($u->created_at ?? null), null, $legacy);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

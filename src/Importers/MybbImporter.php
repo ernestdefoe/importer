@@ -15,6 +15,17 @@ class MybbImporter
         return trim((string) ($cfg['prefix'] ?? 'mybb_')) ?: 'mybb_';
     }
 
+    /** MyBB: md5(md5(salt) . md5(password)), or bcrypt where a plugin switched it. */
+    private static function legacy(object $u): ?array
+    {
+        $hash = (string) ($u->password ?? '');
+        if ($hash === '') {
+            return null;
+        }
+
+        return str_starts_with($hash, '$') ? Src::legacy($hash, str_starts_with($hash, '$2') ? 'native' : null) : ['scheme' => 'mybb', 'hash' => $hash, 'salt' => (string) ($u->salt ?? '')];
+    }
+
     public static function test(array $cfg): array
     {
         $conn = Src::connect($cfg);
@@ -84,7 +95,7 @@ class MybbImporter
                         }
 
                         try {
-                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null));
+                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null), null, self::legacy($u));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -132,7 +143,7 @@ class MybbImporter
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
                 fn ($post) => [
                     'tid' => (int) $post->tid, 'pid' => (int) $post->pid, 'uid' => $post->uid,
-                    'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->dateline ?? null), 'ok' => true,
+                    'html' => Bbcode::toHtml($post->message ?? '', ['size' => 'pt']), 'at' => Src::ts($post->dateline ?? null), 'ok' => true,
                 ],
                 fn ($q) => $q->where('visible', 1),
                 'edittime',
@@ -205,7 +216,7 @@ class MybbImporter
                         'bcc' => $bcc,
                         'keep' => array_map(fn ($c) => $c->uid, $kept),
                         'unread' => array_map(fn ($c) => $c->uid, array_filter($all, fn ($c) => (int) ($c->status ?? 1) === 0)),
-                        'html' => Bbcode::toHtml($m->message ?? ''),
+                        'html' => Bbcode::toHtml($m->message ?? '', ['size' => 'pt']),
                         'at' => Src::ts($m->dateline ?? null),
                     ];
                 }

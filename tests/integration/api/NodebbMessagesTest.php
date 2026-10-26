@@ -23,7 +23,7 @@ class NodebbMessagesTest extends TestCase
     {
         parent::setUp();
 
-        $this->extension('flarum-messages', 'ernestdefoe-group-messages', 'ernestdefoe-importer');
+        $this->extension('flarum-messages', 'ernestdefoe-group-messages', 'ernestdefoe-importer', 'flarum-markdown');
         $this->prepareDatabase(['users' => $this->members()]);
 
         if (! class_exists(\Redis::class)) {
@@ -65,7 +65,7 @@ class NodebbMessagesTest extends TestCase
         }
         $r->hSet('uid:10:chat:rooms:read', '1', (string) $ms(50));
         foreach ([
-            1 => [10, 'Hello Bob', 0, 1], 2 => [11, 'Hi Ada', 100, 1], 3 => [10, 'Group hello', 200, 2], 4 => [10, 'Gone', 300, 3],
+            1 => [10, '**Hello** Bob', 0, 1], 2 => [11, 'Hi Ada', 100, 1], 3 => [10, 'Group hello', 200, 2], 4 => [10, 'Gone', 300, 3],
             5 => [99, 'From the departed', 400, 4], 6 => [10, 'In a public channel', 500, 5],
         ] as $mid => [$uid, $text, $o, $room]) {
             $r->hMSet("message:{$mid}", ['mid' => (string) $mid, 'fromuid' => (string) $uid, 'content' => $text, 'timestamp' => (string) $ms($o), 'roomId' => (string) $room]);
@@ -77,6 +77,7 @@ class NodebbMessagesTest extends TestCase
         $this->assertSame(['Hello Bob', 'Hi Ada'], $this->texts('direct', [3, 4]));
         $this->assertSame(['Group hello'], $this->texts('group', [3, 4, 5]));
         $this->assertSame(['From the departed'], $this->texts('direct', [3]));
+        $this->assertStringContainsString('<STRONG>', (string) $this->database()->table('dialog_messages')->where('content', 'like', '%Hello%')->value('content'), 'NodeBB chats are Markdown');
         $this->assertSame(3, $summary['conversations']);
         $this->assertSame(4, $summary['messages']);
 

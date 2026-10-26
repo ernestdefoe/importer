@@ -99,7 +99,7 @@ class SmfImporter
                         $name = self::decode(trim((string) ($u->real_name ?? '')) ?: (string) ($u->member_name ?? ''));
 
                         try {
-                            $map[$u->id_member] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->id_member), $email, null, Src::ts($u->date_registered ?? null));
+                            $map[$u->id_member] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->id_member), $email, null, Src::ts($u->date_registered ?? null), null, ($u->passwd ?? '') !== '' ? ['scheme' => 'smf', 'hash' => (string) $u->passwd, 'salt' => (string) ($u->member_name ?? '')] : null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

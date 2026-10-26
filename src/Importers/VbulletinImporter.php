@@ -92,8 +92,8 @@ class VbulletinImporter
                         }
 
                         try {
-                            // vB md5 → not portable; members reset (null password).
-                            $map[$u->userid] = Dst::user(Src::username($u->username ?? null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null));
+                            // md5(md5(password) . salt), checked at the member's first sign-in.
+                            $map[$u->userid] = Dst::user(Src::username($u->username ?? null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), null, Vbulletin5Importer::legacy($u));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

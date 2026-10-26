@@ -6,6 +6,7 @@ use ErnestDefoe\Importer\Importers\PrivateMessages;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
+use ErnestDefoe\Importer\Markup\Target;
 use Flarum\Http\RequestUtil;
 use Illuminate\Support\Arr;
 use Laminas\Diactoros\Response\JsonResponse;
@@ -35,6 +36,8 @@ class TestConnectionController implements RequestHandlerInterface
             if (($pms = PrivateMessages::count($importer, $cfg)) !== null && isset($res['counts'])) {
                 $res['counts']['messages'] = $pms;
             }
+            $target = Target::current();
+            $res['editor'] = $target->mode === Target::TEXT ? Src::t('editor_plain') : $target->label();
 
             return new JsonResponse($res);
         } catch (\Throwable $e) {

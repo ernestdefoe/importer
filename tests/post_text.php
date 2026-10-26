@@ -14,6 +14,7 @@
 declare(strict_types=1);
 
 require __DIR__.'/../src/Importers/Bbcode.php';
+require __DIR__.'/../src/Markup/Html.php';
 require __DIR__.'/../src/Importers/PostText.php';
 
 use ErnestDefoe\Importer\Importers\Bbcode;
@@ -42,7 +43,7 @@ $h = Bbcode::phpbb('<!-- m --><a class="postlink" href="http://www.example.com/a
 $has('a shortened label shows the whole address', $h, '>http://www.example.com/a/very/long/path/that/phpbb/shortens/index.php?x=1</a>');
 
 $h = Bbcode::phpbb('<!-- w --><a class="postlink" href="http://www.phpbb.com">www.phpbb.com</a><!-- w --> and <!-- l --><a class="postlink-local" href="http://board.example/viewtopic.php?f=2&amp;t=3">viewtopic.php?f=2&amp;t=3</a><!-- l -->', $uid);
-$has('www link keeps its label', $h, '<a href="http://www.phpbb.com" rel="nofollow noopener" target="_blank">www.phpbb.com</a>');
+$has('www link keeps its label', $h, '<a href="http://www.phpbb.com">www.phpbb.com</a>');
 $has('local link keeps its label', $h, '>viewtopic.php?f=2&amp;t=3</a>');
 
 $h = Bbcode::phpbb('Mail <!-- e --><a href="mailto:ada@example.com">ada@example.com</a><!-- e -->', $uid);
@@ -52,22 +53,22 @@ $h = Bbcode::phpbb('Hi <!-- s:) --><img src="{SMILIES_PATH}/icon_e_smile.gif" al
 $check('smilies become their codes', $h === '<p>Hi :) there :lol:</p>', $h);
 
 $h = Bbcode::phpbb("[b:$uid]bold[/b:$uid] [i:$uid]it[/i:$uid] [size=150:$uid]big[/size:$uid] [color=#FF0000:$uid]red[/color:$uid]", $uid);
-$check('uid stripped from inline tags', $h === '<p><strong>bold</strong> <em>it</em> <span>big</span> <span style="color:#FF0000">red</span></p>', $h);
+$check('uid stripped from inline tags', $h === '<p><strong>bold</strong> <em>it</em> <span data-size="21">big</span> <span data-color="#ff0000">red</span></p>', $h);
 
 $h = Bbcode::phpbb("[url=http&#58;//www&#46;example&#46;com/?q=a&amp;r=b:$uid]Example[/url:$uid]", $uid);
-$has('[url=…:uid] with phpBB\'s encoded colon', $h, '<a href="http://www.example.com/?q=a&amp;r=b" rel="nofollow noopener" target="_blank">Example</a>');
+$has('[url=…:uid] with phpBB\'s encoded colon', $h, '<a href="http://www.example.com/?q=a&amp;r=b">Example</a>');
 
 $h = Bbcode::phpbb("[list:$uid][*:$uid]one[/*:m:$uid][*:$uid]two[/*:m:$uid][/list:u:$uid][list=1:$uid][*:$uid]first[/*:m:$uid][/list:o:$uid]", $uid);
-$check('lists with :m :u :o suffixes', $h === '<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>', $h);
+$check('lists with :m :u :o suffixes', $h === '<ul><li><p>one</p></li><li><p>two</p></li></ul><ol><li><p>first</p></li></ol>', $h);
 
 $h = Bbcode::phpbb("[quote=&quot;Ada&quot;:$uid][quote=&quot;Bob&quot;:$uid]inner[/quote:$uid]outer[/quote:$uid]", $uid);
-$check('nested quotes with uid', $h === '<blockquote data-cite="Ada"><blockquote data-cite="Bob">inner</blockquote>outer</blockquote>', $h);
+$check('nested quotes with uid', $h === '<blockquote data-cite="Ada"><blockquote data-cite="Bob"><p>inner</p></blockquote><p>outer</p></blockquote>', $h);
 
 $h = Bbcode::phpbb("[code:$uid]&lt;?php echo &quot;a&amp;b&quot;;&nbsp;&nbsp;// &#91;b&#93; ?&gt;[/code:$uid]", $uid);
-$check('code: entities decoded once, brackets kept', $h === '<pre><code>&lt;?php echo &quot;a&amp;b&quot;;  // [b] ?&gt;</code></pre>', $h);
+$check('code: entities decoded once, brackets kept', $h === '<pre>&lt;?php echo &quot;a&amp;b&quot;;  // [b] ?&gt;</pre>', $h);
 
 $h = Bbcode::phpbb('[code=php:'.$uid.']<span class="syntaxdefault">&lt;?php&nbsp;</span><span class="syntaxkeyword">echo</span>[/code:'.$uid.']', $uid);
-$check('code=php highlighting spans dropped', $h === '<pre><code>&lt;?php echo</code></pre>', $h);
+$check('code=php highlighting spans dropped', $h === '<pre data-lang="php">&lt;?php echo</pre>', $h);
 
 $h = Bbcode::phpbb('&lt;script&gt;alert(1)&lt;/script&gt; and &amp;lt;b&amp;gt; and <script>alert(2)</script>', $uid);
 $has('escaped <script> stays text', $h, '&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -79,7 +80,7 @@ $lacks('javascript: link dropped', $h, 'javascript');
 $lacks('event handlers dropped', $h, 'onclick');
 
 $h = Bbcode::phpbb("Ünïcødé ✓ 日本語 &#128512; line<br />two\nthree", $uid);
-$check('unicode, <br /> and newlines', $h === "<p>Ünïcødé ✓ 日本語 😀 line<br>\ntwo<br>\nthree</p>", $h);
+$check('unicode, <br /> and newlines', $h === '<p>Ünïcødé ✓ 日本語 😀 line<br>two<br>three</p>', $h);
 
 echo "phpBB 3.2+ s9e XML\n";
 $h = Bbcode::phpbb('<r>Hello <B><s>[b]</s>world<e>[/b]</e></B> <URL url="https://example.com/?a=1&amp;b=2">https://example.com/?a=1&amp;b=2</URL> <E>:)</E> &lt;script&gt; &amp;lt;<br/>
@@ -87,7 +88,7 @@ $h = Bbcode::phpbb('<r>Hello <B><s>[b]</s>world<e>[/b]</e></B> <URL url="https:/
 $has('bold', $h, '<strong>world</strong>');
 $has('magic link left for the autolinker', $h, 'https://example.com/?a=1&amp;b=2');
 $has('escaped text stays text', $h, '&lt;script&gt; &amp;lt;');
-$has('quote', $h, '<blockquote data-cite="Ada">hi</blockquote>');
+$has('quote', $h, '<blockquote data-cite="Ada"><p>hi</p></blockquote>');
 $lacks('no XML left', $h, '&lt;B&gt;');
 $check('plain <t> post', Bbcode::phpbb('<t>Just text &amp; more</t>') === '<p>Just text &amp; more</p>', Bbcode::phpbb('<t>Just text &amp; more</t>'));
 
@@ -115,9 +116,10 @@ foreach ([
     'SMF' => ['[quote author=Kryptos link=msg=4 date=1600000000]hi[/quote]', 'Kryptos'],
     'escaped name' => ['[quote="<b>x</b>"]hi[/quote]', '&lt;b&gt;x&lt;/b&gt;'],
 ] as $board => [$src, $cite]) {
-    $has($board, Bbcode::toHtml($src), '<blockquote data-cite="'.$cite.'">hi</blockquote>');
+    $has($board, Bbcode::toHtml($src), '<blockquote data-cite="'.$cite.'"');
+    $has($board.': body', Bbcode::toHtml($src), '><p>hi</p></blockquote>');
 }
-$has('no author, plain quote', Bbcode::toHtml('[quote]hi[/quote]'), '<blockquote>hi</blockquote>');
+$has('no author, plain quote', Bbcode::toHtml('[quote]hi[/quote]'), '<blockquote><p>hi</p></blockquote>');
 
 echo "\nphpBB 3.2+ XML imported as text before 0.3.7 (repair-text)\n";
 // What 0.3.6 stored for real phpBB 3.3 rows, before (entities) and after

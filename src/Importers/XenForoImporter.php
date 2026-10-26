@@ -10,6 +10,41 @@ namespace ErnestDefoe\Importer\Importers;
  */
 class XenForoImporter
 {
+    /**
+     * XenForo's xf_user_authenticate row → [bcrypt hash to copy, or a legacy
+     * password to check at first sign-in]. XenForo 2 (XF:Core12) is bcrypt of
+     * the password itself; XenForo 1 hashed twice with a salt; boards XenForo
+     * imported keep that board's hash under XF:vBulletin, XF:PhpBb3 and so on.
+     *
+     * @return array{0:?string,1:?array}
+     */
+    private static function password(string $class, string $data): array
+    {
+        // allowed_classes:false — never instantiate objects from a foreign dump
+        // (a crafted payload could otherwise trigger a POP chain). JSON on XF 2.2+.
+        try {
+            $d = str_starts_with(ltrim($data), '{') ? json_decode($data, true) : unserialize($data, ['allowed_classes' => false]);
+        } catch (\Throwable) {
+            $d = null;
+        }
+        if (! is_array($d) || empty($d['hash']) || ! is_string($d['hash'])) {
+            return [null, null];
+        }
+        $hash = $d['hash'];
+        $salt = is_string($d['salt'] ?? null) ? $d['salt'] : '';
+        $class = strtolower(str_replace(['XenForo_Authentication_', 'XF:', '\\'], ['', '', ''], $class));
+
+        return match ($class) {
+            'core12', '' => preg_match('#^\$2[aby]\$#', $hash) ? [$hash, null] : [null, Src::legacy($hash)],
+            'core' => [null, ['scheme' => 'xf1', 'hash' => $hash, 'salt' => $salt]],
+            'vbulletin' => [null, ['scheme' => 'vb', 'hash' => $hash, 'salt' => $salt]],
+            'phpbb3' => [null, Src::legacy($hash) ?? ['scheme' => 'native', 'hash' => $hash, 'salt' => null]],
+            'mybb' => [null, ['scheme' => 'mybb', 'hash' => $hash, 'salt' => $salt]],
+            'ipboard', 'ipboard40' => [null, ['scheme' => 'ips', 'hash' => $hash, 'salt' => $salt]],
+            default => [null, null],
+        };
+    }
+
     public static function test(array $cfg): array
     {
         $conn = Src::connect($cfg);
@@ -63,21 +98,12 @@ class XenForoImporter
                 function ($cursor, $limit, Ctx $ctx) {
                     $conn = $ctx->src();
                     $rows = $conn->table('xf_user')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
-                    $pw = [];
+                    $pw = $legacy = [];
                     if (count($rows) && $conn->getSchemaBuilder()->hasTable('xf_user_authenticate')) {
-                        foreach ($conn->table('xf_user_authenticate')->whereIn('user_id', $rows->pluck('user_id')->all())->get(['user_id', 'data']) as $a) {
-                            // allowed_classes:false — never instantiate objects from a
-                            // foreign dump (a crafted payload could otherwise trigger
-                            // a POP chain). Caught rather than silenced with @ so a
-                            // corrupt row is skipped instead of aborting the import,
-                            // even where warnings are escalated to exceptions.
-                            try {
-                                $arr = unserialize((string) $a->data, ['allowed_classes' => false]);
-                            } catch (\Throwable) {
-                                $arr = false;
-                            }
-                            if (is_array($arr) && ! empty($arr['hash']) && is_string($arr['hash'])) {
-                                $pw[$a->user_id] = $arr['hash'];
+                        foreach ($conn->table('xf_user_authenticate')->whereIn('user_id', $rows->pluck('user_id')->all())->get(['user_id', 'scheme_class', 'data']) as $a) {
+                            [$hash, $legacy[$a->user_id]] = self::password((string) $a->scheme_class, (string) $a->data);
+                            if ($hash !== null) {
+                                $pw[$a->user_id] = $hash;
                             }
                         }
                     }
@@ -93,7 +119,7 @@ class XenForoImporter
                         }
 
                         try {
-                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null));
+                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null), null, $legacy[$u->user_id] ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

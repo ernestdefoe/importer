@@ -213,6 +213,7 @@ class Phases
         }
         $topicMap = $ctx->mapGet('topic', array_column($mapped, 'tid'));
         $userMap = $ctx->mapGet('user', array_column($mapped, 'uid'));
+        Dst::prepare($ctx, array_column($mapped, 'html'));
 
         $n = 0;
         $ids = $hashes = [];
@@ -283,6 +284,7 @@ class Phases
         $mapped = array_diff_key($mapped, $ctx->mapGet('post', array_keys($mapped)));
         $topicMap = $ctx->mapGet('topic', array_column($mapped, 'tid'));
         $userMap = $ctx->mapGet('user', array_column($mapped, 'uid'));
+        Dst::prepare($ctx, array_column($mapped, 'html'));
 
         $todo = [];
         foreach ($mapped as $key => $m) {
@@ -359,6 +361,7 @@ class Phases
             }
         }
         $known = $ctx->mapRows('post', array_keys($mapped));
+        Dst::prepare($ctx, array_column($mapped, 'html'));
         $db = Dst::db();
         $posts = $known ? $db->table('posts')->whereIn('id', array_column($known, 0))->get(['id', 'content', 'edited_at', 'user_id'])->keyBy('id') : collect();
 

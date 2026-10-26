@@ -362,8 +362,7 @@ class WebWizImporter
 
     private static function body(string $body): string
     {
-        return preg_match('#<(?:br|p|div|span|strong|b|i|em|u|a|img|font|blockquote|ul|ol|li|table)\b#i', $body)
-            ? Src::sanitizeHtml($body)
-            : Bbcode::toHtml($body);
+        // Web Wiz's editor stores HTML, and its forum codes ([QUOTE], [TUBE]…) sit inside it.
+        return Bbcode::toHtml($body, preg_match('#<(?:br|p|div|span|strong|b|i|em|u|a|img|font|blockquote|ul|ol|li|table)\b#i', $body) ? ['html' => 'raw'] : []);
     }
 }

@@ -170,11 +170,48 @@ class Vbulletin5Importer
         return $forumIds ? array_values(array_intersect($ids, $forumIds)) : $ids;
     }
 
+    /**
+     * A vBulletin member's password, checked at their first sign-in.
+     *
+     * vBulletin 5 keeps it in `scheme` + `token`: `blowfish:10` / `argon2id`
+     * tokens hash md5(password) — vBulletin md5s the password before anything
+     * else — and `legacy` tokens are vBulletin 4's "md5(md5(pw) . salt) salt".
+     * vBulletin 3/4 keep `password` = md5(md5(pw) . salt) and `salt`.
+     *
+     * Credit: Rob2dev, who mapped vBulletin 5's schemes on a real board (#4).
+     */
+    public static function legacy(object $u): ?array
+    {
+        $scheme = strtolower(trim((string) ($u->scheme ?? '')));
+        $token = trim((string) ($u->token ?? ''));
+        if ($token !== '' && $scheme !== '') {
+            if ($scheme === 'legacy') {
+                [$hash, $salt] = array_pad(preg_split('/\s+/', $token, 2) ?: [], 2, '');
+
+                return $hash !== '' ? ['scheme' => 'vb', 'hash' => $hash, 'salt' => $salt] : null;
+            }
+            if (str_starts_with($scheme, 'blowfish') || str_starts_with($scheme, 'argon2')) {
+                return ['scheme' => 'vb5', 'hash' => $token, 'salt' => null];
+            }
+
+            return null;
+        }
+        $hash = trim((string) ($u->password ?? ''));
+
+        return $hash !== '' ? ['scheme' => 'vb', 'hash' => $hash, 'salt' => (string) ($u->salt ?? '')] : null;
+    }
+
     private static function body(?string $raw, ?string $htmlstate, ?\Closure $attachmentResolver = null): string
     {
         $raw = (string) $raw;
+        // "Allow HTML" posts may hold BBCode too; HTML is made safe in Dst.
+        $html = match ($htmlstate) {
+            'on' => 'raw',
+            'on_nl2br' => 'nl2br',
+            default => null,
+        };
 
-        return $htmlstate === 'on' ? Src::sanitizeHtml($raw) : Bbcode::toHtml($raw, ['attachment' => $attachmentResolver]);
+        return Bbcode::toHtml($raw, array_filter(['attachment' => $attachmentResolver, 'html' => $html]));
     }
 
     /**
@@ -327,7 +364,7 @@ class Vbulletin5Importer
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
                         $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
                         try {
-                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen);
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen, self::legacy($u));
                             $map[$u->userid] = $uid;
                             // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
                             // groups map onto Flarum's built-in Admin/Mod groups. Everything else
@@ -418,6 +455,11 @@ class Vbulletin5Importer
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
                     $attachmentResolver = self::attachmentResolver($conn, $p);
+                    $bodies = [];
+                    foreach ($rows as $node) {
+                        $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
+                    }
+                    Dst::prepare($ctx, $bodies);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $node) {
@@ -430,7 +472,7 @@ class Vbulletin5Importer
                         if ($hasTags && isset($tagMap[(string) $node->parentid])) {
                             Dst::attachTag($did, $tagMap[(string) $node->parentid]);
                         }
-                        Dst::post($did, 1, $uid, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
+                        Dst::post($did, 1, $uid, $bodies[$node->nodeid], $created);
                         // Finalize immediately: topics with zero replies are never
                         // visited again by the posts phase, so without this their
                         // first_post_id/last_post_id/comment_count stay NULL/0 and
@@ -473,6 +515,13 @@ class Vbulletin5Importer
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $attachmentResolver = self::attachmentResolver($conn, $p);
+                    $bodies = [];
+                    foreach ($rows as $node) {
+                        if (isset($topicMap[(string) $node->parentid])) {
+                            $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
+                        }
+                    }
+                    Dst::prepare($ctx, $bodies);
                     $db = Dst::db();
                     $n = 0;
                     foreach ($rows as $node) {
@@ -489,7 +538,7 @@ class Vbulletin5Importer
                         }
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>', $created);
+                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, $bodies[$node->nodeid], $created);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;

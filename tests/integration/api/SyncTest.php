@@ -245,7 +245,8 @@ class SyncTest extends TestCase
         $this->sync();
         $this->sync();
 
-        $this->assertSame(['Hi all' => ['Hi **all**', 'Hey there', 'Me too'], 'Fresh' => ['Brand new']], $this->forum());
+        // No Markdown on this forum: the bold is written as it can be shown, never as literal **.
+        $this->assertSame(['Hi all' => ['Hi all', 'Hey there', 'Me too'], 'Fresh' => ['Brand new']], $this->forum());
         $this->assertSame(1, (int) $this->database()->table('users')->where('email', 'cal@mybb.example')->value('discussion_count'));
     }
 }

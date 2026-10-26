@@ -312,6 +312,7 @@ class Runner
             }
 
             Dst::reset();
+            Dst::$base = rtrim(trim((string) ($cfg['assets_base'] ?? '')), '/');
             $ctx = new Ctx((int) ($state['sync']['base'] ?? $runId), $cfg, $state['sync'] ?? null);
             $phases = Registry::phases($run->source, $cfg, $state);
             $i = (int) ($state['phaseIndex'] ?? 0);

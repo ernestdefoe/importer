@@ -19,6 +19,8 @@ ernestdefoe-importer:
     test: Test connection
     start: Start import
     test_ok: "Connected. Here's what we found:"
+    # After a successful test: which syntax posts will be stored in, e.g. "Markdown + BBCode".
+    editor: "Posts will be written for this forum's editor: {editor}."
     test_failed: Connection failed.
     start_failed: Could not start the import.
     confirm_start: Start importing now? This writes discussions, posts and members into this forum. Import into a fresh forum for best results.
@@ -106,6 +108,12 @@ ernestdefoe-importer:
     summary_with_tags: "Imported {topics} discussions, {posts} posts, {users} members, {categories} tags."
     # The line opening an imported quote; it becomes bold text in the post.
     quote_wrote: "{name} wrote:"
+    # The title of a spoiler that had none, and the label a spoiler keeps on a forum with no way to hide text.
+    spoiler: Spoiler
+    # An attachment the importer could not copy, kept as its file name.
+    attachment: "Attachment: {name}"
+    # The editor line in the wizard, for a forum with no formatting extension.
+    editor_plain: plain text (no Markdown, BBCode or HTML editor)
     sqlsrv_missing: "This server cannot connect to SQL Server directly: the PHP extension pdo_sqlsrv is not installed. Export the source database to a dump or CSV and use the file-upload import instead."
     dump_unreadable: Could not open the uploaded dump.
     scratch_failed: "Could not create a scratch database at {path}"

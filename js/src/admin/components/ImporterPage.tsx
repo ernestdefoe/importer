@@ -354,6 +354,7 @@ export default class ImporterPage extends Component {
         '.ImporterPage-counts',
         Object.keys(counts).map((k) => m('span.ImporterPage-count', [m('b', counts[k].toLocaleString()), ' ', countLabel(k)]))
       ),
+      r.editor ? m('p.ImporterPage-editor', t('editor', { editor: r.editor })) : null,
     ]);
   }
 

@@ -313,6 +313,7 @@ class PrivateMessages
         $start = array_map(fn ($t) => $t['n'], $top);
 
         // The messages, numbered on from what each dialog holds; who joins with them.
+        Dst::prepare($ctx, array_column($ready, 'html'), false);
         $rows = $joined = $placed = $reorder = [];
         foreach ($ready as $i => $d) {
             $did = $dialogs[$d['key']];

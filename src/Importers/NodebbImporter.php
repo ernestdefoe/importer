@@ -122,7 +122,10 @@ class NodebbImporter
                         }
 
                         try {
-                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, null, self::ts($u['joindate'] ?? null));
+                            // bcrypt of the password, or of its sha512 where NodeBB "shaWrapped" it.
+                            $hash = (string) ($u['password'] ?? '');
+                            $wrapped = (int) ($u['password:shaWrapped'] ?? 0) === 1;
+                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, $wrapped ? null : $hash, self::ts($u['joindate'] ?? null), null, $wrapped && $hash !== '' ? ['scheme' => 'nodebb', 'hash' => $hash, 'salt' => null] : null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -153,8 +156,18 @@ class NodebbImporter
                             $cids[] = $t['cid'] ?? null;
                         }
                     }
+                    $mains = $bodies = [];
+                    foreach ($tids as $tid) {
+                        $mainPid = $hashes[$tid]['mainPid'] ?? null;
+                        if ($hashes[$tid] && $mainPid !== null && $mainPid !== '') {
+                            $mains[$tid] = self::hash($r, "post:{$mainPid}");
+                            $uids[] = $mains[$tid]['uid'] ?? null;
+                            $bodies[$tid] = Src::markdown($mains[$tid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
+                        }
+                    }
                     $userMap = $ctx->mapGet('user', $uids);
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $cids) : [];
+                    Dst::prepare($ctx, $bodies);
                     $topicMap = $mainMap = [];
                     $n = 0;
                     foreach ($tids as $tid) {
@@ -171,9 +184,9 @@ class NodebbImporter
                             Dst::attachTag($did, $tagMap[(string) $t['cid']]);
                         }
                         $mainPid = $t['mainPid'] ?? null;
-                        if ($mainPid !== null && $mainPid !== '') {
-                            $post = self::hash($r, "post:{$mainPid}");
-                            Dst::post($did, 1, $userMap[(string) ($post['uid'] ?? '')] ?? $uid, Src::markdown($post['content'] ?? '') ?: '<p></p>', self::ts($post['timestamp'] ?? ($t['timestamp'] ?? null)));
+                        if (isset($mains[$tid])) {
+                            $post = $mains[$tid];
+                            Dst::post($did, 1, $userMap[(string) ($post['uid'] ?? '')] ?? $uid, $bodies[$tid], self::ts($post['timestamp'] ?? ($t['timestamp'] ?? null)));
                             $mainMap[$mainPid] = $did;
                         } else {
                             Dst::post($did, 1, $uid, '<p></p>', $created);
@@ -209,6 +222,13 @@ class NodebbImporter
                     $topicMap = $ctx->mapGet('topic', $tids);
                     $userMap = $ctx->mapGet('user', $uids);
                     $mainMap = $ctx->mapGet('main', $pids);
+                    $bodies = [];
+                    foreach ($pids as $pid) {
+                        if ($hashes[$pid] && ! isset($mainMap[(string) $pid])) {
+                            $bodies[$pid] = Src::markdown($hashes[$pid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
+                        }
+                    }
+                    Dst::prepare($ctx, $bodies);
                     $touched = [];
                     $n = 0;
                     // NodeBB orders posts by pid, not by topic, so one batch can span
@@ -229,7 +249,7 @@ class NodebbImporter
                         $counts[$did] ??= 0;
 
                         try {
-                            Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, Src::markdown($post['content'] ?? '') ?: '<p></p>', self::ts($post['timestamp'] ?? null));
+                            Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, $bodies[$pid], self::ts($post['timestamp'] ?? null));
                             $n++;
                             $touched[$did] = true;
                         } catch (\Throwable) {
@@ -310,7 +330,7 @@ class NodebbImporter
                         'people' => $people,
                         'keep' => $keep,
                         'unread' => $unread,
-                        'html' => Src::markdown($m['content'] ?? ''),
+                        'html' => Src::markdown($m['content'] ?? '', ['mentions' => true]),
                         'at' => self::ts($m['timestamp'] ?? null),
                     ];
                 }

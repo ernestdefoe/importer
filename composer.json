@@ -19,7 +19,6 @@
   "require": {
     "php": "^8.3",
     "flarum/core": "^2.0",
-    "league/html-to-markdown": "^5.1",
     "league/commonmark": "^2.4"
   },
   "autoload": {
@@ -61,7 +60,10 @@
     "flarum/testing": "^2.0",
     "flarum/markdown": "^2.0",
     "flarum/messages": "^2.0",
-    "ernestdefoe/group-messages": "^2.1"
+    "ernestdefoe/group-messages": "^2.1",
+    "flarum/bbcode": "^2.0",
+    "flarum/mentions": "^2.0",
+    "ernestdefoe/scribe": "^1.4"
   },
   "scripts": {
     "test": [

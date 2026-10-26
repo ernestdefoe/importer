@@ -83,7 +83,7 @@ class InvisionImporter
                         }
 
                         try {
-                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, $u->members_pass_hash ?? null, Src::ts($u->joined ?? null));
+                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, null, Src::ts($u->joined ?? null), null, ($u->members_pass_hash ?? '') !== '' ? ['scheme' => 'ips', 'hash' => (string) $u->members_pass_hash, 'salt' => (string) ($u->members_pass_salt ?? '')] : null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -134,7 +134,7 @@ class InvisionImporter
                 fn () => (int) Src::connect($cfg)->table('forums_posts')->where('queued', 0)->count(),
                 fn ($post) => [
                     'tid' => (int) $post->topic_id, 'pid' => (int) $post->pid, 'uid' => $post->author_id,
-                    'html' => self::ipsHtml($post->post ?? ''), 'at' => Src::ts($post->post_date ?? null),
+                    'html' => self::ipsHtml($post->post ?? '', (string) ($cfg['assets_base'] ?? '')), 'at' => Src::ts($post->post_date ?? null),
                     'ok' => (int) ($post->pdelete_time ?? 0) === 0,
                 ],
                 fn ($q) => $q->where('queued', 0),
@@ -165,7 +165,7 @@ class InvisionImporter
 
                 return $has($conn) ? (int) $conn->table('core_message_posts')->count() : 0;
             },
-            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has) {
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has, $cfg) {
                 $conn = $ctx->src();
                 if (! $has($conn)) {
                     return ['cursor' => $after, 'rows' => 0, 'done' => true, 'messages' => []];
@@ -194,7 +194,7 @@ class InvisionImporter
                         'people' => array_map(fn ($r) => $r->map_user_id, $rs),
                         'keep' => array_map(fn ($r) => $r->map_user_id, $active),
                         'unread' => array_map(fn ($r) => $r->map_user_id, array_filter($active, fn ($r) => (int) ($r->map_read_time ?? 0) < (int) $m->msg_date)),
-                        'html' => self::ipsHtml($m->msg_post ?? ''),
+                        'html' => self::ipsHtml($m->msg_post ?? '', (string) ($cfg['assets_base'] ?? '')),
                         'at' => Src::ts($m->msg_date ?? null),
                     ];
                 }
@@ -232,92 +232,30 @@ class InvisionImporter
         return [$names, $descs];
     }
 
-    /** Convert IPS post HTML into clean HTML (mentions→text, ipsQuote→blockquote, emoticons→alt), sanitised. */
-    public static function ipsHtml(?string $html): string
+    /**
+     * IPS post HTML, ready for {@see \ErnestDefoe\Importer\Markup\Html::clean()}.
+     *
+     * IPS stores its own addresses as placeholders — `<fileStore.core_Attachment>`
+     * for uploads, `<___base_url___>` for the board — that only its renderer
+     * fills in. With the old board's address they become real links and images;
+     * without it, an image falls back to its name rather than breaking.
+     * Quotes, spoilers, code languages, mentions and emoticons are recognised
+     * by their IPS classes in Html::clean().
+     */
+    public static function ipsHtml(?string $html, string $base = ''): string
     {
         $html = trim((string) $html);
         if ($html === '') {
             return '';
         }
-        $html = Src::sanitizeHtml($html);
+        $base = rtrim($base, '/');
 
-        $dom = new \DOMDocument;
-        libxml_use_internal_errors(true);
-        $ok = $dom->loadHTML(
-            '<?xml encoding="UTF-8"><div id="ips-root">'.$html.'</div>',
-            LIBXML_NONET | LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
-        );
-        libxml_clear_errors();
-        if (! $ok) {
-            return $html;
-        }
-        $root = $dom->getElementById('ips-root');
-        if (! $root) {
-            return $html;
-        }
+        return preg_replace_callback('#(?:&lt;|<)(fileStore\.[\w.]+|___base_url___)(?:&gt;|>)/?#', function ($m) use ($base) {
+            if ($base === '') {
+                return '';
+            }
 
-        // Mentions → plain text.
-        foreach (iterator_to_array($dom->getElementsByTagName('a')) as $a) {
-            if ($a->hasAttribute('data-mentionid') || str_contains($a->getAttribute('class'), 'ipsMention')) {
-                $a->parentNode?->replaceChild($dom->createTextNode($a->textContent), $a);
-            }
-        }
-
-        // Emoticon images → their alt text.
-        foreach (iterator_to_array($dom->getElementsByTagName('img')) as $img) {
-            if ($img->hasAttribute('data-emoticon') || str_contains($img->getAttribute('class'), 'ipsEmoji')) {
-                $img->parentNode?->replaceChild($dom->createTextNode($img->getAttribute('alt')), $img);
-            } elseif (! $img->getAttribute('src') && $img->getAttribute('data-src')) {
-                $img->setAttribute('src', $img->getAttribute('data-src'));
-            }
-        }
-
-        // Quotes → clean blockquote with attribution.
-        foreach (iterator_to_array($dom->getElementsByTagName('blockquote')) as $bq) {
-            if (! str_contains($bq->getAttribute('class'), 'ipsQuote') && ! $bq->hasAttribute('data-ipsquote')) {
-                continue;
-            }
-            $user = trim($bq->getAttribute('data-ipsquote-username'));
-            $contents = null;
-            foreach (iterator_to_array($bq->childNodes) as $child) {
-                if ($child instanceof \DOMElement && str_contains($child->getAttribute('class'), 'ipsQuote_citation')) {
-                    $bq->removeChild($child);
-
-                    continue;
-                }
-                if ($child instanceof \DOMElement && str_contains($child->getAttribute('class'), 'ipsQuote_contents')) {
-                    $contents = $child;
-                }
-            }
-            if ($contents) {
-                while ($contents->firstChild) {
-                    $bq->insertBefore($contents->firstChild, $contents);
-                }
-                $bq->removeChild($contents);
-            }
-            foreach (iterator_to_array($bq->attributes) as $attr) {
-                $bq->removeAttribute($attr->nodeName);
-            }
-            if ($user !== '') {
-                $bq->setAttribute('data-cite', $user); // Dst::content() writes the attribution
-            }
-        }
-
-        // Strip IPS styling hooks from every element (keep href/src/alt/title).
-        foreach (iterator_to_array($dom->getElementsByTagName('*')) as $el) {
-            foreach (iterator_to_array($el->attributes) as $attr) {
-                $name = $attr->nodeName;
-                if ($name === 'class' || $name === 'style' || (str_starts_with($name, 'data-') && $name !== 'data-cite')) {
-                    $el->removeAttribute($name);
-                }
-            }
-        }
-
-        $out = '';
-        foreach (iterator_to_array($root->childNodes) as $child) {
-            $out .= $dom->saveHTML($child);
-        }
-
-        return trim($out);
+            return $m[1] === '___base_url___' ? $base.'/' : $base.'/uploads/';
+        }, $html) ?? $html;
     }
 }

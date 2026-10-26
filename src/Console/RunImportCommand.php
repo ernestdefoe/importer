@@ -7,6 +7,7 @@ use ErnestDefoe\Importer\Importers\PrivateMessages;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Runner;
+use ErnestDefoe\Importer\Markup\Target;
 use Flarum\Console\AbstractCommand;
 use Illuminate\Database\ConnectionInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -81,6 +82,8 @@ class RunImportCommand extends AbstractCommand
 
                 return 0;
             }
+
+            $this->info('Writing posts for: '.Target::current()->label().'.');
 
             return $this->drive(Runner::start($source, $cfg), 'Import complete — ');
         } catch (\Throwable $e) {

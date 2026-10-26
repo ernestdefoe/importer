@@ -107,7 +107,7 @@ class VanillaQuotesTest extends TestCase
 
         $this->assertStringStartsWith('> **Kryptos wrote:**', $html, 'HTML: the author lives in rel=');
 
-        $this->assertStringStartsWith('> Kryptos wrote:', $wysiwyg);
+        $this->assertStringStartsWith('> **Kryptos wrote:**', $wysiwyg);
         $this->assertStringNotContainsString('<a', $wysiwyg, 'No raw markup shown as text');
 
         $this->assertStringStartsWith('> **Ana Maria dijo:**', $spanish, 'Names with spaces, in the board\'s own language');

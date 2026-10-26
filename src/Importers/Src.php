@@ -128,6 +128,23 @@ class Src
         return preg_match('#^\$2[aby]\$#', $hash) ? $hash : password_hash(Str::random(24), PASSWORD_BCRYPT);
     }
 
+    /**
+     * A self-describing hash (phpBB, Vanilla) as a legacy password, or null
+     * when it is bcrypt Flarum checks already (then it is copied as it is).
+     *
+     * @return array{scheme:string,hash:string,salt:?string}|null
+     */
+    public static function legacy(?string $hash, ?string $scheme = null, ?string $salt = null): ?array
+    {
+        $hash = trim((string) $hash);
+        if ($hash === '') {
+            return null;
+        }
+        $scheme ??= \ErnestDefoe\Importer\Auth\LegacyPassword::detect($hash);
+
+        return $scheme === null ? null : ['scheme' => $scheme, 'hash' => $hash, 'salt' => $salt];
+    }
+
     /** Unix timestamp or datetime string → Carbon. */
     public static function ts(mixed $v): Carbon
     {
@@ -159,24 +176,38 @@ class Src
         return trim($html);
     }
 
-    /** Markdown → sanitised HTML (Vanilla/NodeBB store post bodies as Markdown). */
-    public static function markdown(?string $md): string
+    /**
+     * Markdown → HTML (Vanilla and NodeBB store post bodies as Markdown).
+     *
+     * GitHub-flavoured, as both boards are: tables, ~~strikethrough~~, and a
+     * line break where the member pressed Enter. The HTML is made safe and
+     * canonical later, in {@see Dst::content()}.
+     *
+     * @param  array{html?:bool,mentions?:bool}  $opts
+     *   html      the board allowed HTML inside Markdown (Vanilla); otherwise it is shown as typed
+     *   mentions  `@name` / `@"Full Name"` are the board's mentions
+     */
+    public static function markdown(?string $md, array $opts = []): string
     {
         $md = (string) $md;
         if (trim($md) === '') {
             return '';
         }
-        if (class_exists(\League\CommonMark\CommonMarkConverter::class)) {
+        $html = null;
+        if (class_exists(\League\CommonMark\GithubFlavoredMarkdownConverter::class)) {
             try {
-                $conv = new \League\CommonMark\CommonMarkConverter(['html_input' => 'strip', 'allow_unsafe_links' => false]);
-
-                return self::sanitizeHtml((string) $conv->convert($md));
+                $html = (string) (new \League\CommonMark\GithubFlavoredMarkdownConverter([
+                    'html_input' => ! empty($opts['html']) ? 'allow' : 'escape',
+                    'allow_unsafe_links' => false,
+                    'renderer' => ['soft_break' => "<br>\n"],
+                ]))->convert($md);
             } catch (\Throwable) {
                 // fall through to the plain-text rendering below
             }
         }
+        $html ??= '<p>'.nl2br(htmlspecialchars($md, ENT_QUOTES), false).'</p>';
 
-        return self::sanitizeHtml('<p>'.nl2br(htmlspecialchars($md, ENT_QUOTES), false).'</p>');
+        return ! empty($opts['mentions']) ? \ErnestDefoe\Importer\Markup\Html::textMentions($html) : $html;
     }
 
     /**

@@ -16,6 +16,8 @@ export interface TestResult {
   ok: boolean;
   error?: string;
   counts?: Record<string, number>;
+  /** The editor posts will be written for, e.g. "Markdown + BBCode". */
+  editor?: string;
 }
 
 export interface ImportStatus {

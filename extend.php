@@ -8,6 +8,8 @@
  */
 
 use ErnestDefoe\Importer\Api\Controller;
+use ErnestDefoe\Importer\Auth;
+use ErnestDefoe\Importer\Console\ReformatCommand;
 use ErnestDefoe\Importer\Console\RepairTextCommand;
 use ErnestDefoe\Importer\Console\RunImportCommand;
 use ErnestDefoe\Importer\Redirects;
@@ -20,9 +22,18 @@ return [
 
     new Extend\Locales(__DIR__.'/resources/locale'),
 
+    // Members sign in with the password they had on the old board, once:
+    // it is then saved the way Flarum saves passwords. See Auth\LegacyPassword.
+    (new Extend\Auth())
+        ->addPasswordChecker('importer-legacy', Auth\LegacyPasswordChecker::class),
+
+    (new Extend\Event())
+        ->listen(\Flarum\User\Event\PasswordChanged::class, Auth\ForgetLegacyPassword::class),
+
     (new Extend\Console())
         ->command(RunImportCommand::class)
-        ->command(RepairTextCommand::class),
+        ->command(RepairTextCommand::class)
+        ->command(ReformatCommand::class),
 
     /*
      * 🚨 Old addresses, 301'd to where the content went.

@@ -84,7 +84,7 @@ class PhpbbImporter
                         }
 
                         try {
-                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $u->user_password ?? null, Src::ts($u->user_regdate ?? null));
+                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $u->user_password ?? null, Src::ts($u->user_regdate ?? null), null, Src::legacy($u->user_password ?? null));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

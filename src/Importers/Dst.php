@@ -39,6 +39,7 @@ class Dst
         self::$formatter = null;
         self::$refs = [];
         self::$base = '';
+        self::$pendingMentions = [];
         Target::set(null);
     }
 
@@ -460,7 +461,9 @@ class Dst
             'content' => $content,
             'is_private' => 0,
         ]);
-        self::mentions('posts', [$id => $content]);
+        if (str_contains($content, 'MENTION ')) {
+            self::$pendingMentions[$id] = $content; // written in one go per step, see flushMentions()
+        }
 
         return $id;
     }
@@ -472,6 +475,19 @@ class Dst
         'GROUPMENTION' => ['group', 'mentions_group_id'],
         'TAGMENTION' => ['tag', 'mentions_tag_id'],
     ];
+
+    /** @var array<int,string> posts written this step whose mentions are not recorded yet */
+    private static array $pendingMentions = [];
+
+    /** Record the mentions of the posts written since the last call: a few inserts per batch, not per post. */
+    public static function flushMentions(): void
+    {
+        if (self::$pendingMentions) {
+            $pending = self::$pendingMentions;
+            self::$pendingMentions = [];
+            self::mentions('posts', $pending);
+        }
+    }
 
     /** @var array<string,bool> which tables exist; kept across steps, as a schema does not change mid-request */
     private static array $tables = [];

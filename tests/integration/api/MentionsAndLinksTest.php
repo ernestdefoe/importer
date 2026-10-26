@@ -69,6 +69,7 @@ class MentionsAndLinksTest extends TestCase
 
         // Rendered through the API, as a reader sees it: a mention, not "@[deleted]".
         $id = Dst::postContent(7, 2, 4, $xml, \Illuminate\Support\Carbon::now());
+        Dst::flushMentions();
         $this->assertSame(1, $db->table('post_mentions_user')->where('post_id', $id)->where('mentions_user_id', 3)->count());
         $this->assertSame(1, $db->table('post_mentions_post')->where('post_id', $id)->where('mentions_post_id', 70)->count());
         $html = json_decode((string) $this->send($this->request('GET', '/api/posts/'.$id))->getBody(), true)['data']['attributes']['contentHtml'] ?? '';

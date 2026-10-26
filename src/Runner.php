@@ -325,6 +325,7 @@ class Runner
 
             $phase = $phases[$i];
             $res = ($phase->batch)($state['cursor'] ?? null, self::BATCH, $ctx);
+            Dst::flushMentions();
 
             foreach (($res['summary'] ?? []) as $k => $v) {
                 $state['summary'][$k] = (int) ($state['summary'][$k] ?? 0) + (int) $v;

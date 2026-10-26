@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Console;
 
+use ErnestDefoe\Importer\Importers\Dst;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Markup\FromXml;
 use ErnestDefoe\Importer\Markup\Target;
@@ -74,7 +75,7 @@ class ReformatCommand extends AbstractCommand
                 $old = (string) $row->content;
                 try {
                     $html = $mdText && self::markdownAsText($old)
-                        ? Src::markdown((string) $this->formatter->unparse($old, null))
+                        ? self::fromMarkdownText((string) $this->formatter->unparse($old, null))
                         : FromXml::toHtml($old);
                     $text = Writer::write($html, $target, [], $topicUrl);
                     $new = $this->formatter->parse($text !== '' ? $text : "\u{200B}", null);
@@ -95,6 +96,7 @@ class ReformatCommand extends AbstractCommand
                     continue;
                 }
                 $this->db->table($table)->where('id', $row->id)->update(['content' => $new]);
+                Dst::mentions($table, [(int) $row->id => $new], true);
                 if ($table === 'posts') {
                     // A sync only refreshes posts nobody changed here; this change is the importer's own.
                     $this->db->table('importer_map')->where('kind', 'post')->where('target_id', $row->id)
@@ -145,5 +147,37 @@ class ReformatCommand extends AbstractCommand
         $text = html_entity_decode(strip_tags($xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
 
         return (bool) preg_match('/\*\*\S|(?:^|\n)(?:>|[-*+] |\d+\. |#{1,6} |```)|\]\(https?:\/\/|!\[/', $text);
+    }
+
+    /**
+     * Markdown an older import left as text, read as Markdown — keeping its
+     * mentions, and tidying what those versions left behind: XenForo's
+     * `, post: 1, member: 2` in a quote's author line, and its [URL unfurl],
+     * [IMG width=…] and [ATTACH …] tags shown as text.
+     */
+    private static function fromMarkdownText(string $md): string
+    {
+        $mentions = [];
+        $md = preg_replace_callback('/@"([^"\n]+)"#(p|g)?(\d+)/', function ($m) use (&$mentions) {
+            $attr = ['' => 'data-flarum-user', 'p' => 'data-flarum-post', 'g' => 'data-flarum-group'][$m[2]];
+            $name = htmlspecialchars($m[1], ENT_QUOTES, 'UTF-8');
+            $mentions[] = '<span data-mention="'.$name.'" '.$attr.'="'.(int) $m[3].'">@'.$name.'</span>';
+
+            return 'IMPORTERMENTION'.(count($mentions) - 1).'X';
+        }, $md) ?? $md;
+        $md = preg_replace([
+            '/(,\s*(?:post|member|user|convMessage|thread):\s*\d+)+(?=[^\n*]*\*\*)/i',
+            '/\\\\?\[URL\b[^\]\n]*?\\\\?\]/i',
+        ], '', $md) ?? $md;
+        $md = preg_replace('/\\\\?\[IMG\b[^\]\n]*?\\\\?\](https?:\/\/\S+)/i', '![]($1)', $md) ?? $md;
+        $md = preg_replace_callback('/\\\\?\[ATTACH\b([^\]\n]*?)\\\\?\](\d+)/i', function ($m) {
+            $name = preg_match('/alt="([^"]+)"/', $m[1], $a) ? $a[1] : '#'.$m[2];
+
+            return '\\['.\ErnestDefoe\Importer\Markup\Html::attachmentLabel($name).'\\]';
+        }, $md) ?? $md;
+
+        $html = Src::markdown($md);
+
+        return preg_replace_callback('/IMPORTERMENTION(\d+)X/', fn ($m) => $mentions[(int) $m[1]] ?? '', $html) ?? $html;
     }
 }

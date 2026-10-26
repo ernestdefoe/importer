@@ -115,7 +115,7 @@ class Dst
 
     public static function hasTags(): bool
     {
-        return self::db()->getSchemaBuilder()->hasTable('tags');
+        return self::$tables['tags'] ??= self::db()->getSchemaBuilder()->hasTable('tags');
     }
 
     public static function hasColumn(string $table, string $col): bool
@@ -445,7 +445,7 @@ class Dst
     /** Insert a post whose body is already in Flarum's stored form (see {@see content()}). */
     public static function postContent(int $discussionId, int $number, ?int $userId, string $content, Carbon $createdAt): int
     {
-        return (int) self::db()->table('posts')->insertGetId([
+        $id = (int) self::db()->table('posts')->insertGetId([
             'discussion_id' => $discussionId,
             'number' => $number,
             'created_at' => $createdAt,
@@ -454,6 +454,62 @@ class Dst
             'content' => $content,
             'is_private' => 0,
         ]);
+        self::mentions('posts', [$id => $content]);
+
+        return $id;
+    }
+
+    /** Where flarum/mentions (and flarum/messages) record who and what a post mentions. */
+    private const MENTIONS = [
+        'USERMENTION' => ['user', 'mentions_user_id'],
+        'POSTMENTION' => ['post', 'mentions_post_id'],
+        'GROUPMENTION' => ['group', 'mentions_group_id'],
+        'TAGMENTION' => ['tag', 'mentions_tag_id'],
+    ];
+
+    /** @var array<string,bool> which tables exist; kept across steps, as a schema does not change mid-request */
+    private static array $tables = [];
+
+    /**
+     * Record the mentions in stored posts or messages, as flarum/mentions does
+     * when a post is written on the forum.
+     *
+     * 🚨 The mention renders from these rows, not from the post: without them
+     * every imported mention shows as "@[deleted]" and the quoted post's link
+     * goes nowhere. Flarum fills them from an event an import never fires.
+     *
+     * @param  'posts'|'dialog_messages'  $table
+     * @param  array<int,string>  $contents  id => stored XML
+     * @param  bool  $replace  the posts already had rows (an edit, a reformat)
+     */
+    public static function mentions(string $table, array $contents, bool $replace = false): void
+    {
+        [$prefix, $key] = $table === 'posts' ? ['post_mentions_', 'post_id'] : ['dialog_message_mentions_', 'dialog_message_id'];
+        $db = self::db();
+        $now = Carbon::now();
+        foreach (self::MENTIONS as $tag => [$kind, $col]) {
+            $pivot = $prefix.$kind;
+            $rows = [];
+            foreach ($contents as $id => $xml) {
+                if (! str_contains($xml, '<'.$tag.' ')) {
+                    continue;
+                }
+                foreach (array_unique(\s9e\TextFormatter\Utils::getAttributeValues($xml, $tag, 'id')) as $v) {
+                    if ((int) $v > 0) {
+                        $rows[] = [$key => (int) $id, $col => (int) $v, 'created_at' => $now];
+                    }
+                }
+            }
+            if ((! $rows && ! $replace) || ! (self::$tables[$pivot] ??= $db->getSchemaBuilder()->hasTable($pivot))) {
+                continue;
+            }
+            if ($replace) {
+                $db->table($pivot)->whereIn($key, array_keys($contents))->delete();
+            }
+            foreach (array_chunk($rows, 500) as $chunk) {
+                $db->table($pivot)->insertOrIgnore($chunk);
+            }
+        }
     }
 
     /**

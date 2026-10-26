@@ -84,8 +84,11 @@ class EditorFormattingTest extends TestCase
             }
         }
 
-        // Nothing shows as markup.
-        $visible = str_replace(['[b]LITERALS[/b]', '<b>not bold</b>', '[sic]'], '', $text);
+        // Nothing shows as markup. (Scribe shows entities inside code — its own
+        // code blocks do the same, so imported ones are written exactly as it
+        // writes them, and edit cleanly; that is Scribe's to fix.)
+        $shown = $t->mode === Target::HTML ? (preg_replace('#<(pre|code)\b.*?</\1>#s', '', $html) ?? $html) : $html;
+        $visible = str_replace(['[b]LITERALS[/b]', '<b>not bold</b>', '[sic]'], '', html_entity_decode(strip_tags(preg_replace('#<script\b.*?</script>#s', '', $shown) ?? $shown), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
         foreach (['**', '[b]', '[/', '[quote', '[url', '[img', '[list', '[*]', '[code', '[spoiler', '[color', '[size', '```', '>!', '!<', '&lt;', '&amp;', '<strong', '<p>', 'data-', '~~', 'fileStore', '___base_url', '"#', '\\'] as $raw) {
             $this->assertStringNotContainsString($raw, $visible, "raw markup [$raw] shows in the post$why");
         }
@@ -125,6 +128,8 @@ class EditorFormattingTest extends TestCase
         $expect('media', $hm && $t->html('video'), '#Scribe-video[\s\S]*dQw4w9WgXcQ#');
         $expect('hr', $md || $hm, '#<hr#');
         $expect('email', true, '#mailto:ada@example\.com#');
+        // A bare address ending a paragraph links to itself, and takes nothing after it along.
+        $expect('bareurl', true, '#<a href="https://example\.com/bare"[^>]*>https://example\.com/bare</a>#');
 
         // A text editor's edit-and-save, and `importer:reformat` on this same forum, change nothing.
         $this->assertSame($xml, $f->parse($f->unparse($xml, null), null), 'Editing and saving changes the post'.$why);

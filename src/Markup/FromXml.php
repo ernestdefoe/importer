@@ -114,7 +114,7 @@ final class FromXml
                     $el->setAttribute($k, $a($k));
                 }
             }
-            $name === 'C' ? $el->appendChild($this->doc->createTextNode($this->text($n))) : $this->kids($n, $el);
+            $name === 'C' ? $el->appendChild($this->doc->createTextNode($this->codeText($n))) : $this->kids($n, $el);
 
             return;
         }
@@ -134,7 +134,7 @@ final class FromXml
                 if (($l = $a('lang')) !== '') {
                     $el->setAttribute('data-lang', $l);
                 }
-                $el->appendChild($this->doc->createTextNode(trim($this->text($n), "\n")));
+                $el->appendChild($this->doc->createTextNode(trim($this->codeText($n), "\n")));
 
                 return;
             case 'QUOTE':
@@ -284,6 +284,22 @@ final class FromXml
             }
         }
         $el->appendChild($this->doc->createTextNode($text));
+    }
+
+    /**
+     * A code block's text. Written as HTML (`<pre>`, `<code>` — Scribe), the
+     * text is stored escaped, as the editor wrote it: decode it once.
+     */
+    private function codeText(DOMElement $n): string
+    {
+        $text = $this->text($n);
+        foreach ($n->childNodes as $c) {
+            if ($c instanceof DOMElement && $c->nodeName === 's') {
+                return preg_match('#^<(?:pre|code)\b#i', $c->textContent) ? html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8') : $text;
+            }
+        }
+
+        return $text;
     }
 
     /** Text without the syntax markers. */

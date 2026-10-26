@@ -314,7 +314,7 @@ class PrivateMessages
 
         // The messages, numbered on from what each dialog holds; who joins with them.
         Dst::prepare($ctx, array_column($ready, 'html'), false);
-        $rows = $joined = $placed = $reorder = [];
+        $rows = $joined = $placed = $reorder = $stored = [];
         foreach ($ready as $i => $d) {
             $did = $dialogs[$d['key']];
             foreach ($member($d['keepers']) as $u) {
@@ -335,6 +335,7 @@ class PrivateMessages
             $number = ($top[$did]['n'] ?? 0) + 1;
             $top[$did] = ['n' => $number, 'at' => max($stamp, $top[$did]['at'] ?? '')];
             $placed[$i] = $did.':'.$number;
+            $stored[$did.':'.$number] = $content;
             $rows[] = ['dialog_id' => $did, 'user_id' => $users[(string) $d['uid']] ?? null, 'content' => $content, 'number' => $number, 'created_at' => $d['at'], 'updated_at' => $d['at']];
         }
         foreach (array_chunk($rows, 100) as $chunk) {
@@ -386,6 +387,7 @@ class PrivateMessages
                 }
             }
         }
+        Dst::mentions('dialog_messages', array_combine(array_values($newIds), array_map(fn ($k) => $stored[$k] ?? '', array_keys($newIds))) ?: []);
         $sum['messages'] = count($mapped);
         $ctx->mapPut('pm', $mapped);
         $ctx->mapPut('pm-unread', $markers);

@@ -39,6 +39,9 @@ final class Writer
 
     private int $depth = 0;
 
+    /** Inside a link's label: no links within it. */
+    private bool $inLink = false;
+
     /**
      * @param  array{user?:array<string,int>,post?:array<string,int>,topic?:array<string,int>,name?:array<string,int>}  $refs
      *         source id (or lowercased name) → Flarum id, resolved for this batch by {@see Refs}
@@ -381,8 +384,9 @@ final class Writer
 
                 return $fence.$lang."\n".$code."\n".$fence;
             case Target::HTML:
-                // Scribe takes code text raw: entities would show as written.
-                return '<pre'.($lang !== '' && $this->t->html('pre') ? ' data-lang="'.$lang.'"' : '').'>'.str_replace('</pre', '</ pre', $code).'</pre>';
+                // Escaped, exactly as Scribe's own editor stores a code block: it
+                // reloads the stored HTML to edit, and a raw `<?php` would vanish.
+                return '<pre'.($lang !== '' && $this->t->html('pre') ? ' data-lang="'.$lang.'"' : '').'>'.htmlspecialchars($code, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8').'</pre>';
             case Target::BBCODE:
                 if ($this->t->bb('code')) {
                     return '[code'.($lang !== '' ? '='.$lang : '').']'.str_replace('[/code]', '[/ code]', $code).'[/code]';
@@ -492,7 +496,8 @@ final class Writer
         $body = $this->blocks($el);
 
         if ($this->mode === Target::HTML && $this->t->html('details')) {
-            return '<details data-title="'.$this->attr($title !== '' ? $title : Html::spoilerLabel()).'">'.($this->join($body) ?: '<p></p>').'</details>';
+            // The class is how Scribe's editor recognises its spoiler when the post is edited.
+            return '<details class="Scribe-spoiler" data-title="'.$this->attr($title !== '' ? $title : Html::spoilerLabel()).'">'.($this->join($body) ?: '<p></p>').'</details>';
         }
         if ($this->mode === Target::MARKDOWN && $this->t->md('spoiler')) {
             if ($title !== '') {
@@ -530,7 +535,7 @@ final class Writer
     {
         $title = trim($el->getAttribute('data-title'));
         if ($this->mode === Target::HTML && $this->t->html('aside')) {
-            return '<aside'.($title !== '' ? ' data-title="'.$this->attr($title).'"' : '').'>'.($this->join($this->blocks($el)) ?: '<p></p>').'</aside>';
+            return '<aside class="Scribe-info"'.($title !== '' ? ' data-title="'.$this->attr($title).'"' : '').'>'.($this->join($this->blocks($el)) ?: '<p></p>').'</aside>';
         }
         $bq = $el->ownerDocument->createElement('blockquote');
         if ($title !== '') {
@@ -558,7 +563,7 @@ final class Writer
         if ($this->mode === Target::HTML && $align && $this->t->html('figure')) {
             $inner = $this->trimInline($this->inlines(iterator_to_array($el->childNodes)));
 
-            return $inner === '' ? [] : [['p', '<figure data-align="'.$this->attr($align).'">'.$inner.'</figure>']];
+            return $inner === '' ? [] : [['p', '<figure class="Scribe-imgAlign" data-align="'.$this->attr($align).'">'.$inner.'</figure>']];
         }
         $p = $this->paragraph(iterator_to_array($el->childNodes), $align ?: null);
 
@@ -700,8 +705,7 @@ final class Writer
                 return $fence.$pad.$code.$pad.$fence;
             case Target::HTML:
                 if ($this->t->html('code')) {
-                    // Raw, as Scribe stores code; only a tag-like `<` is neutralised.
-                    return '<code>'.preg_replace('#<(?=[a-zA-Z/!?])#', '‹', $code).'</code>';
+                    return '<code>'.htmlspecialchars($code, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8').'</code>';
                 }
 
                 return $this->text($code);
@@ -717,7 +721,10 @@ final class Writer
             $did = $this->refs['topic'][$topic] ?? null;
             $href = $did && $this->topicUrl ? (string) ($this->topicUrl)($did) : '';
         }
+        $was = $this->inLink;
+        $this->inLink = true;
         $label = $this->trimInline($this->inlines(iterator_to_array($a->childNodes)));
+        $this->inLink = $was;
         if ($href === '' || ! Html::safeUrl($href)) {
             return $label;
         }
@@ -865,13 +872,38 @@ final class Writer
 
         return match ($this->mode) {
             Target::MARKDOWN => $this->mdText($s),
-            Target::HTML => $this->mentionEscape(
-                // With BBCode on as well, a typed [b] would become bold.
-                $this->bbEscape($this->escapeBackslashes(htmlspecialchars($s, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8'))),
-                $mentions
-            ),
+            Target::HTML => $this->htmlText($s),
             default => $this->mentionEscape($this->bbEscape($this->escapeBackslashes($s)), $mentions),
         };
+    }
+
+    /**
+     * Text for an HTML editor. A bare web address becomes a link here: left
+     * to the autolinker, one at the end of a paragraph runs on into the
+     * markup after it (`…/page</p><p>Next…`), taking the rest of the post.
+     */
+    private function htmlText(string $s): string
+    {
+        if ($this->inLink || ! $this->t->html('a')) {
+            return $this->htmlPlain($s);
+        }
+        $out = '';
+        $pos = 0;
+        preg_match_all(self::URL_RE, $s, $urls, PREG_OFFSET_CAPTURE);
+        foreach ($urls[0] as [$url, $at]) {
+            $url = rtrim($url, '.,;:!?)');
+            $out .= $this->htmlPlain(substr($s, $pos, $at - $pos));
+            $out .= '<a href="'.$this->attr($url).'">'.$this->htmlPlain($url).'</a>';
+            $pos = $at + strlen($url);
+        }
+
+        return $out.$this->htmlPlain(substr($s, $pos));
+    }
+
+    private function htmlPlain(string $s): string
+    {
+        // With BBCode on as well, a typed [b] would become bold.
+        return $this->mentionEscape($this->bbEscape($this->escapeBackslashes(htmlspecialchars($s, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8'))), $this->t->mentions);
     }
 
     /**

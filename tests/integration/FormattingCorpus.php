@@ -27,7 +27,7 @@ final class FormattingCorpus
         'icode' => 'ICODEWORD', 'link' => 'LINKLABEL', 'image' => 'image.png', 'spoiler' => 'SPOILERTEXT',
         'ispoiler' => 'INLINESPOILER', 'table' => 'TABLECELL', 'center' => 'CENTERWORD', 'media' => 'dQw4w9WgXcQ',
         'mention' => 'Ada', 'attachment' => 'photo.jpg', 'email' => 'ada@example.com', 'hr' => 'AFTERRULE',
-        'sup' => 'SUPWORD', 'highlight' => 'HIGHWORD', 'literal' => 'LITERALS',
+        'sup' => 'SUPWORD', 'highlight' => 'HIGHWORD', 'literal' => 'LITERALS', 'bareurl' => 'https://example.com/bare',
     ];
 
     /** @return array<string, array{read:\Closure, raw:string, has:list<string>, base?:string}> */
@@ -171,8 +171,8 @@ final class FormattingCorpus
             ],
             'Vanilla Markdown' => [
                 'read' => fn (string $raw) => $private(\ErnestDefoe\Importer\Importers\VanillaImporter::class, 'body')($raw, 'Markdown'),
-                'raw' => "**BOLDWORD** *ITALICWORD* ~~STRIKEWORD~~ `ICODEWORD`\n\n## HEADINGWORD\n\n> @Ada said:\n> QUOTEDTEXT\n\n- LISTITEM1\n- LISTITEM2\n\n1. NUMITEM\n\n```php\n<?php echo \"CODELINE\"; ?>\n```\n\n[LINKLABEL](https://example.com/link) ![image](https://example.com/image.png)\n\n| HEADCELL |\n|---|\n| TABLECELL |\n\n---\n\nAFTERRULE LITERALS 2\\*3 [sic]",
-                'has' => ['codelang', 'bold', 'italic', 'strike', 'icode', 'heading', 'quote', 'list', 'olist', 'code', 'link', 'image', 'table', 'hr', 'literal'],
+                'raw' => "**BOLDWORD** *ITALICWORD* ~~STRIKEWORD~~ `ICODEWORD`\n\n## HEADINGWORD\n\n> @Ada said:\n> QUOTEDTEXT\n\n- LISTITEM1\n- LISTITEM2\n\n1. NUMITEM\n\n```php\n<?php echo \"CODELINE\"; ?>\n```\n\n[LINKLABEL](https://example.com/link) ![image](https://example.com/image.png)\n\n| HEADCELL |\n|---|\n| TABLECELL |\n\nSee https://example.com/bare\n\nNext paragraph\n\n---\n\nAFTERRULE LITERALS 2\\*3 [sic]",
+                'has' => ['codelang', 'bold', 'italic', 'strike', 'icode', 'heading', 'quote', 'list', 'olist', 'code', 'link', 'image', 'table', 'hr', 'literal', 'bareurl'],
             ],
             'Vanilla Rich' => [
                 'read' => fn (string $raw) => VanillaRich::toHtml($raw) ?? '',
@@ -221,8 +221,8 @@ final class FormattingCorpus
             ],
             'Convoro' => [
                 'read' => fn (string $raw) => $raw,
-                'raw' => '<p><strong>BOLDWORD</strong> <em>ITALICWORD</em> <u>UNDERWORD</u> <s>STRIKEWORD</s> <code>ICODEWORD</code></p><h2>HEADINGWORD</h2><blockquote data-author="Ada"><p>QUOTEDTEXT</p></blockquote><ul><li><p>LISTITEM1</p></li><li><p>LISTITEM2</p></li></ul><ol><li><p>NUMITEM</p></li></ol><pre><code class="language-php">&lt;?php echo "CODELINE"; ?&gt;</code></pre><p><a href="https://example.com/link">LINKLABEL</a> <img src="https://example.com/image.png" alt="image"></p><details><summary>Plot</summary><p>SPOILERTEXT</p></details><table><tbody><tr><th>HEADCELL</th></tr><tr><td>TABLECELL</td></tr></tbody></table><p style="text-align: center">CENTERWORD</p><hr><p>AFTERRULE LITERALS 2*3 &lt;b&gt;not bold&lt;/b&gt; [sic]</p>',
-                'has' => ['codelang', 'bold', 'italic', 'underline', 'strike', 'icode', 'heading', 'quote', 'list', 'olist', 'code', 'link', 'image', 'spoiler', 'table', 'center', 'hr', 'literal'],
+                'raw' => '<p><strong>BOLDWORD</strong> <em>ITALICWORD</em> <u>UNDERWORD</u> <s>STRIKEWORD</s> <code>ICODEWORD</code></p><h2>HEADINGWORD</h2><blockquote data-author="Ada"><p>QUOTEDTEXT</p></blockquote><ul><li><p>LISTITEM1</p></li><li><p>LISTITEM2</p></li></ul><ol><li><p>NUMITEM</p></li></ol><pre><code class="language-php">&lt;?php echo "CODELINE"; ?&gt;</code></pre><p><a href="https://example.com/link">LINKLABEL</a> <img src="https://example.com/image.png" alt="image"></p><details><summary>Plot</summary><p>SPOILERTEXT</p></details><table><tbody><tr><th>HEADCELL</th></tr><tr><td>TABLECELL</td></tr></tbody></table><p style="text-align: center">CENTERWORD</p><hr><p>See https://example.com/bare</p><p>AFTERRULE LITERALS 2*3 &lt;b&gt;not bold&lt;/b&gt; [sic]</p>',
+                'has' => ['codelang', 'bold', 'italic', 'underline', 'strike', 'icode', 'heading', 'quote', 'list', 'olist', 'code', 'link', 'image', 'spoiler', 'table', 'center', 'hr', 'literal', 'bareurl'],
             ],
         ];
     }

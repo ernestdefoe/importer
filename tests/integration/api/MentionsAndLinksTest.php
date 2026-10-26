@@ -67,6 +67,15 @@ class MentionsAndLinksTest extends TestCase
         $this->assertStringContainsString('a missing one', $xml, 'A link to a topic that was not imported keeps its words');
         $this->assertStringNotContainsString('TAGMENTION', $xml, '#general typed as text is not a tag mention');
 
+        // Rendered through the API, as a reader sees it: a mention, not "@[deleted]".
+        $id = Dst::postContent(7, 2, 4, $xml, \Illuminate\Support\Carbon::now());
+        $this->assertSame(1, $db->table('post_mentions_user')->where('post_id', $id)->where('mentions_user_id', 3)->count());
+        $this->assertSame(1, $db->table('post_mentions_post')->where('post_id', $id)->where('mentions_post_id', 70)->count());
+        $html = json_decode((string) $this->send($this->request('GET', '/api/posts/'.$id))->getBody(), true)['data']['attributes']['contentHtml'] ?? '';
+        $this->assertStringNotContainsString('[deleted]', $html);
+        $this->assertMatchesRegularExpression('#class="UserMention[^"]*"[^>]*>@ada<#', $html);
+        $this->assertStringContainsString('PostMention', $html);
+
         $md = Dst::content(end($bodies));
         $this->assertStringContainsString('<USERMENTION displayname="bob" id="4">', $md, 'A NodeBB/Vanilla @name is matched by username');
         $this->assertStringContainsString('@nobody', $render($md));

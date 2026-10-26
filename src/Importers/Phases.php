@@ -381,6 +381,7 @@ class Phases
                 continue;
             }
             $db->table('posts')->where('id', $target)->update(['content' => $content, 'edited_at' => $mapped[$key]['editedAt'], 'edited_user_id' => $post->user_id]);
+            Dst::mentions('posts', [$target => $content], true);
             $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'post')->where('source_id', (string) $key)->update(['hash' => sha1($content)]);
             $n++;
         }

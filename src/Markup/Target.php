@@ -83,8 +83,8 @@ class Target
         'a' => ['<a href="https://example.com/">a</a>', 'URL'],
         'img' => ['<img src="https://example.com/a.png">', 'IMG'],
         'table' => ['<table><tr><td>a</td></tr></table>', 'TABLE'],
-        'color' => ['<span data-color="#ff0000">a</span>', 'SPAN color='],
-        'mark' => ['<mark data-color="#ffff00">a</mark>', 'MARK'],
+        'color' => ['<span data-color="red">a</span>', 'SPAN color='],
+        'mark' => ['<mark data-color="yellow">a</mark>', 'MARK'],
         'details' => ['<details data-title="t">a</details>', 'SCRIBESPOILER'],
         'aside' => ['<aside data-title="t">a</aside>', 'SCRIBEINFO'],
         'figure' => ['<figure data-align="center"><img src="https://example.com/a.png"></figure>', 'SCRIBEIMGALIGN'],
@@ -102,7 +102,7 @@ class Target
         'code' => ['[code=php]a[/code]', 'CODE'],
         'quote' => ['[quote="a"]b[/quote]', 'QUOTE author='],
         'list' => ['[list=1][*]a[/list]', 'LIST'],
-        'color' => ['[color=#ff0000]a[/color]', 'COLOR'],
+        'color' => ['[color=red]a[/color]', 'COLOR'],
         'size' => ['[size=20]a[/size]', 'SIZE'],
         'center' => ['[center]a[/center]', 'CENTER'],
         'right' => ['[right]a[/right]', 'RIGHT'],
@@ -113,6 +113,10 @@ class Target
         'sub' => ['[sub]a[/sub]', 'SUB'],
     ];
 
+    /**
+     * 🚨 No probe may contain `#` or `@`: with flarum/mentions on, either one
+     * sends the parser to the database to look the "mention" up.
+     */
     public static function probe(Formatter $formatter): self
     {
         // `TAG` matches the tag itself; `TAG attr=` also needs the attribute,

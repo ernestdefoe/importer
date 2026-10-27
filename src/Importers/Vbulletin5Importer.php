@@ -16,14 +16,15 @@ use Illuminate\Database\ConnectionInterface;
  */
 class Vbulletin5Importer
 {
-    /** @return array{0:int[],1:int[]} [channelTypeIds, textTypeIds] */
+    /** @return array{0:int[],1:int[]} [channelTypeIds, textTypeIds] (Text and Poll) */
     private static function typeIds(ConnectionInterface $conn, string $p): array
     {
         $channel = $text = [];
         foreach ($conn->table($p.'contenttype')->get(['contenttypeid', 'class']) as $ct) {
             if ((string) $ct->class === 'Channel') {
                 $channel[] = (int) $ct->contenttypeid;
-            } elseif ((string) $ct->class === 'Text') {
+            } elseif (in_array((string) $ct->class, ['Text', 'Poll'], true)) {
+                // A poll thread's starter is a Poll node: Text with a poll on it.
                 $text[] = (int) $ct->contenttypeid;
             }
         }

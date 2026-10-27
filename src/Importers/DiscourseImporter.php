@@ -222,4 +222,69 @@ class DiscourseImporter
             },
         ];
     }
+
+    /**
+     * discourse-poll: a poll belongs to the post it was written in, so it
+     * lands on that post. `type` 0 = one choice, 1 = several (up to `max`),
+     * 2 = pick a number, 3 = ranked choice, which fof/polls cannot hold and
+     * is skipped. Votes not tied to a member (`anonymous_votes`, left by an
+     * earlier import into Discourse) count without a voter. The question is
+     * the poll's title, else its topic's.
+     */
+    public static function polls(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('polls') && $conn->getSchemaBuilder()->hasTable('poll_options') && $conn->getSchemaBuilder()->hasTable('poll_votes');
+
+        return [
+            'count' => function () use ($cfg, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table('polls')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table('polls'), 'id', $after, $limit, $ctx);
+                $ids = $rows->pluck('id')->all();
+                $posts = $ids ? $conn->table('posts')->join('topics', 'topics.id', '=', 'posts.topic_id')
+                    ->whereIn('posts.id', $rows->pluck('post_id')->all())->get(['posts.id', 'posts.user_id', 'topics.title'])->keyBy('id') : collect();
+                $votes = $named = [];
+                foreach ($ids ? $conn->table('poll_votes')->whereIn('poll_id', $ids)->get(['poll_id', 'poll_option_id', 'user_id', 'created_at']) : [] as $v) {
+                    $votes[$v->poll_id][] = [$v->user_id, (string) $v->poll_option_id, Polls::at($v->created_at)];
+                    $named[$v->poll_option_id] = ($named[$v->poll_option_id] ?? 0) + 1;
+                }
+                $options = [];
+                foreach ($ids ? $conn->table('poll_options')->whereIn('poll_id', $ids)->orderBy('id')->get(['id', 'poll_id', 'html', 'anonymous_votes']) : [] as $o) {
+                    $options[$o->poll_id][(string) $o->id] = ['text' => Polls::plain((string) $o->html), 'count' => ($named[$o->id] ?? 0) + (int) ($o->anonymous_votes ?? 0)];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $post = $posts->get($poll->post_id);
+                    $type = (int) ($poll->type ?? 0);
+                    $at = Src::ts($poll->created_at ?? null);
+                    $out[] = [
+                        'id' => (string) $poll->id,
+                        'post' => (string) $poll->post_id,
+                        'question' => (string) (($poll->title ?? '') ?: ($post->title ?? '')),
+                        'uid' => $post->user_id ?? null,
+                        'at' => $at,
+                        'ends' => Polls::at($poll->close_at ?? null)
+                            ?? ((int) ($poll->status ?? 0) === 1 ? Polls::closedAt(Polls::at($poll->updated_at ?? null), $at) : null),
+                        'max' => $type === 1 ? (int) ($poll->max ?? 0) : 1,
+                        'public' => (int) ($poll->visibility ?? 0) === 1,
+                        'change' => true,
+                        // 2 = results shown once the poll has closed
+                        'hide' => (int) ($poll->results ?? 0) === 2,
+                        'options' => $type === 3 ? [] : ($options[$poll->id] ?? []),
+                        'votes' => $votes[$poll->id] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

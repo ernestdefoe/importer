@@ -221,4 +221,65 @@ class SmfImporter
             },
         ];
     }
+
+    /**
+     * A topic points at its poll with `id_poll`; `poll_choices` are numbered
+     * 0… within the poll and `log_polls` names each member's choice. Guest
+     * votes are only in the totals, and SMF never shows who voted. The poll's
+     * time is its topic's first post's.
+     */
+    public static function polls(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'polls') && $conn->getSchemaBuilder()->hasTable($p.'poll_choices');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'polls')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table($p.'polls'), 'id_poll', $after, $limit, $ctx);
+                $ids = $rows->pluck('id_poll')->all();
+                $topics = $ids ? $conn->table($p.'topics')->whereIn('id_poll', $ids)->get(['id_topic', 'id_poll', 'id_first_msg'])->keyBy('id_poll') : collect();
+                $times = $topics->isEmpty() ? [] : $conn->table($p.'messages')->whereIn('id_msg', $topics->pluck('id_first_msg')->all())->pluck('poster_time', 'id_msg')->all();
+                $options = $votes = [];
+                foreach ($ids ? $conn->table($p.'poll_choices')->whereIn('id_poll', $ids)->orderBy('id_choice')->get(['id_poll', 'id_choice', 'label', 'votes']) : [] as $o) {
+                    $options[$o->id_poll][(string) $o->id_choice] = ['text' => Polls::plain(self::body((string) $o->label)), 'count' => (int) $o->votes];
+                }
+                foreach ($ids && $conn->getSchemaBuilder()->hasTable($p.'log_polls') ? $conn->table($p.'log_polls')->whereIn('id_poll', $ids)->get(['id_poll', 'id_member', 'id_choice']) : [] as $v) {
+                    $votes[$v->id_poll][] = [$v->id_member, (string) $v->id_choice, null];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $topic = $topics->get($poll->id_poll);
+                    $at = Src::ts($topic ? ($times[$topic->id_first_msg] ?? null) : null);
+                    $ends = Polls::at($poll->expire_time ?? 0);
+                    $out[] = [
+                        'id' => (string) $poll->id_poll,
+                        'topic' => $topic ? (string) $topic->id_topic : null,
+                        'question' => Polls::plain(self::body((string) $poll->question)),
+                        'uid' => $poll->id_member ?? null,
+                        'at' => $at,
+                        'ends' => $ends ?? ((int) ($poll->voting_locked ?? 0) ? Polls::closedAt($at) : null),
+                        'max' => max(1, (int) ($poll->max_votes ?? 1)),
+                        'public' => false,
+                        'change' => (bool) ($poll->change_vote ?? false),
+                        // 2 = results shown once the poll has ended
+                        'hide' => (int) ($poll->hide_results ?? 0) === 2,
+                        'options' => $options[$poll->id_poll] ?? [],
+                        'votes' => $votes[$poll->id_poll] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

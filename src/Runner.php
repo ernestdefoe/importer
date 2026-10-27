@@ -435,6 +435,16 @@ class Runner
             ? Src::t('sync.summary', $params + ['edited' => $s['edited'] ?? 0, 'kept' => $s['kept'] ?? 0])
             : Src::t(isset($s['categories']) ? 'summary_with_tags' : 'summary', $params);
 
+        if (! empty($s['polls'])) {
+            $line .= ' '.Src::t('polls.summary', ['polls' => $s['polls'], 'votes' => $s['poll_votes'] ?? 0]);
+        }
+        if (! empty($s['polls_skipped'])) {
+            $line .= ' '.Src::t('polls.skipped', ['count' => $s['polls_skipped']]);
+        }
+        if (! empty($s['polls_unavailable'])) {
+            $line .= ' '.Src::t('polls.unavailable');
+        }
+
         // Private messages, when the source has them and they were asked for.
         if (isset($s['messages']) || isset($s['conversations'])) {
             $line .= ' '.Src::t('pm.summary', ['messages' => $s['messages'] ?? 0, 'conversations' => $s['conversations'] ?? 0]);

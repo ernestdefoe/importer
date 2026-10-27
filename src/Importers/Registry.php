@@ -73,7 +73,7 @@ class Registry
             return [];
         }
         /** @var Phase[] $phases */
-        $phases = array_merge($importer::phases($cfg), PrivateMessages::phases($importer, $cfg));
+        $phases = array_merge($importer::phases($cfg), Polls::phases($importer, $cfg), PrivateMessages::phases($importer, $cfg));
         $only = (array) ($state['sync']['only'] ?? []);
 
         return $only ? array_values(array_filter($phases, fn (Phase $ph) => in_array($ph->key, $only, true))) : $phases;

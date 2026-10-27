@@ -210,6 +210,68 @@ class PhpbbImporter
         ];
     }
 
+    /**
+     * Polls live on the topic itself (`poll_title`, `poll_start`, …), with
+     * `poll_options` numbered 1… within the topic and `poll_votes` naming the
+     * member (or 1, the guest account). phpBB never shows who voted. The
+     * question and options are BBCode under the first post's uid.
+     */
+    public static function polls(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'poll_options') && $conn->getSchemaBuilder()->hasColumn($p.'topics', 'poll_start');
+        $polls = fn ($conn) => $conn->table($p.'topics')->where('poll_start', '>', 0)->where('poll_title', '!=', '');
+
+        return [
+            'count' => function () use ($cfg, $has, $polls) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $polls($conn)->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has, $polls) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($polls($conn), 'topic_id', $after, $limit, $ctx);
+                $ids = $rows->pluck('topic_id')->all();
+                $options = $votes = [];
+                foreach ($ids ? $conn->table($p.'poll_options')->whereIn('topic_id', $ids)->orderBy('poll_option_id')->get() : [] as $o) {
+                    $options[$o->topic_id][] = $o;
+                }
+                foreach ($ids ? $conn->table($p.'poll_votes')->whereIn('topic_id', $ids)->get(['topic_id', 'poll_option_id', 'vote_user_id']) : [] as $v) {
+                    $votes[$v->topic_id][] = [$v->vote_user_id, (string) $v->poll_option_id, null];
+                }
+                $firstPosts = $rows->pluck('topic_first_post_id')->filter()->all();
+                $uids = $firstPosts ? $conn->table($p.'posts')->whereIn('post_id', $firstPosts)->pluck('bbcode_uid', 'post_id')->all() : [];
+
+                $out = [];
+                foreach ($rows as $t) {
+                    $uid = (string) ($uids[$t->topic_first_post_id ?? 0] ?? '');
+                    $opts = [];
+                    foreach ($options[$t->topic_id] ?? [] as $o) {
+                        $opts[(string) $o->poll_option_id] = ['text' => Polls::plain(Bbcode::phpbb((string) $o->poll_option_text, $uid)), 'count' => (int) $o->poll_option_total];
+                    }
+                    $out[] = [
+                        'id' => (string) $t->topic_id,
+                        'topic' => (string) $t->topic_id,
+                        'question' => Polls::plain(Bbcode::phpbb((string) $t->poll_title, $uid)),
+                        'uid' => $t->topic_poster ?? null,
+                        'at' => Src::ts($t->poll_start),
+                        'ends' => (int) ($t->poll_length ?? 0) > 0 ? Src::ts((int) $t->poll_start + (int) $t->poll_length) : null,
+                        'max' => max(1, (int) ($t->poll_max_options ?? 1)),
+                        'public' => false,
+                        'change' => (bool) ($t->poll_vote_change ?? false),
+                        'options' => $opts,
+                        'votes' => $votes[$t->topic_id] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
+
     /** @return array{0:list<string>,1:list<string>} user ids, group ids out of "u_2:u_5:g_4" */
     private static function addresses(string $list): array
     {

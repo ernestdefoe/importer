@@ -225,4 +225,63 @@ class MybbImporter
             },
         ];
     }
+
+    /**
+     * `polls` keeps its options and per-option totals as "||~|~||"-separated
+     * lists (numbered 1… in `pollvotes.voteoption`), with `tid` on the poll.
+     * `timeout` is days after `dateline` (a timestamp on some boards).
+     */
+    public static function polls(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'polls') && $conn->getSchemaBuilder()->hasTable($p.'pollvotes');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'polls')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table($p.'polls'), 'pid', $after, $limit, $ctx);
+                $ids = $rows->pluck('pid')->all();
+                $authors = $ids ? $conn->table($p.'threads')->whereIn('tid', $rows->pluck('tid')->all())->pluck('uid', 'tid')->all() : [];
+                $votes = [];
+                foreach ($ids ? $conn->table($p.'pollvotes')->whereIn('pid', $ids)->get(['pid', 'uid', 'voteoption', 'dateline']) : [] as $v) {
+                    $votes[$v->pid][] = [$v->uid, (string) $v->voteoption, Polls::at($v->dateline)];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $totals = explode('||~|~||', (string) ($poll->votes ?? ''));
+                    $opts = [];
+                    foreach (explode('||~|~||', (string) $poll->options) as $i => $text) {
+                        $opts[(string) ($i + 1)] = ['text' => Polls::plain(Bbcode::toHtml($text)), 'count' => (int) ($totals[$i] ?? 0)];
+                    }
+                    $at = Src::ts($poll->dateline ?? null);
+                    $timeout = (int) ($poll->timeout ?? 0);
+                    $out[] = [
+                        'id' => (string) $poll->pid,
+                        'topic' => (string) $poll->tid,
+                        'question' => Polls::plain(Bbcode::toHtml((string) $poll->question)),
+                        'uid' => $authors[$poll->tid] ?? null,
+                        'at' => $at,
+                        'ends' => $timeout > 0 ? ($timeout > 100000 ? Src::ts($timeout) : $at->copy()->addDays($timeout))
+                            : ((int) ($poll->closed ?? 0) ? Polls::closedAt($at) : null),
+                        'max' => (int) ($poll->multiple ?? 0) ? (int) ($poll->maxoptions ?? 0) : 1,
+                        'public' => (bool) ($poll->public ?? false),
+                        'change' => false,
+                        'options' => $opts,
+                        'votes' => $votes[$poll->pid] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

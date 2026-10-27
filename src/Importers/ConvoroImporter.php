@@ -304,4 +304,60 @@ class ConvoroImporter
             },
         ];
     }
+
+    /**
+     * A topic's poll. Convoro 2 has `label`, `is_multiple` + `max_choices`
+     * (0 = any number), `is_public`, `hide_results` and `closed_at` for a poll
+     * closed early; Convoro 1 has `text` and `max_choices` (1 = one choice).
+     * A vote can be changed on either.
+     */
+    public static function polls(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('polls') && $conn->getSchemaBuilder()->hasTable('poll_options') && $conn->getSchemaBuilder()->hasTable('poll_votes');
+
+        return [
+            'count' => function () use ($cfg, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table('polls')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                $label = $conn->getSchemaBuilder()->hasColumn('poll_options', 'label') ? 'label' : 'text';
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table('polls'), 'id', $after, $limit, $ctx);
+                $ids = $rows->pluck('id')->all();
+                $authors = $ids ? $conn->table('topics')->whereIn('id', $rows->pluck('topic_id')->all())->pluck('user_id', 'id')->all() : [];
+                $options = $votes = [];
+                foreach ($ids ? $conn->table('poll_options')->whereIn('poll_id', $ids)->orderBy('position')->orderBy('id')->get(['id', 'poll_id', $label]) : [] as $o) {
+                    $options[$o->poll_id][(string) $o->id] = ['text' => (string) $o->$label, 'count' => null];
+                }
+                foreach ($ids ? $conn->table('poll_votes')->whereIn('poll_id', $ids)->get(['poll_id', 'option_id', 'user_id', 'created_at']) : [] as $v) {
+                    $votes[$v->poll_id][] = [$v->user_id, (string) $v->option_id, Polls::at($v->created_at)];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $out[] = [
+                        'id' => (string) $poll->id,
+                        'topic' => (string) $poll->topic_id,
+                        'question' => (string) $poll->question,
+                        'uid' => $authors[$poll->topic_id] ?? null,
+                        'at' => Src::ts($poll->created_at ?? null),
+                        'ends' => Polls::at($poll->closed_at ?? null) ?? Polls::at($poll->closes_at ?? null),
+                        'max' => property_exists($poll, 'is_multiple') ? ((int) $poll->is_multiple ? (int) $poll->max_choices : 1) : (int) ($poll->max_choices ?? 1),
+                        'public' => (bool) ($poll->is_public ?? false),
+                        'change' => true,
+                        'hide' => (bool) ($poll->hide_results ?? false),
+                        'options' => $options[$poll->id] ?? [],
+                        'votes' => $votes[$poll->id] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

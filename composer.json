@@ -43,7 +43,8 @@
       "optional-dependencies": [
         "flarum/tags",
         "flarum/messages",
-        "ernestdefoe/group-messages"
+        "ernestdefoe/group-messages",
+        "fof/polls"
       ]
     },
     "flarum-cli": {
@@ -63,7 +64,8 @@
     "ernestdefoe/group-messages": "^2.1",
     "flarum/bbcode": "^2.0",
     "flarum/mentions": "^2.0",
-    "ernestdefoe/scribe": "^1.4"
+    "ernestdefoe/scribe": "^1.4",
+    "fof/polls": "^3.0"
   },
   "scripts": {
     "test": [

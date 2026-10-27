@@ -365,4 +365,79 @@ class WebWizImporter
         // Web Wiz's editor stores HTML, and its forum codes ([QUOTE], [TUBE]…) sit inside it.
         return Bbcode::toHtml($body, preg_match('#<(?:br|p|div|span|strong|b|i|em|u|a|img|font|blockquote|ul|ol|li|table)\b#i', $body) ? ['html' => 'raw'] : []);
     }
+
+    /**
+     * `Poll` and `PollChoice`, with `Topic.Poll_ID` pointing at the poll.
+     * Web Wiz keeps only each choice's total, never who voted, so every vote
+     * comes across without a voter. Its "multiple votes" lets one member vote
+     * again rather than pick several, which fof/polls has no setting for: each
+     * poll is one choice.
+     */
+    public static function polls(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $cols = function (ConnectionInterface $conn) use ($p): ?array {
+            $c = [
+                'poll_id' => self::col($conn, $p.'Poll', ['Poll_ID']),
+                'question' => self::col($conn, $p.'Poll', ['Poll_question', 'Question']),
+                'choice_id' => self::col($conn, $p.'PollChoice', ['Choice_ID']),
+                'choice_poll' => self::col($conn, $p.'PollChoice', ['Poll_ID']),
+                'choice' => self::col($conn, $p.'PollChoice', ['Choice']),
+                'votes' => self::col($conn, $p.'PollChoice', ['Votes']),
+                'topic_poll' => self::col($conn, $p.'Topic', ['Poll_ID']),
+                'topic_id' => self::col($conn, $p.'Topic', ['Topic_ID']),
+                'topic_author' => self::col($conn, $p.'Topic', ['Author_ID']),
+                'topic_date' => self::col($conn, $p.'Topic', ['Start_date', 'Topic_date', 'Date']),
+            ];
+            foreach (['poll_id', 'question', 'choice_id', 'choice_poll', 'choice', 'topic_poll', 'topic_id'] as $k) {
+                if ($c[$k] === null) {
+                    return null;
+                }
+            }
+
+            return $c;
+        };
+
+        return [
+            'count' => function () use ($cfg, $p, $cols) {
+                $conn = Src::connect($cfg);
+
+                return $cols($conn) ? (int) $conn->table($p.'Poll')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $cols) {
+                $conn = $ctx->src();
+                if (! $c = $cols($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table($p.'Poll'), $c['poll_id'], $after, $limit, $ctx);
+                $ids = $rows->pluck($c['poll_id'])->all();
+                $topics = $ids ? $conn->table($p.'Topic')->whereIn($c['topic_poll'], $ids)->get()->keyBy($c['topic_poll']) : collect();
+                $options = [];
+                foreach ($ids ? $conn->table($p.'PollChoice')->whereIn($c['choice_poll'], $ids)->orderBy($c['choice_id'])->get() : [] as $o) {
+                    $options[$o->{$c['choice_poll']}][(string) $o->{$c['choice_id']}] = ['text' => Polls::plain(self::body((string) $o->{$c['choice']})), 'count' => $c['votes'] ? (int) $o->{$c['votes']} : 0];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $id = $poll->{$c['poll_id']};
+                    $topic = $topics->get($id);
+                    $out[] = [
+                        'id' => (string) $id,
+                        'topic' => $topic ? (string) $topic->{$c['topic_id']} : null,
+                        'question' => Polls::plain(self::body((string) $poll->{$c['question']})),
+                        'uid' => $topic && $c['topic_author'] ? $topic->{$c['topic_author']} : null,
+                        'at' => Src::ts($topic && $c['topic_date'] ? $topic->{$c['topic_date']} : null),
+                        'ends' => null,
+                        'max' => 1,
+                        'public' => false,
+                        'change' => false,
+                        'options' => $options[$id] ?? [],
+                        'votes' => [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

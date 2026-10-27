@@ -258,4 +258,82 @@ class InvisionImporter
             return $m[1] === '___base_url___' ? $base.'/' : $base.'/uploads/';
         }, $html) ?? $html;
     }
+
+    /**
+     * `core_polls` holds a topic's poll (`forums_topics.poll_state` points at
+     * it). One IPS poll can ask several questions, each with its own choices
+     * and totals in the `choices` JSON (serialized PHP before 4.x); each
+     * becomes a poll of its own on the first post. `core_voters` keeps a
+     * member's picks per question in `member_choices`.
+     */
+    public static function polls(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('core_polls') && $conn->getSchemaBuilder()->hasColumn('forums_topics', 'poll_state');
+        $decode = function (?string $v): array {
+            $v = (string) $v;
+            $out = json_decode($v, true);
+            if (! is_array($out)) {
+                $out = @unserialize($v, ['allowed_classes' => false]);
+            }
+
+            return is_array($out) ? $out : [];
+        };
+
+        return [
+            'count' => function () use ($cfg, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table('core_polls')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has, $decode) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table('core_polls'), 'pid', $after, $limit, $ctx);
+                $ids = $rows->pluck('pid')->all();
+                $topics = $ids ? $conn->table('forums_topics')->whereIn('poll_state', $ids)->pluck('tid', 'poll_state')->all() : [];
+                $votes = [];
+                foreach ($ids && $conn->getSchemaBuilder()->hasTable('core_voters') ? $conn->table('core_voters')->whereIn('poll', $ids)->get(['poll', 'member_id', 'member_choices', 'vote_date']) : [] as $v) {
+                    foreach ($decode($v->member_choices) as $q => $picks) {
+                        foreach ((array) $picks as $pick) {
+                            $votes[$v->poll][(string) $q][] = [$v->member_id, (string) $pick, Polls::at($v->vote_date)];
+                        }
+                    }
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $at = Src::ts($poll->start_date ?? null);
+                    $ends = Polls::at($poll->poll_close_date ?? 0) ?? ((int) ($poll->poll_closed ?? 0) ? Polls::closedAt($at) : null);
+                    $first = true;
+                    foreach ($decode($poll->choices) as $q => $question) {
+                        $opts = [];
+                        foreach ((array) ($question['choice'] ?? []) as $k => $text) {
+                            $opts[(string) $k] = ['text' => Polls::plain((string) $text), 'count' => (int) ($question['votes'][$k] ?? 0)];
+                        }
+                        $out[] = [
+                            // The first question is mapped under the poll's own id, which is
+                            // how a later page knows the whole poll is here already; they
+                            // are all written in the same transaction.
+                            'id' => $first ? (string) $poll->pid : $poll->pid.':'.$q,
+                            'topic' => isset($topics[$poll->pid]) ? (string) $topics[$poll->pid] : null,
+                            'question' => Polls::plain((string) (($question['question'] ?? '') ?: $poll->poll_question)),
+                            'uid' => $poll->starter_id ?? null,
+                            'at' => $at,
+                            'ends' => $ends,
+                            'max' => ! empty($question['multi']) ? 0 : 1,
+                            'public' => (bool) ($poll->poll_view_voters ?? false),
+                            'change' => false,
+                            'options' => $opts,
+                            'votes' => $votes[$poll->pid][(string) $q] ?? [],
+                        ];
+                        $first = false;
+                    }
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

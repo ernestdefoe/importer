@@ -233,4 +233,59 @@ class XenForoImporter
             },
         ];
     }
+
+    /**
+     * `xf_poll` on a thread (content_type 'thread'), its `xf_poll_response`
+     * rows in order and one `xf_poll_vote` per member and choice. XenForo 1
+     * has `multiple` where 2 has `max_votes` (0 = any number) and `change_vote`.
+     */
+    public static function polls(array $cfg): array
+    {
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable('xf_poll') && $conn->getSchemaBuilder()->hasTable('xf_poll_response');
+        $polls = fn ($conn) => $conn->table('xf_poll')->where('content_type', 'thread');
+
+        return [
+            'count' => function () use ($cfg, $has, $polls) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $polls($conn)->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($has, $polls) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($polls($conn), 'poll_id', $after, $limit, $ctx);
+                $ids = $rows->pluck('poll_id')->all();
+                $options = $votes = [];
+                foreach ($ids ? $conn->table('xf_poll_response')->whereIn('poll_id', $ids)->orderBy('poll_response_id')->get(['poll_response_id', 'poll_id', 'response', 'response_vote_count']) : [] as $o) {
+                    $options[$o->poll_id][(string) $o->poll_response_id] = ['text' => (string) $o->response, 'count' => (int) $o->response_vote_count];
+                }
+                foreach ($ids && $conn->getSchemaBuilder()->hasTable('xf_poll_vote') ? $conn->table('xf_poll_vote')->whereIn('poll_id', $ids)->get(['poll_id', 'user_id', 'poll_response_id', 'vote_date']) : [] as $v) {
+                    $votes[$v->poll_id][] = [$v->user_id, (string) $v->poll_response_id, Polls::at($v->vote_date)];
+                }
+                $threads = $ids ? $conn->table('xf_thread')->whereIn('thread_id', $rows->pluck('content_id')->all())->get(['thread_id', 'user_id', 'post_date'])->keyBy('thread_id') : collect();
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $thread = $threads->get($poll->content_id);
+                    $out[] = [
+                        'id' => (string) $poll->poll_id,
+                        'topic' => (string) $poll->content_id,
+                        'question' => (string) $poll->question,
+                        'uid' => $thread->user_id ?? null,
+                        'at' => Src::ts($thread->post_date ?? null),
+                        'ends' => Polls::at($poll->close_date ?? 0),
+                        'max' => property_exists($poll, 'max_votes') ? (int) $poll->max_votes : ((int) ($poll->multiple ?? 0) ? 0 : 1),
+                        'public' => (bool) ($poll->public_votes ?? false),
+                        'change' => (bool) ($poll->change_vote ?? false),
+                        'options' => $options[$poll->poll_id] ?? [],
+                        'votes' => $votes[$poll->poll_id] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

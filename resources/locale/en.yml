@@ -104,6 +104,10 @@ ernestdefoe-importer:
       summary: "{messages} private messages in {conversations} new conversations."
       groups_skipped: "{count} group conversations skipped: install Group Messages to bring them across, then sync."
       unavailable: "Private messages skipped: Messages is not enabled."
+    polls:
+      summary: "{polls} polls with {votes} votes."
+      skipped: "{count} polls skipped: their discussion was not imported, or they had fewer than two answers or ranked choices."
+      unavailable: "Polls skipped: FoF Polls is not enabled. Enable it and run the import again to bring them across."
     summary: "Imported {topics} discussions, {posts} posts, {users} members."
     summary_with_tags: "Imported {topics} discussions, {posts} posts, {users} members, {categories} tags."
     # The line opening an imported quote; it becomes bold text in the post.
@@ -165,3 +169,4 @@ ernestdefoe-importer:
       avatars: Importing avatars…
       prune_tags: Removing empty tags…
       messages: Importing private messages…
+      polls: Importing polls…

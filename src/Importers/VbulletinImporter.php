@@ -222,4 +222,67 @@ class VbulletinImporter
             },
         ];
     }
+
+    /**
+     * `poll` keeps its options and per-option totals as "|||"-separated lists
+     * (numbered 1… in `pollvote.voteoption`), and a thread points at its poll
+     * with `thread.pollid`. 🚨 A moved-thread redirect (open = 10) reuses
+     * `pollid` for the thread it points to, so it never claims a poll.
+     */
+    public static function polls(array $cfg): array
+    {
+        if (self::isNodeSchema($cfg)) {
+            return Vbulletin5Importer::polls($cfg);
+        }
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'poll') && $conn->getSchemaBuilder()->hasTable($p.'pollvote');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'poll')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                [$rows, $cursor, $done, $n] = Polls::page($conn->table($p.'poll'), 'pollid', $after, $limit, $ctx);
+                $ids = $rows->pluck('pollid')->all();
+                $threads = $ids ? $conn->table($p.'thread')->whereIn('pollid', $ids)->where('open', '!=', 10)->get(['threadid', 'pollid', 'postuserid'])->keyBy('pollid') : collect();
+                $votes = [];
+                foreach ($ids ? $conn->table($p.'pollvote')->whereIn('pollid', $ids)->get(['pollid', 'userid', 'voteoption', 'votedate']) : [] as $v) {
+                    $votes[$v->pollid][] = [$v->userid, (string) $v->voteoption, Polls::at($v->votedate)];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $thread = $threads->get($poll->pollid);
+                    $totals = explode('|||', (string) ($poll->votes ?? ''));
+                    $opts = [];
+                    foreach (explode('|||', (string) $poll->options) as $i => $text) {
+                        $opts[(string) ($i + 1)] = ['text' => Polls::plain(Bbcode::toHtml($text)), 'count' => (int) ($totals[$i] ?? 0)];
+                    }
+                    $at = Src::ts($poll->dateline ?? null);
+                    $out[] = [
+                        'id' => (string) $poll->pollid,
+                        'topic' => $thread ? (string) $thread->threadid : null,
+                        'question' => Polls::plain(Bbcode::toHtml((string) $poll->question)),
+                        'uid' => $thread->postuserid ?? null,
+                        'at' => $at,
+                        'ends' => (int) ($poll->timeout ?? 0) > 0 ? $at->copy()->addDays((int) $poll->timeout)
+                            : ((int) ($poll->active ?? 1) ? null : Polls::closedAt(Polls::at($poll->lastvote ?? 0), $at)),
+                        'max' => (int) ($poll->multiple ?? 0) ? 0 : 1,
+                        'public' => (bool) ($poll->public ?? false),
+                        'change' => false,
+                        'options' => $opts,
+                        'votes' => $votes[$poll->pollid] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

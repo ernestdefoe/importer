@@ -619,4 +619,61 @@ class Vbulletin5Importer
             },
         ];
     }
+
+    /**
+     * A poll is its thread's starter node (contenttype Poll, a kind of Text):
+     * `poll` and `polloption` are keyed by that nodeid, the question is the
+     * node's title, and `pollvote` names the member and option.
+     */
+    public static function polls(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+        $has = fn ($conn) => $conn->getSchemaBuilder()->hasTable($p.'poll') && $conn->getSchemaBuilder()->hasTable($p.'polloption');
+
+        return [
+            'count' => function () use ($cfg, $p, $has) {
+                $conn = Src::connect($cfg);
+
+                return $has($conn) ? (int) $conn->table($p.'poll')->count() : 0;
+            },
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has) {
+                $conn = $ctx->src();
+                if (! $has($conn)) {
+                    return ['cursor' => $after, 'rows' => 0, 'done' => true, 'polls' => []];
+                }
+                $q = $conn->table($p.'poll')->join($p.'node', $p.'node.nodeid', '=', $p.'poll.nodeid')
+                    ->select($p.'poll.*', $p.'node.title', $p.'node.userid', $p.'node.created');
+                [$rows, $cursor, $done, $n] = Polls::page($q, $p.'poll.nodeid', $after, $limit, $ctx);
+                $ids = $rows->pluck('nodeid')->all();
+                $options = $votes = [];
+                foreach ($ids ? $conn->table($p.'polloption')->whereIn('nodeid', $ids)->orderBy('polloptionid')->get(['polloptionid', 'nodeid', 'title', 'votes']) : [] as $o) {
+                    $options[$o->nodeid][(string) $o->polloptionid] = ['text' => Polls::plain(Bbcode::toHtml((string) $o->title)), 'count' => (int) $o->votes];
+                }
+                foreach ($ids && $conn->getSchemaBuilder()->hasTable($p.'pollvote') ? $conn->table($p.'pollvote')->whereIn('nodeid', $ids)->get(['nodeid', 'polloptionid', 'userid', 'votedate']) : [] as $v) {
+                    $votes[$v->nodeid][] = [$v->userid, (string) $v->polloptionid, Polls::at($v->votedate)];
+                }
+
+                $out = [];
+                foreach ($rows as $poll) {
+                    $at = Src::ts($poll->created ?? null);
+                    $out[] = [
+                        'id' => (string) $poll->nodeid,
+                        'topic' => (string) $poll->nodeid,
+                        'question' => Polls::plain(Bbcode::toHtml((string) $poll->title)),
+                        'uid' => $poll->userid,
+                        'at' => $at,
+                        'ends' => Polls::at($poll->timeout ?? 0)
+                            ?? ((int) ($poll->active ?? 1) ? null : Polls::closedAt(Polls::at($poll->lastvote ?? 0), $at)),
+                        'max' => (int) ($poll->multiple ?? 0) ? 0 : 1,
+                        'public' => (bool) ($poll->public ?? false),
+                        'change' => false,
+                        'options' => $options[$poll->nodeid] ?? [],
+                        'votes' => $votes[$poll->nodeid] ?? [],
+                    ];
+                }
+
+                return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
+            },
+        ];
+    }
 }

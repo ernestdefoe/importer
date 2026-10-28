@@ -174,4 +174,51 @@ class PhpbbMybbSmfFixesTest extends TestCase
         $this->assertSame(1, (int) $this->discussion('Closed')->is_locked);
         $this->assertSame([0, 1], [(int) $this->discussion('Pinned')->is_locked, (int) $this->discussion('Pinned')->is_sticky]);
     }
+
+    private function smf(bool $v21): void
+    {
+        $pdo = new PDO('sqlite:'.$this->source);
+        $pdo->exec('CREATE TABLE smf_boards (id_board INTEGER PRIMARY KEY, id_cat INTEGER, id_parent INTEGER, name TEXT, description TEXT, board_order INTEGER, redirect TEXT, member_groups TEXT)');
+        $pdo->exec('CREATE TABLE smf_settings (variable TEXT PRIMARY KEY, value TEXT)');
+        $pdo->exec('CREATE TABLE smf_topics (id_topic INTEGER PRIMARY KEY, id_board INTEGER, id_first_msg INTEGER, id_member_started INTEGER, is_sticky INTEGER, locked INTEGER, approved INTEGER'.($v21 ? ', id_redirect_topic INTEGER' : '').')');
+        $pdo->exec('CREATE TABLE smf_messages (id_msg INTEGER PRIMARY KEY, id_topic INTEGER, id_board INTEGER, id_member INTEGER, subject TEXT, body TEXT, poster_time INTEGER, approved INTEGER)');
+        $pdo->exec('CREATE TABLE smf_members (id_member INTEGER PRIMARY KEY, member_name TEXT, real_name TEXT, email_address TEXT, passwd TEXT, date_registered INTEGER, is_activated INTEGER)');
+        $pdo->exec('CREATE TABLE smf_ban_groups (id_ban_group INTEGER PRIMARY KEY, expire_time INTEGER)');
+        $pdo->exec('CREATE TABLE smf_ban_items (id_ban_item INTEGER PRIMARY KEY, id_ban_group INTEGER, id_member INTEGER)');
+        $pdo->exec("INSERT INTO smf_boards VALUES (1, 1, 0, 'News &amp; Views', '', 1, '', '-1,0'), (2, 1, 1, 'Child', '', 2, '', '-1,0'), (3, 1, 2, 'Grandchild', '', 3, '', '0'), (4, 1, 0, 'Staff', '', 4, '', '1,2'), (5, 1, 0, 'Recycle Bin', '', 5, '', '-1,0')");
+        $pdo->exec("INSERT INTO smf_settings VALUES ('recycle_enable', '1'), ('recycle_board', '5')");
+        $redirect = $v21 ? ', 0' : '';
+        $pdo->exec("INSERT INTO smf_topics VALUES (10, 1, 100, 5, 0, 1, 1$redirect), (11, 5, 101, 5, 0, 0, 1$redirect), (12, 3, 102, 5, 1, 0, 1$redirect)".($v21 ? ', (13, 2, 103, 5, 0, 0, 1, 10)' : ''));
+        $pdo->exec("INSERT INTO smf_messages VALUES (100, 10, 1, 5, 'Fish &amp; chips', 'Hello', 1600001000, 1), (101, 11, 5, 5, 'Binned', 'Gone', 1600001500, 1), (102, 12, 3, 5, 'Pinned', 'Read me', 1600002000, 1), (103, 13, 2, 5, 'MOVED: Fish', 'Moved', 1600003000, 1)");
+        $pdo->exec("INSERT INTO smf_members VALUES (5, 'ada', 'Ada', 'ada@board.example', 'x', 1600000000, 1), (6, 'pending', 'Pending', 'pending@board.example', 'x', 1600000000, 3), (7, 'banned', 'Banned', 'banned@board.example', 'x', 1600000000, 11), (8, 'temp', 'Temp', 'temp@board.example', 'x', 1600000000, 1), (9, 'never', 'Never', 'never@board.example', 'x', 1600000000, 0)");
+        $pdo->exec('INSERT INTO smf_ban_groups VALUES (1, 1956528000)');
+        $pdo->exec('INSERT INTO smf_ban_items VALUES (1, 1, 8)');
+    }
+
+    private function assertSmf(array $run): void
+    {
+        $this->assertBoard($run, 'News & Views', 'Child', 'Grandchild');
+        $this->assertNull($this->tag('Recycle Bin'));
+        $this->assertNull($this->discussion('Binned'), 'What was deleted into the recycle bin');
+        $this->assertNull($this->discussion('MOVED: Fish'));
+        $this->assertMembers();
+        $this->assertSame(0, (int) $this->user('never@board.example')->is_email_confirmed);
+
+        $this->assertSame(1, (int) $this->discussion('Fish & chips')->is_locked);
+        $this->assertSame([0, 1], [(int) $this->discussion('Pinned')->is_locked, (int) $this->discussion('Pinned')->is_sticky]);
+    }
+
+    #[Test]
+    public function an_smf_2_0_board_imports_its_topics()
+    {
+        $this->smf(false);
+        $this->assertSmf($this->import('smf', 'smf_'));
+    }
+
+    #[Test]
+    public function an_smf_2_1_board_skips_its_redirect_topics()
+    {
+        $this->smf(true);
+        $this->assertSmf($this->import('smf', 'smf_'));
+    }
 }

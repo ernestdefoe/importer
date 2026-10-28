@@ -2,6 +2,10 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Carbon;
+
 /**
  * SMF (Simple Machines Forum) 2.0 / 2.1 → Flarum.
  *   smf_boards → tags · smf_members → users · smf_topics → discussions · smf_messages → posts
@@ -19,6 +23,36 @@ class SmfImporter
     private static function decode(string $s): string
     {
         return trim(html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * The recycle bin board, when the bin is on: what members deleted, which
+     * the old board no longer showed anywhere but there.
+     */
+    private static function recycleBoard(ConnectionInterface $conn, string $p): int
+    {
+        if (! $conn->getSchemaBuilder()->hasTable($p.'settings')) {
+            return 0;
+        }
+        $s = $conn->table($p.'settings')->whereIn('variable', ['recycle_enable', 'recycle_board'])->pluck('value', 'variable');
+
+        return (int) ($s['recycle_enable'] ?? 0) === 1 ? (int) ($s['recycle_board'] ?? 0) : 0;
+    }
+
+    /**
+     * 🚨 `id_redirect_topic` arrived with SMF 2.1 — on a 2.0 board the topics
+     * query died on the missing column and the whole phase failed. On 2.1 a
+     * topic carrying it is a "moved" stub (no posts of its own worth having).
+     * The recycle bin's topics stay behind with their board.
+     */
+    private static function topics(ConnectionInterface $conn, string $p): Builder
+    {
+        $q = $conn->table($p.'topics')->where('approved', 1);
+        if ($conn->getSchemaBuilder()->hasColumn($p.'topics', 'id_redirect_topic')) {
+            $q->where('id_redirect_topic', 0);
+        }
+
+        return ($bin = self::recycleBoard($conn, $p)) ? $q->where('id_board', '!=', $bin) : $q;
     }
 
     private static function body(?string $body): string
@@ -42,7 +76,7 @@ class SmfImporter
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table($p.'members')->count(),
             'categories' => (int) $conn->table($p.'boards')->count(),
-            'topics' => (int) $conn->table($p.'topics')->where('approved', 1)->count(),
+            'topics' => (int) self::topics($conn, $p)->count(),
             'posts' => (int) $conn->table($p.'messages')->where('approved', 1)->count(),
         ]];
     }
@@ -62,16 +96,36 @@ class SmfImporter
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p.'boards')->where('id_board', '>', (int) $cursor)->orderBy('id_board')->limit($limit)->get();
+                    /*
+                     * 🚨 The whole tree, once per batch: child boards lost their
+                     * parent. Flarum nests one level, so a board goes under its
+                     * top-most ancestor (a parent may have a higher id).
+                     * `member_groups` lists who may see a board (-1 guests,
+                     * 0 regular members); a board open to neither is staff-only.
+                     */
+                    $conn = $ctx->src();
+                    $boards = $conn->table($p.'boards')->orderBy('id_board')->get()->keyBy('id_board');
+                    $bin = self::recycleBoard($conn, $p);
+                    $skip = fn ($b) => trim((string) ($b->redirect ?? '')) !== '' || (int) $b->id_board === $bin;
+                    $made = [];
+                    $tag = function ($b, ?int $parentId) use (&$made) {
+                        $name = self::decode($b->name ?: 'Board');
+                        $groups = array_map('trim', explode(',', (string) ($b->member_groups ?? '-1,0')));
+
+                        return $made[$b->id_board] ??= Dst::tag($name, Src::tagSlug($name, (int) $b->id_board), self::decode((string) ($b->description ?? '')) ?: null, null, (int) ($b->board_order ?? 0), $parentId, ! array_intersect(['-1', '0'], $groups));
+                    };
+                    $rows = $boards->filter(fn ($b) => $b->id_board > (int) $cursor)->take($limit);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $b) {
                         $cursor = $b->id_board;
-                        if (trim((string) ($b->redirect ?? '')) !== '') {
-                            continue; // redirect board — no content
+                        if ($skip($b)) {
+                            continue; // a redirect board, or the recycle bin
                         }
-                        $name = self::decode($b->name ?: 'Board');
-                        $map[$b->id_board] = Dst::tag($name, Src::tagSlug($name, (int) $b->id_board), self::decode((string) ($b->description ?? '')) ?: null, null, (int) ($b->board_order ?? 0));
+                        for ($t = $b, $i = 0; ($up = $boards[(int) ($t->id_parent ?? 0)] ?? null) && ! $skip($up) && $i < 50; $i++) {
+                            $t = $up;
+                        }
+                        $map[$b->id_board] = $tag($b, $t === $b ? null : $tag($t, null));
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -85,7 +139,20 @@ class SmfImporter
                 'members',
                 fn () => (int) Src::connect($cfg)->table($p.'members')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p.'members')->where('id_member', '>', (int) $cursor)->orderBy('id_member')->limit($limit)->get();
+                    $conn = $ctx->src();
+                    $rows = $conn->table($p.'members')->where('id_member', '>', (int) $cursor)->orderBy('id_member')->limit($limit)->get();
+                    // 🚨 Banned members arrived free to post. A ban naming the
+                    // member is a `ban_items` row of a `ban_groups` group whose
+                    // expire_time (NULL = never) ends it; is_activated 10+ is a
+                    // member banned outright, with or without such a row.
+                    $bans = [];
+                    if ($rows->isNotEmpty() && $conn->getSchemaBuilder()->hasTable($p.'ban_items') && $conn->getSchemaBuilder()->hasTable($p.'ban_groups')) {
+                        foreach ($conn->table($p.'ban_items as i')->join($p.'ban_groups as g', 'g.id_ban_group', '=', 'i.id_ban_group')
+                            ->whereIn('i.id_member', $rows->pluck('id_member')->all())->get(['i.id_member', 'g.expire_time']) as $b) {
+                            $end = (int) $b->expire_time === 0 ? Carbon::create(2038, 1, 1) : Src::ts($b->expire_time);
+                            $bans[$b->id_member] = isset($bans[$b->id_member]) && $bans[$b->id_member]->gt($end) ? $bans[$b->id_member] : $end;
+                        }
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -97,9 +164,14 @@ class SmfImporter
                             continue;
                         }
                         $name = self::decode(trim((string) ($u->real_name ?? '')) ?: (string) ($u->member_name ?? ''));
+                        // is_activated: 1 active · 0 never activated · 2 new email unconfirmed · 3 awaiting approval · 4 asked to be deleted · 5 COPPA; +10 = banned
+                        $act = (int) ($u->is_activated ?? 1);
 
                         try {
-                            $map[$u->id_member] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->id_member), $email, null, Src::ts($u->date_registered ?? null), null, ($u->passwd ?? '') !== '' ? ['scheme' => 'smf', 'hash' => (string) $u->passwd, 'salt' => (string) ($u->member_name ?? '')] : null, display: $name !== '' ? $name : null);
+                            $map[$u->id_member] = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->id_member), $email, null, Src::ts($u->date_registered ?? null), null, ($u->passwd ?? '') !== '' ? ['scheme' => 'smf', 'hash' => (string) $u->passwd, 'salt' => (string) ($u->member_name ?? '')] : null,
+                                confirmed: in_array($act % 10, [1, 4], true),
+                                suspendedUntil: $bans[$u->id_member] ?? ($act >= 10 ? Carbon::create(2038, 1, 1) : null),
+                                display: $name !== '' ? $name : null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -115,11 +187,10 @@ class SmfImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table($p.'topics')->where('approved', 1)->count(),
+                fn () => (int) self::topics(Src::connect($cfg), $p)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
-                    $rows = $conn->table($p.'topics')->where('approved', 1)->where('id_redirect_topic', 0)
-                        ->where('id_topic', '>', (int) $cursor)->orderBy('id_topic')->limit($limit)->get();
+                    $rows = self::topics($conn, $p)->where('id_topic', '>', (int) $cursor)->orderBy('id_topic')->limit($limit)->get();
                     $firstMsgIds = $rows->pluck('id_first_msg')->filter()->all();
                     $firstMsg = [];
                     if ($firstMsgIds) {
@@ -139,7 +210,7 @@ class SmfImporter
                         }
                         $fm = $firstMsg[(string) $t->id_first_msg] ?? null;
                         $title = self::decode((string) ($fm->subject ?? '')) ?: 'Untitled';
-                        $did = Dst::discussion($title, $userMap[(string) $t->id_member_started] ?? null, Src::ts($fm->poster_time ?? null), (bool) ($t->is_sticky ?? false));
+                        $did = Dst::discussion($title, $userMap[(string) $t->id_member_started] ?? null, Src::ts($fm->poster_time ?? null), (bool) ($t->is_sticky ?? false), (bool) ($t->locked ?? false));
                         $map[$t->id_topic] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->id_board])) {
                             Dst::attachTag($did, $tagMap[(string) $t->id_board]);

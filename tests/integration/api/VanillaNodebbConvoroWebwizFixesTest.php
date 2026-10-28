@@ -213,4 +213,54 @@ class VanillaNodebbConvoroWebwizFixesTest extends TestCase
         $locked = $this->database()->table('discussions')->orderBy('id')->pluck('is_locked')->map(fn ($v) => (int) $v)->all();
         $this->assertSame([1, 0], $locked);
     }
+
+    /* ── Vanilla ──────────────────────────────────────────────────────── */
+
+    #[Test]
+    public function vanilla_finishes_reply_less_discussions_keeps_bans_private_categories_and_maps_comments()
+    {
+        $this->extension('flarum-tags', 'flarum-suspend', 'ernestdefoe-importer');
+        $cfg = $this->sqlite([
+            'CREATE TABLE GDN_User (UserID INTEGER PRIMARY KEY, Name TEXT, Email TEXT, Password TEXT, DateInserted TEXT, Deleted INTEGER, Banned INTEGER, Confirmed INTEGER)',
+            'CREATE TABLE GDN_Role (RoleID INTEGER PRIMARY KEY, Name TEXT, Type TEXT)',
+            'CREATE TABLE GDN_Permission (PermissionID INTEGER PRIMARY KEY, RoleID INTEGER, JunctionTable TEXT, JunctionColumn TEXT, JunctionID INTEGER, "Vanilla.Discussions.View" INTEGER)',
+            'CREATE TABLE GDN_Category (CategoryID INTEGER PRIMARY KEY, Name TEXT, UrlCode TEXT, Description TEXT, Sort INTEGER, PermissionCategoryID INTEGER)',
+            'CREATE TABLE GDN_Discussion (DiscussionID INTEGER PRIMARY KEY, CategoryID INTEGER, Name TEXT, Body TEXT, Format TEXT, InsertUserID INTEGER, DateInserted TEXT, Announce INTEGER, Closed INTEGER)',
+            'CREATE TABLE GDN_Comment (CommentID INTEGER PRIMARY KEY, DiscussionID INTEGER, Body TEXT, Format TEXT, InsertUserID INTEGER, DateInserted TEXT)',
+            "INSERT INTO GDN_Role VALUES (2, 'Guest', 'guest'), (8, 'Member', 'member'), (16, 'Administrator', 'administrator'), (32, 'Moderator', 'moderator')",
+            "INSERT INTO GDN_Category VALUES (-1, 'Root', 'root', '', 0, -1), (1, 'General', 'general-talk', '', 1, -1), (2, 'Staff', 'staff-room', '', 2, 2), (3, 'Staff archive', 'staff-archive', '', 3, 2), (4, 'Open custom', 'open-custom', '', 4, 4)",
+            "INSERT INTO GDN_Permission VALUES (1, 32, 'Category', 'PermissionCategoryID', 2, 1), (2, 8, 'Category', 'PermissionCategoryID', 2, 0), (3, 8, 'Category', 'PermissionCategoryID', 4, 1)",
+            "INSERT INTO GDN_User VALUES (5, 'Ada', 'ada@va.example', '', '2010-01-01 00:00:00', 0, 0, 1), (6, 'Bob', 'bob@va.example', '', '2010-01-01 00:00:00', 0, 1, 1),"
+                ." (7, 'Cy', 'cy@va.example', '', '2010-01-01 00:00:00', 0, 0, 0), (8, 'Gone', 'gone@va.example', '', '2010-01-01 00:00:00', 1, 0, 1),"
+                ." (9, 'Spam', 'spam@va.example', '', '2010-01-01 00:00:00', 1, 0, 1)",
+            "INSERT INTO GDN_Discussion VALUES (1, 1, 'Has replies', 'First', 'Html', 5, '2012-01-01 00:00:00', 0, 0), (2, 1, 'No replies', 'Lonely', 'Html', 5, '2012-01-03 00:00:00', 0, 0)",
+            "INSERT INTO GDN_Comment VALUES (50, 1, 'A reply', 'Html', 8, '2012-01-02 00:00:00')",
+        ]);
+
+        $this->import('vanilla', $cfg + ['prefix' => 'GDN_']);
+        $db = $this->database();
+
+        $lonely = $db->table('discussions')->where('title', 'No replies')->first();
+        $this->assertSame(1, (int) $lonely->comment_count, 'A discussion with no comments is finished too');
+        $this->assertNotNull($lonely->first_post_id);
+        $this->assertSame((int) $lonely->first_post_id, (int) $lonely->last_post_id);
+        $replied = $db->table('discussions')->where('title', 'Has replies')->first();
+        $this->assertSame(2, (int) $replied->comment_count);
+
+        $this->assertSame((int) $db->table('posts')->where('discussion_id', $replied->id)->where('number', 2)->value('id'), $this->map('post')['50'] ?? null, 'A comment\'s old address can be redirected');
+        $this->assertSame($this->map('tag')['1'], $this->map('tag-slug')['general-talk'] ?? null, '/categories/general-talk');
+
+        $this->assertSame(0, $this->restricted('General'));
+        $this->assertSame(1, $this->restricted('Staff'), 'Custom permissions: moderators only');
+        $this->assertSame(1, $this->restricted('Staff archive'), 'Takes its permissions from Staff');
+        $this->assertSame(0, $this->restricted('Open custom'), 'Custom permissions members can view');
+
+        $this->assertNull($this->user('ada@va.example')->suspended_until);
+        $this->assertSame('2038', substr((string) $this->user('bob@va.example')->suspended_until, 0, 4), 'Banned there');
+        $this->assertSame(0, (int) $this->user('cy@va.example')->is_email_confirmed, 'Never confirmed there');
+        $this->assertSame(1, (int) $this->user('ada@va.example')->is_email_confirmed);
+        $this->assertNotNull($gone = $this->user('gone@va.example'), 'A deleted member who wrote something keeps their posts\' authorship');
+        $this->assertSame('2038', substr((string) $gone->suspended_until, 0, 4), 'and cannot sign in');
+        $this->assertNull($this->user('spam@va.example'), 'A deleted member with no posts stays behind');
+    }
 }

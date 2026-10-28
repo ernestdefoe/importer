@@ -4,6 +4,8 @@ namespace ErnestDefoe\Importer\Importers;
 
 use ErnestDefoe\Importer\Markup\Html;
 use ErnestDefoe\Importer\Markup\VanillaRich;
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Support\Carbon;
 
 /**
  * Vanilla Forums → Flarum.
@@ -53,16 +55,24 @@ class VanillaImporter
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
                     $rows = $ctx->src()->table($p.'Category')->where('CategoryID', '>', max(0, (int) $cursor))->orderBy('CategoryID')->limit($limit)->get();
-                    $map = [];
+                    $open = self::openCategories($ctx->src(), $p, $rows->pluck('PermissionCategoryID')->filter(fn ($id) => (int) $id > 0)->unique()->values()->all());
+                    $map = $slugs = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->CategoryID;
                         $name = trim((string) ($c->Name ?? '')) ?: ('Category '.$c->CategoryID);
-                        $slug = trim((string) ($c->UrlCode ?? '')) !== '' ? (\Illuminate\Support\Str::slug($c->UrlCode).'-'.$c->CategoryID) : Src::tagSlug($name, (int) $c->CategoryID);
-                        $map[$c->CategoryID] = Dst::tag($name, $slug, $c->Description ?? null, null, (int) ($c->Sort ?? 0));
+                        $code = trim((string) ($c->UrlCode ?? ''));
+                        $slug = $code !== '' ? (\Illuminate\Support\Str::slug($code).'-'.$c->CategoryID) : Src::tagSlug($name, (int) $c->CategoryID);
+                        // Custom permissions (PermissionCategoryID > 0, its own or inherited) that let neither guests nor members view it.
+                        $perm = (int) ($c->PermissionCategoryID ?? -1);
+                        $map[$c->CategoryID] = Dst::tag($name, $slug, $c->Description ?? null, null, (int) ($c->Sort ?? 0), restricted: $open !== null && $perm > 0 && ! isset($open[$perm]));
+                        if ($code !== '') {
+                            $slugs[$code] = $map[$c->CategoryID]; // /categories/{UrlCode}
+                        }
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
+                    $ctx->mapPut('tag-slug', $slugs);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
                 }
@@ -74,21 +84,37 @@ class VanillaImporter
                 fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
-                    $hasDeleted = $conn->getSchemaBuilder()->hasColumn($p.'User', 'Deleted');
                     $rows = $conn->table($p.'User')->where('UserID', '>', (int) $cursor)->orderBy('UserID')->limit($limit)->get();
+                    /*
+                     * A deleted account comes along only if it wrote something,
+                     * so its posts keep their author; it cannot sign in here
+                     * either. Who wrote something: one lookup for the batch.
+                     */
+                    $deleted = $rows->filter(fn ($u) => (int) ($u->Deleted ?? 0) === 1)->pluck('UserID')->all();
+                    $wrote = $deleted ? array_flip(array_map('strval', array_merge(
+                        $conn->table($p.'Discussion')->whereIn('InsertUserID', $deleted)->distinct()->pluck('InsertUserID')->all(),
+                        $conn->table($p.'Comment')->whereIn('InsertUserID', $deleted)->distinct()->pluck('InsertUserID')->all(),
+                    ))) : [];
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
                         $cursor = $u->UserID;
                         $email = trim((string) ($u->Email ?? ''));
-                        if ($email === '' || ($hasDeleted && (int) ($u->Deleted ?? 0) === 1)) {
+                        $gone = (int) ($u->Deleted ?? 0) === 1;
+                        if ($email === '' || ($gone && ! isset($wrote[(string) $u->UserID]))) {
                             $skip++;
 
                             continue;
                         }
 
                         try {
-                            $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null), null, self::legacy($u), display: $u->Name ?? null);
+                            $map[$u->UserID] = Dst::user(
+                                Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null), null, self::legacy($u),
+                                // `Confirmed` 0: never confirmed the address. `Banned` is a bitmask (manual, IP, warnings): any bit = banned, for good.
+                                confirmed: (int) ($u->Confirmed ?? 1) !== 0,
+                                suspendedUntil: $gone || (int) ($u->Banned ?? 0) !== 0 ? Carbon::create(2038, 1, 1) : null,
+                                display: $u->Name ?? null,
+                            );
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -107,6 +133,15 @@ class VanillaImporter
                 fn () => (int) Src::connect($cfg)->table($p.'Discussion')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
+                    /*
+                     * 🚨 The comments phase finalises the discussions it writes
+                     * to, so one with no comments never was: no first or last
+                     * post, a comment count of 0. Those (and only those, so none
+                     * is finalised twice) are finalised here, found with one
+                     * query for the batch.
+                     */
+                    $replied = $rows->isNotEmpty() ? array_flip(array_map('strval', $ctx->src()->table($p.'Comment')
+                        ->whereIn('DiscussionID', $rows->pluck('DiscussionID')->all())->distinct()->pluck('DiscussionID')->all())) : [];
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('CategoryID')->all()) : [];
                     $bodies = [];
@@ -127,6 +162,9 @@ class VanillaImporter
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
                         }
                         Dst::post($did, 1, $uid, $bodies[$d->DiscussionID], $created);
+                        if (! isset($replied[(string) $d->DiscussionID])) {
+                            Dst::finalizeDiscussion($did);
+                        }
                         $n++;
                     }
                     $ctx->mapPut('topic', $map);
@@ -156,7 +194,11 @@ class VanillaImporter
                         }
                     }
                     Dst::prepare($ctx, $bodies);
-                    $db = Dst::db();
+                    // Where each discussion's numbering stands, in one grouped query for the batch.
+                    $dids = array_values(array_unique($topicMap));
+                    $next = $dids ? Dst::db()->table('posts')->whereIn('discussion_id', $dids)->groupBy('discussion_id')
+                        ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
+                    $ids = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cur['did'] = (int) $c->DiscussionID;
@@ -169,17 +211,20 @@ class VanillaImporter
                             if ($carry && ! empty($carry['did'])) {
                                 Dst::finalizeDiscussion((int) $carry['did']);
                             }
-                            $carry = ['did' => (int) $did, 'num' => (int) ($db->table('posts')->where('discussion_id', $did)->max('number') ?? 0)];
+                            $carry = ['did' => (int) $did, 'num' => (int) ($next[$did] ?? 0)];
                         }
                         $created = Src::ts($c->DateInserted ?? null);
 
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies[$c->CommentID], $created);
+                            $ids[$c->CommentID] = Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies[$c->CommentID], $created);
+                            Dst::ref('post', (string) $c->CommentID, $ids[$c->CommentID]);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;
                         }
                     }
+                    // /discussion/comment/{CommentID} redirects to its post.
+                    $ctx->mapPut('post', $ids);
                     $done = count($rows) < $limit;
                     if ($done && $carry && ! empty($carry['did'])) {
                         Dst::finalizeDiscussion((int) $carry['did']);
@@ -190,6 +235,40 @@ class VanillaImporter
                 }
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Of these permission categories, the ones a guest or member may view:
+     * `Permission` rows for the category junction whose
+     * `Vanilla.Discussions.View` is on, for the Guest and Member roles (by
+     * `Role.Type` where Vanilla has it, else the stock ids 2 and 8).
+     * Null where the board has no such tables: nothing is restricted then.
+     *
+     * @param  array<int|string>  $perms
+     * @return array<int, true>|null
+     */
+    private static function openCategories(ConnectionInterface $conn, string $p, array $perms): ?array
+    {
+        $sb = $conn->getSchemaBuilder();
+        if (! $sb->hasTable($p.'Permission') || ! $sb->hasColumn($p.'Category', 'PermissionCategoryID')) {
+            return null;
+        }
+        if (! $perms) {
+            return [];
+        }
+        $roles = $sb->hasTable($p.'Role') && $sb->hasColumn($p.'Role', 'Type')
+            ? $conn->table($p.'Role')->whereIn('Type', ['guest', 'member'])->pluck('RoleID')->all() : [];
+        $open = [];
+        // 🚨 Selected whole and read in PHP: the builder would quote the dotted
+        // column name as database.table.column.
+        foreach ($conn->table($p.'Permission')->where('JunctionTable', 'Category')->whereIn('JunctionID', $perms)
+            ->whereIn('RoleID', $roles ?: [2, 8])->get() as $row) {
+            if ((int) (((array) $row)['Vanilla.Discussions.View'] ?? 0) === 1) {
+                $open[(int) $row->JunctionID] = true;
+            }
+        }
+
+        return $open;
     }
 
     /**

@@ -119,7 +119,7 @@ class XenForoImporter
                         }
 
                         try {
-                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null), null, $legacy[$u->user_id] ?? null);
+                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null), null, $legacy[$u->user_id] ?? null, display: $u->username ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

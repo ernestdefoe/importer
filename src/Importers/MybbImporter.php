@@ -95,7 +95,7 @@ class MybbImporter
                         }
 
                         try {
-                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null), null, self::legacy($u));
+                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null), null, self::legacy($u), display: $u->username ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

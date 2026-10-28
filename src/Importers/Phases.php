@@ -14,6 +14,12 @@ class Phases
     {
         return [
             new Phase(
+                'empty-discussions',
+                'finishing',
+                fn () => 0,
+                fn ($cursor, $limit, Ctx $ctx) => self::removeEmpty((int) $cursor, $limit, $ctx),
+            ),
+            new Phase(
                 'counts-users',
                 'member_counts',
                 fn () => 0,
@@ -113,6 +119,38 @@ class Phases
                 }
             ),
         ];
+    }
+
+    /**
+     * Remove the discussions this run made that ended with no posts at all.
+     *
+     * 🚨 A topic can be visible on the old board with nothing to show: a
+     * moved-topic pointer, a redirect, a topic whose every post was deleted or
+     * is waiting for approval. Each one landed as a discussion with no first
+     * post and no comments — a broken page in the list that still counted
+     * towards its tag and its author. Its map row goes with it, so a redirect
+     * never sends anybody to it either.
+     */
+    private static function removeEmpty(int $cursor, int $limit, Ctx $ctx): array
+    {
+        $db = Dst::db();
+        $rows = $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'topic')
+            ->where('id', '>', $cursor)->orderBy('id')->limit($limit)->get(['id', 'target_id']);
+        $ids = $rows->pluck('target_id')->map(fn ($v) => (int) $v)->all();
+        $n = 0;
+        if ($ids) {
+            $empty = $db->table('discussions')->whereIn('id', $ids)->whereNull('first_post_id')
+                ->whereNotExists(fn ($q) => $q->from('posts')->whereColumn('posts.discussion_id', 'discussions.id'))
+                ->pluck('id')->all();
+            if ($empty) {
+                $db->table('discussion_tag')->whereIn('discussion_id', $empty)->delete();
+                $db->table('discussions')->whereIn('id', $empty)->delete();
+                $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'topic')->whereIn('target_id', $empty)->delete();
+                $n = count($empty);
+            }
+        }
+
+        return ['cursor' => (int) ($rows->last()->id ?? $cursor), 'processed' => 0, 'done' => count($rows) < $limit, 'summary' => $n ? ['empty_removed' => $n] : []];
     }
 
     /**

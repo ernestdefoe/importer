@@ -183,7 +183,7 @@ class ConvoroImporter
                         }
 
                         try {
-                            $id = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null));
+                            $id = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null), display: $u->{$at['userName']} ?? null);
                             $map[$u->id] = $id;
                             // Best effort; a member whose picture has gone is
                             // a member with no picture, not a failed import.

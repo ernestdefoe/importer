@@ -226,14 +226,27 @@ class Src
     }
 
     /**
-     * Flarum usernames may not contain spaces or most punctuation. Turn a source
-     * display name into a valid, reasonably-readable Flarum username.
+     * A source display name as a valid Flarum username: ASCII letters, digits,
+     * `_` and `-`, 3 to 30 characters (core's UserValidator, and what
+     * flarum/mentions can match after an @).
+     *
+     * 🚨 `josé.p`, `Иван` and `Al` used to come across as they were: a
+     * username Flarum itself would refuse, that nobody could @-mention and
+     * that broke the next save of that member. Accents and other scripts are
+     * transliterated (José → Jose, Иван → Ivan); the name as the old board
+     * showed it is kept as the member's nickname where that is possible.
      */
     public static function username(?string $name, int $sourceId): string
     {
-        $u = preg_replace('/[^\w.-]+/u', '_', trim((string) $name));
-        $u = trim((string) $u, '_.-');
+        $u = Str::ascii(html_entity_decode(trim((string) $name), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $u = trim((string) preg_replace(['/[^A-Za-z0-9_-]+/', '/_{2,}/'], '_', $u), '_-');
+        if ($u === '') {
+            return 'user'.$sourceId;
+        }
+        if (strlen($u) < 3) {
+            $u .= '_'.$sourceId;
+        }
 
-        return $u !== '' ? $u : ('user'.$sourceId);
+        return Str::limit(str_pad($u, 3, '_'), 30, '');
     }
 }

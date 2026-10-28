@@ -365,7 +365,7 @@ class Vbulletin5Importer
                         $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
                         $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
                         try {
-                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen, self::legacy($u));
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen, self::legacy($u), display: $name !== '' ? $name : null);
                             $map[$u->userid] = $uid;
                             // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
                             // groups map onto Flarum's built-in Admin/Mod groups. Everything else

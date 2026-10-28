@@ -209,7 +209,8 @@ class WebWizImporter
                                 Src::username($u->{$c['username']} ?? null, $id),
                                 $email,
                                 null,
-                                $c['joined'] ? Src::ts($u->{$c['joined']} ?? null) : null
+                                $c['joined'] ? Src::ts($u->{$c['joined']} ?? null) : null,
+                                display: $u->{$c['username']} ?? null
                             );
                             $n++;
                         } catch (\Throwable) {

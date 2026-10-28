@@ -125,7 +125,7 @@ class NodebbImporter
                             // bcrypt of the password, or of its sha512 where NodeBB "shaWrapped" it.
                             $hash = (string) ($u['password'] ?? '');
                             $wrapped = (int) ($u['password:shaWrapped'] ?? 0) === 1;
-                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, $wrapped ? null : $hash, self::ts($u['joindate'] ?? null), null, $wrapped && $hash !== '' ? ['scheme' => 'nodebb', 'hash' => $hash, 'salt' => null] : null);
+                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, $wrapped ? null : $hash, self::ts($u['joindate'] ?? null), null, $wrapped && $hash !== '' ? ['scheme' => 'nodebb', 'hash' => $hash, 'salt' => null] : null, display: $u['username'] ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

@@ -40,6 +40,7 @@ class Dst
         self::$refs = [];
         self::$base = '';
         self::$pendingMentions = [];
+        self::$parents = [];
         Target::set(null);
     }
 
@@ -125,10 +126,11 @@ class Dst
         return self::$tables['tags'] ??= self::db()->getSchemaBuilder()->hasTable('tags');
     }
 
+    /** Cached like hasTags(): an import asks for the same few columns once per row. */
     public static function hasColumn(string $table, string $col): bool
     {
         try {
-            return self::db()->getSchemaBuilder()->hasColumn($table, $col);
+            return self::$tables[$table.'.'.$col] ??= self::db()->getSchemaBuilder()->hasColumn($table, $col);
         } catch (\Throwable) {
             return false;
         }
@@ -147,7 +149,12 @@ class Dst
 
     /* ── Tags (categories) ──────────────────────────────────────────────── */
 
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null): int
+    /**
+     * @param  bool  $restricted  the old board let neither guests nor members
+     *                            read it (a staff forum): only admins see the
+     *                            tag until its permissions are set up
+     */
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null, bool $restricted = false): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
@@ -164,7 +171,7 @@ class Dst
             'position' => $position,
             'parent_id' => $parentId,
             'is_primary' => true,
-            'is_restricted' => 0,
+            'is_restricted' => $restricted ? 1 : 0,
             'is_hidden' => 0,
             'discussion_count' => 0,
         ]);
@@ -177,7 +184,15 @@ class Dst
      *         the old board's hash when Flarum cannot check it itself; kept in
      *         importer_passwords for the member's first sign-in ({@see \ErnestDefoe\Importer\Auth\LegacyPasswordChecker})
      */
-    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt, ?Carbon $lastSeenAt = null, ?array $legacy = null): int
+    /**
+     * @param  string  $username  already valid for Flarum ({@see Src::username()})
+     * @param  bool  $confirmed  the old board had confirmed the address
+     * @param  Carbon|null  $suspendedUntil  banned there: suspended here until then
+     *                                       (far in the future for a permanent ban), with flarum/suspend
+     * @param  string|null  $display  the member's name as the old board showed it,
+     *                                kept as their nickname where flarum/nicknames is installed
+     */
+    public static function user(string $username, string $email, ?string $passwordHash, Carbon $joinedAt, ?Carbon $lastSeenAt = null, ?array $legacy = null, bool $confirmed = true, ?Carbon $suspendedUntil = null, ?string $display = null): int
     {
         $db = self::db();
         $email = mb_strtolower(trim($email));
@@ -185,24 +200,35 @@ class Dst
             return (int) $id;
         }
 
-        // Flarum usernames are unique — disambiguate on collision.
+        // Flarum usernames are unique, and compared without case — disambiguate on collision.
         $base = Str::limit($username, 30, '');
         $name = $base;
         $n = 1;
-        while ($db->table('users')->where('username', $name)->exists()) {
+        while ($db->table('users')->whereRaw('LOWER(username) = ?', [mb_strtolower($name)])->exists()) {
             $name = Str::limit($base, 26, '').'_'.(++$n);
         }
 
-        $id = (int) $db->table('users')->insertGetId([
+        $row = [
             'username' => $name,
             'email' => $email,
-            'is_email_confirmed' => 1,
+            'is_email_confirmed' => $confirmed ? 1 : 0,
             // A legacy hash is never copied here: Flarum would compare the
             // typed password with it directly, so an md5 could sign in alone.
             'password' => Src::password($legacy ? null : $passwordHash),
             'joined_at' => $joinedAt,
             'last_seen_at' => $lastSeenAt,
-        ]);
+            // Everything imported is old news: without this every member opened
+            // the new forum to thousands of unread discussions.
+            'marked_all_as_read_at' => Carbon::now(),
+        ];
+        if ($suspendedUntil && $suspendedUntil->isFuture() && self::hasColumn('users', 'suspended_until')) {
+            $row['suspended_until'] = $suspendedUntil;
+        }
+        $display = trim((string) $display);
+        if ($display !== '' && $display !== $name && self::hasColumn('users', 'nickname')) {
+            $row['nickname'] = Str::limit($display, 255, '');
+        }
+        $id = (int) $db->table('users')->insertGetId($row);
         if ($legacy && ($legacy['hash'] ?? '') !== '' && ($legacy['scheme'] ?? 'unknown') !== 'unknown' && $db->getSchemaBuilder()->hasTable('importer_passwords')) {
             $db->table('importer_passwords')->insert([
                 'user_id' => $id,
@@ -229,6 +255,15 @@ class Dst
             return;
         }
         $db = self::db();
+        /*
+         * 🚨 Never to an account whose address nobody has confirmed. An import
+         * reuses whatever account already holds a member's email, and anyone
+         * could have registered the old admin's address here before the
+         * import — this made them an administrator.
+         */
+        if (! $db->table('users')->where('id', $userId)->where('is_email_confirmed', true)->exists()) {
+            return;
+        }
         $exists = $db->table('group_user')->where('user_id', $userId)->where('group_id', $groupId)->exists();
         if (! $exists) {
             $db->table('group_user')->insert(['user_id' => $userId, 'group_id' => $groupId]);
@@ -407,7 +442,8 @@ class Dst
         }
     }
 
-    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false): int
+    /** @param  bool  $hidden  hidden there (unlisted by staff): only moderators see it here */
+    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false, bool $hidden = false): int
     {
         $db = self::db();
         $title = Str::limit(trim($title) ?: 'Untitled', 200, '');
@@ -421,6 +457,7 @@ class Dst
             'last_posted_at' => $createdAt,
             'last_posted_user_id' => $userId,
             'is_private' => 0,
+            'hidden_at' => $hidden ? $createdAt : null,
         ];
         // Optional columns from flarum/sticky + flarum/lock — set only if present.
         if ($sticky && self::hasColumn('discussions', 'is_sticky')) {
@@ -433,12 +470,26 @@ class Dst
         return (int) $db->table('discussions')->insertGetId($row);
     }
 
+    /** @var array<int,?int> tag id → its parent, for the step */
+    private static array $parents = [];
+
+    /**
+     * A discussion in a child tag is in its parent as well, as flarum/tags
+     * files one (its tag pages and counts read the parent's own rows).
+     */
     public static function attachTag(int $discussionId, int $tagId): void
     {
         $db = self::db();
-        $exists = $db->table('discussion_tag')->where('discussion_id', $discussionId)->where('tag_id', $tagId)->exists();
-        if (! $exists) {
-            $db->table('discussion_tag')->insert(['discussion_id' => $discussionId, 'tag_id' => $tagId, 'created_at' => Carbon::now()]);
+        $parent = array_key_exists($tagId, self::$parents) ? self::$parents[$tagId]
+            : (self::$parents[$tagId] = ($p = $db->table('tags')->where('id', $tagId)->value('parent_id')) ? (int) $p : null);
+        $tags = array_filter([$tagId, $parent]);
+        $have = $db->table('discussion_tag')->where('discussion_id', $discussionId)->whereIn('tag_id', $tags)->pluck('tag_id')->map(fn ($t) => (int) $t)->all();
+        $rows = [];
+        foreach (array_diff($tags, $have) as $t) {
+            $rows[] = ['discussion_id' => $discussionId, 'tag_id' => $t, 'created_at' => Carbon::now()];
+        }
+        if ($rows) {
+            $db->table('discussion_tag')->insert($rows);
         }
     }
 

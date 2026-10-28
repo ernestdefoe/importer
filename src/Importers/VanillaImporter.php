@@ -88,7 +88,7 @@ class VanillaImporter
                         }
 
                         try {
-                            $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null), null, self::legacy($u));
+                            $map[$u->UserID] = Dst::user(Src::username($u->Name ?? null, (int) $u->UserID), $email, $u->Password ?? null, Src::ts($u->DateInserted ?? null), null, self::legacy($u), display: $u->Name ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

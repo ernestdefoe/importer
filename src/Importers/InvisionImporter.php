@@ -83,7 +83,7 @@ class InvisionImporter
                         }
 
                         try {
-                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, null, Src::ts($u->joined ?? null), null, ($u->members_pass_hash ?? '') !== '' ? ['scheme' => 'ips', 'hash' => (string) $u->members_pass_hash, 'salt' => (string) ($u->members_pass_salt ?? '')] : null);
+                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, null, Src::ts($u->joined ?? null), null, ($u->members_pass_hash ?? '') !== '' ? ['scheme' => 'ips', 'hash' => (string) $u->members_pass_hash, 'salt' => (string) ($u->members_pass_salt ?? '')] : null, display: $u->name ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;

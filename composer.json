@@ -65,7 +65,9 @@
     "flarum/bbcode": "^2.0",
     "flarum/mentions": "^2.0",
     "ernestdefoe/scribe": "^1.4",
-    "fof/polls": "^3.0"
+    "fof/polls": "^3.0",
+    "flarum/nicknames": "^2.0",
+    "flarum/suspend": "^2.0"
   },
   "scripts": {
     "test": [

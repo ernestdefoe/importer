@@ -82,7 +82,7 @@ class PrivateMessagesTest extends TestCase
 
     private function user(string $name): int
     {
-        return (int) $this->database()->table('users')->where('username', $name)->value('id');
+        return (int) $this->database()->table('users')->where('email', strtolower($name).'@board.example')->value('id');
     }
 
     #[Test]

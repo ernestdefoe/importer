@@ -4,6 +4,7 @@ namespace ErnestDefoe\Importer\Importers;
 
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Carbon;
 
 /**
  * Convoro → Flarum (the reverse of Convoro's own Flarum importer).
@@ -24,11 +25,6 @@ use Illuminate\Database\Query\Builder;
 class ConvoroImporter
 {
     /**
-     * Which of the two schemas this connection is, as a column map.
-     *
-     * @return array{forums: string, forumTitle: string, topicForum: string, postHtml: string, userName: string}
-     */
-    /**
      * The members who actually exist.
      *
      * 🚨 Convoro deletes a member by SETTING `deleted_at`, not by removing the
@@ -46,22 +42,94 @@ class ConvoroImporter
         $query = $conn->table('users');
 
         try {
-            $table = method_exists($conn, 'getTablePrefix') ? $conn->getTablePrefix().'users' : 'users';
-
-            foreach ($conn->select("SHOW COLUMNS FROM `{$table}`") as $col) {
-                $field = is_array($col) ? ($col['Field'] ?? null) : ($col->Field ?? null);
-
-                if ($field === 'deleted_at') {
-                    return $query->whereNull('deleted_at');
-                }
-            }
+            // 🚨 Not SHOW COLUMNS: an uploaded dump runs as SQLite, which has no such thing.
+            return $conn->getSchemaBuilder()->hasColumn('users', 'deleted_at') ? $query->whereNull('deleted_at') : $query;
         } catch (\Throwable) {
-            // Older schema, or a driver that does not answer SHOW COLUMNS.
+            return $query;
         }
-
-        return $query;
     }
 
+    /** The topics a guest or member could see there: not deleted, not held, not in a private social group. */
+    private static function liveTopics(ConnectionInterface $conn, array $at): Builder
+    {
+        $q = $conn->table('topics');
+        if ($at['topicDeleted']) {
+            $q->whereNull('deleted_at');
+        }
+        if ($at['topicHidden']) {
+            $q->where($at['topicHidden'], 0);
+        }
+        /*
+         * Convoro 1 social groups. A private group's topics are its members'
+         * only, and Flarum has no such group to hold them, so they stay
+         * behind — an untagged discussion would be public to everyone. A
+         * public group's topics could be read by anybody, so they come along.
+         */
+        if ($at['socialGroups']) {
+            $q->where(fn ($w) => $w->whereNull('group_id')
+                ->orWhereNotIn('group_id', fn ($s) => $s->from('social_groups')->where('is_private', 1)->select('id')));
+        }
+
+        return $q;
+    }
+
+    /** The same rule for a post on its own (a post's topic is checked by its mapping). */
+    private static function livePosts(Builder $q, array $at): Builder
+    {
+        if ($at['postDeleted']) {
+            $q->whereNull('deleted_at');
+        }
+        if ($at['postHidden']) {
+            $q->where($at['postHidden'], 0);
+        }
+
+        return $q;
+    }
+
+    /**
+     * Convoro 2 forums neither a guest nor a member could read: a forum is
+     * restricted to the groups in `forum_groups`, or else inherits its
+     * nearest restricted ancestor's (ForumVisibility::effectiveGroups). It is
+     * open while one of those groups is the default (Members) or Guests group.
+     * Both tables are small: read once per batch, never per forum.
+     *
+     * @return array<int, bool> forum id => restricted
+     */
+    private static function restrictedForums(ConnectionInterface $conn, array $at): array
+    {
+        if (! $at['forumGroups']) {
+            return [];
+        }
+        $own = [];
+        foreach ($conn->table('forum_groups')->leftJoin('groups', 'groups.id', '=', 'forum_groups.group_id')
+            ->get(['forum_groups.forum_id', 'groups.is_default', 'groups.is_guest']) as $r) {
+            $own[(int) $r->forum_id][] = (int) $r->is_default || (int) $r->is_guest;
+        }
+        if (! $own) {
+            return [];
+        }
+        $parent = $conn->table('forums')->pluck('parent_id', 'id')->all();
+        $out = [];
+        foreach (array_keys($parent) as $id) {
+            $seen = [];
+            for ($f = (int) $id; $f > 0 && ! isset($seen[$f]); $f = (int) ($parent[$f] ?? 0)) {
+                $seen[$f] = true;
+                if (isset($own[$f])) {
+                    $out[(int) $id] = ! in_array(true, $own[$f], true);
+
+                    break;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Which of the two schemas this connection is, as a column map.
+     *
+     * @return array<string, mixed> forums, forumTitle, topicForum, postHtml, userName, then what is probed: see the comments
+     */
     private static function layout(ConnectionInterface $conn): array
     {
         $sb = $conn->getSchemaBuilder();
@@ -75,6 +143,36 @@ class ConvoroImporter
          * identity. Seen on a real FBSFB database.
          */
         $userName = $sb->hasColumn('users', 'username') ? 'username' : 'name';
+        $v2 = $sb->hasTable('forums');
+        $forums = $v2 ? 'forums' : 'categories';
+
+        /*
+         * What the old board hid, probed per column (older installs predate
+         * most of these). 🚨 Without them a deleted or held topic arrived as a
+         * live discussion: Convoro deletes by setting `deleted_at`, and holds a
+         * post for approval or a topic until its scheduled time with
+         * `is_hidden` (2.x) / `hidden` (1.x).
+         */
+        $shared = [
+            'userName' => $userName,
+            'topicDeleted' => $sb->hasColumn('topics', 'deleted_at'),
+            'topicHidden' => $sb->hasColumn('topics', 'is_hidden') ? 'is_hidden' : ($sb->hasColumn('topics', 'hidden') ? 'hidden' : null),
+            'postDeleted' => $sb->hasColumn('posts', 'deleted_at'),
+            'postHidden' => $sb->hasColumn('posts', 'is_hidden') ? 'is_hidden' : ($sb->hasColumn('posts', 'hidden') ? 'hidden' : null),
+            'forumSlug' => $sb->hasColumn($forums, 'slug'),
+            // Convoro 2: a forum with rows here is readable by those groups only.
+            'forumGroups' => $v2 && $sb->hasTable('forum_groups') && $sb->hasTable('groups'),
+            // Convoro 1: a topic posted inside a social group (`topics.group_id`).
+            'socialGroups' => ! $v2 && $sb->hasColumn('topics', 'group_id') && $sb->hasTable('social_groups'),
+            'banned' => $sb->hasColumn('users', 'is_banned') ? 'is_banned' : ($sb->hasColumn('users', 'banned_at') ? 'banned_at' : null),
+            'banEnds' => $sb->hasColumn('users', 'ban_expires_at'),
+            /*
+             * 🚨 Convoro 2 only. Convoro 1 had the Laravel column but never
+             * asked anybody to verify (MustVerifyEmail is commented out), so
+             * it is null for nearly every member there and means nothing.
+             */
+            'verified' => $v2 && $sb->hasColumn('users', 'email_verified_at'),
+        ];
 
         // Convoro 2: forums/title/forum_id/content_html.
         if ($sb->hasTable('forums')) {
@@ -83,8 +181,7 @@ class ConvoroImporter
                 'forumTitle' => 'title',
                 'topicForum' => 'forum_id',
                 'postHtml' => $sb->hasColumn('posts', 'content_html') ? 'content_html' : 'body_html',
-                'userName' => $userName,
-            ];
+            ] + $shared;
         }
 
         // Convoro 1.x.
@@ -93,8 +190,7 @@ class ConvoroImporter
             'forumTitle' => 'name',
             'topicForum' => 'category_id',
             'postHtml' => 'body_html',
-            'userName' => $userName,
-        ];
+        ] + $shared;
     }
 
     public static function test(array $cfg): array
@@ -143,13 +239,18 @@ class ConvoroImporter
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
                     $rows = $ctx->src()->table($at['forums'])->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
-                    $map = [];
+                    $restricted = $rows->isNotEmpty() ? self::restrictedForums($ctx->src(), $at) : [];
+                    $map = $slugs = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->id;
                         $name = (string) ($c->{$at['forumTitle']} ?? '');
-                        $tagId = Dst::tag($name ?: 'Forum', Src::tagSlug($name ?: 'forum', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
+                        $tagId = Dst::tag($name ?: 'Forum', Src::tagSlug($name ?: 'forum', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0), restricted: $restricted[(int) $c->id] ?? false);
                         $map[$c->id] = $tagId;
+                        // The old address names the forum by its slug.
+                        if ($at['forumSlug'] && (string) ($c->slug ?? '') !== '') {
+                            $slugs[(string) $c->slug] = $tagId;
+                        }
                         /*
                          * The forum's cover art, where the board has somewhere
                          * to put it. Silently skipped without tag-covers — a
@@ -160,6 +261,7 @@ class ConvoroImporter
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
+                    $ctx->mapPut('tag-slug', $slugs);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
                 }
@@ -183,7 +285,12 @@ class ConvoroImporter
                         }
 
                         try {
-                            $id = Dst::user(Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null), display: $u->{$at['userName']} ?? null);
+                            $id = Dst::user(
+                                Src::username($u->{$at['userName']} ?? null, (int) $u->id), $email, $u->password ?? null, Src::ts($u->created_at ?? null),
+                                confirmed: ! $at['verified'] || ! empty($u->email_verified_at),
+                                suspendedUntil: self::bannedUntil($u, $at),
+                                display: $u->{$at['userName']} ?? null,
+                            );
                             $map[$u->id] = $id;
                             // Best effort; a member whose picture has gone is
                             // a member with no picture, not a failed import.
@@ -202,9 +309,9 @@ class ConvoroImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table('topics')->count(),
+                fn () => (int) self::liveTopics(Src::connect($cfg), $at)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags, $at) {
-                    $rows = $ctx->src()->table('topics')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
+                    $rows = self::liveTopics($ctx->src(), $at)->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('user_id')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck($at['topicForum'])->all()) : [];
                     $map = [];
@@ -232,14 +339,33 @@ class ConvoroImporter
                 'posts',
                 'topic_id',
                 'id',
-                fn () => (int) Src::connect($cfg)->table('posts')->count(),
+                fn () => (int) self::livePosts(Src::connect($cfg)->table('posts'), $at)->count(),
                 fn ($post) => [
                     'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
                     'html' => (string) ($post->{$at['postHtml']} ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
                 ],
+                fn (Builder $q) => self::livePosts($q, $at),
+                /*
+                 * 🚨 No `edited_at` here, though Convoro has one: Phases::edits
+                 * compares the column with unix seconds, and Convoro's is a
+                 * datetime, which then reads as "edited since" on every sync.
+                 */
             ),
         ], Phases::tail());
     }
+    /**
+     * Banned there, suspended here: Convoro 2 `is_banned` until
+     * `ban_expires_at` (null = for good), Convoro 1 `banned_at` (always for good).
+     */
+    private static function bannedUntil(object $u, array $at): ?Carbon
+    {
+        if (! $at['banned'] || empty($u->{$at['banned']})) {
+            return null;
+        }
+
+        return $at['banEnds'] && ! empty($u->ban_expires_at) ? Src::ts($u->ban_expires_at) : Carbon::create(2038, 1, 1);
+    }
+
     /**
      * The messenger. Convoro 2: `conversations` (`subject`),
      * `conversation_participants` (`has_left`, `last_read_at`) and `messages`

@@ -3,12 +3,14 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Carbon;
 
 /**
  * Invision Community 4.x / 5.x (IP.Board) → Flarum.
  *   forums_forums → tags (titles live in core_sys_lang_words: forums_forum_{id})
  *   core_members  → users (bcrypt copies straight; legacy md5 → reset)
- *   forums_topics → discussions · forums_posts → posts
+ *   forums_topics → discussions · forums_posts (+ forums_archive_posts) → posts
  * IPS post content is HTML (not BBCode); ipsHtml() cleans the IPS-specific markup.
  */
 class InvisionImporter
@@ -27,7 +29,7 @@ class InvisionImporter
             'users' => (int) $conn->table('core_members')->where('member_id', '>', 0)->count(),
             'categories' => (int) $conn->table('forums_forums')->count(),
             'topics' => (int) $conn->table('forums_topics')->where('approved', 1)->count(),
-            'posts' => (int) $conn->table('forums_posts')->where('queued', 0)->count(),
+            'posts' => (int) $conn->table('forums_posts')->where('queued', 0)->count() + (int) self::archived($conn)?->count(),
         ]];
     }
 
@@ -46,17 +48,53 @@ class InvisionImporter
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
                     $conn = $ctx->src();
-                    $rows = $conn->table('forums_forums')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
-                    [$names, $descs] = self::forumWords($conn, $rows->pluck('id')->all());
-                    $map = [];
+                    /*
+                     * 🚨 The whole forum list, once per batch (a board has a few
+                     * hundred at most). Every forum came across as a top-level
+                     * tag: a root category (parent_id -1) and its forums side by
+                     * side. A forum is filed under its root category now —
+                     * Flarum nests one level, so deeper sub-forums fold into it.
+                     */
+                    $forums = $conn->table('forums_forums')->get()->keyBy('id');
+                    $root = function (int $id) use ($forums) {
+                        $top = null;
+                        for ($seen = []; ($f = $forums->get($id)) && ! isset($seen[$id]); $id = (int) $f->parent_id) {
+                            $seen[$id] = true;
+                            $top = $f;
+                        }
+
+                        return $top;
+                    };
+                    $redirect = fn ($f) => (int) ($f->redirect_on ?? 0) === 1 && trim((string) ($f->redirect_url ?? '')) !== '';
+                    $rows = $forums->filter(fn ($f) => (int) $f->id > (int) $cursor)->sortBy('id')->take($limit)->values();
+                    $parents = [];
+                    foreach ($rows as $f) {
+                        if (($t = $root((int) $f->id)) && (int) $t->id !== (int) $f->id && ! $redirect($t)) {
+                            $parents[$f->id] = $t;
+                        }
+                    }
+                    [$names, $descs] = self::forumWords($conn, array_merge($rows->pluck('id')->all(), array_map(fn ($t) => $t->id, $parents)));
+                    $restricted = self::forumRestricted($conn);
+                    $make = function ($f, ?int $parent) use ($names, $descs, $restricted) {
+                        $name = html_entity_decode((string) ($names[(int) $f->id] ?? (($f->name_seo ?? '') ? \Illuminate\Support\Str::headline((string) $f->name_seo) : ('Forum '.$f->id))), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+                        return Dst::tag($name, Src::tagSlug($name, (int) $f->id), $descs[(int) $f->id] ?? null, $f->feature_color ?? null, (int) ($f->position ?? 0), $parent, $restricted($f));
+                    };
+                    $known = $ctx->mapGet('tag', array_map(fn ($t) => $t->id, $parents));
+                    $map = $made = [];
                     $n = 0;
                     foreach ($rows as $f) {
                         $cursor = $f->id;
-                        if ((int) ($f->redirect_on ?? 0) === 1 && trim((string) ($f->redirect_url ?? '')) !== '') {
+                        if ($redirect($f)) {
                             continue; // redirect-only forum — no content
                         }
-                        $name = $names[(int) $f->id] ?? (($f->name_seo ?? '') ? \Illuminate\Support\Str::headline((string) $f->name_seo) : ('Forum '.$f->id));
-                        $map[$f->id] = Dst::tag($name, Src::tagSlug($name, (int) $f->id), $descs[(int) $f->id] ?? null, $f->feature_color ?? null, (int) ($f->position ?? 0));
+                        $parent = null;
+                        if ($t = $parents[$f->id] ?? null) {
+                            // A category with a higher id than its forum is made now; its
+                            // own row later finds it by slug and maps it then.
+                            $parent = $map[$t->id] ?? $known[(string) $t->id] ?? ($made[$t->id] ??= $make($t, null));
+                        }
+                        $map[$f->id] = $make($f, $parent);
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -70,7 +108,24 @@ class InvisionImporter
                 'members',
                 fn () => (int) Src::connect($cfg)->table('core_members')->where('member_id', '>', 0)->count(),
                 function ($cursor, $limit, Ctx $ctx) {
-                    $rows = $ctx->src()->table('core_members')->where('member_id', '>', (int) $cursor)->orderBy('member_id')->limit($limit)->get();
+                    $conn = $ctx->src();
+                    $rows = $conn->table('core_members')->where('member_id', '>', (int) $cursor)->orderBy('member_id')->limit($limit)->get();
+                    /*
+                     * 🚨 Banned members and ones still validating arrived as
+                     * ordinary confirmed accounts. temp_ban is -1 for a
+                     * permanent ban, else the unix time it ends. A row in
+                     * core_validating is a registration (or a changed address)
+                     * not yet confirmed or approved — but not a password reset,
+                     * which IPS keeps in the same table.
+                     */
+                    $validating = [];
+                    if (count($rows) && $conn->getSchemaBuilder()->hasTable('core_validating')) {
+                        $q = $conn->table('core_validating')->whereIn('member_id', $rows->pluck('member_id')->all());
+                        if ($conn->getSchemaBuilder()->hasColumn('core_validating', 'lost_pass') && $conn->getSchemaBuilder()->hasColumn('core_validating', 'new_reg')) {
+                            $q->where(fn ($w) => $w->where('lost_pass', 0)->orWhere('new_reg', 1));
+                        }
+                        $validating = array_flip($q->pluck('member_id')->all());
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -83,7 +138,9 @@ class InvisionImporter
                         }
 
                         try {
-                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, null, Src::ts($u->joined ?? null), null, ($u->members_pass_hash ?? '') !== '' ? ['scheme' => 'ips', 'hash' => (string) $u->members_pass_hash, 'salt' => (string) ($u->members_pass_salt ?? '')] : null, display: $u->name ?? null);
+                            $ban = (int) ($u->temp_ban ?? 0);
+                            $until = $ban === -1 ? Carbon::create(2038, 1, 1) : ($ban > 0 ? Carbon::createFromTimestamp($ban) : null);
+                            $map[$u->member_id] = Dst::user(Src::username($u->name ?? null, (int) $u->member_id), $email, null, Src::ts($u->joined ?? null), null, ($u->members_pass_hash ?? '') !== '' ? ['scheme' => 'ips', 'hash' => (string) $u->members_pass_hash, 'salt' => (string) ($u->members_pass_salt ?? '')] : null, ! isset($validating[$u->member_id]), $until, display: $u->name ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -114,7 +171,7 @@ class InvisionImporter
                         if (($t->state ?? 'open') === 'link' || trim((string) ($t->moved_to ?? '')) !== '') {
                             continue; // moved/redirect pointer
                         }
-                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->starter_id] ?? null, Src::ts($t->start_date ?? null), (bool) ($t->pinned ?? false), ($t->state ?? 'open') === 'closed');
+                        $did = Dst::discussion(html_entity_decode((string) $t->title, ENT_QUOTES | ENT_HTML5, 'UTF-8') ?: 'Untitled', $userMap[(string) $t->starter_id] ?? null, Src::ts($t->start_date ?? null), (bool) ($t->pinned ?? false), ($t->state ?? 'open') === 'closed');
                         $map[$t->tid] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->forum_id])) {
                             Dst::attachTag($did, $tagMap[(string) $t->forum_id]);
@@ -140,6 +197,7 @@ class InvisionImporter
                 fn ($q) => $q->where('queued', 0),
                 'edit_time',
             ),
+            self::archivePosts($cfg),
         ], Phases::tail());
     }
 
@@ -203,6 +261,82 @@ class InvisionImporter
                 return ['cursor' => $after, 'rows' => count($rows), 'done' => count($rows) < $limit, 'messages' => $out];
             },
         ];
+    }
+
+    /**
+     * 🚨 The posts of an archived topic. IPS moves every post of a topic it
+     * archives out of forums_posts into forums_archive_posts (same ids), so
+     * the topic arrived as a discussion with nothing in it and was then
+     * removed as empty — years of a board's oldest threads, gone.
+     *
+     * The shared posts phase, run over the archive table: numbered per topic
+     * and finished the same way. Only topics with nothing left in forums_posts
+     * (a whole archived topic, not one half way through being archived or
+     * restored), so a discussion is never numbered twice. A sync skips it:
+     * a post only reaches the archive after it was imported from forums_posts.
+     * An archive kept in a separate database (IPS's remote archive option)
+     * is not reachable from here and stays behind.
+     */
+    private static function archivePosts(array $cfg): Phase
+    {
+        $phase = Phases::posts(
+            'forums_archive_posts',
+            'archive_topic_id',
+            'archive_id',
+            fn () => (int) self::archived(Src::connect($cfg))?->count(),
+            fn ($post) => [
+                'tid' => (int) $post->archive_topic_id, 'pid' => (int) $post->archive_id, 'uid' => $post->archive_author_id,
+                'html' => self::ipsHtml($post->archive_content ?? '', (string) ($cfg['assets_base'] ?? '')), 'at' => Src::ts($post->archive_content_date ?? null),
+                'ok' => true,
+            ],
+            fn ($q) => self::archiveFilter($q),
+        )[0];
+
+        return new Phase('archive-posts', 'posts', $phase->count, fn ($cursor, $limit, Ctx $ctx) => $ctx->sync || ! $ctx->src()->getSchemaBuilder()->hasTable('forums_archive_posts')
+            ? ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []]
+            : ($phase->batch)($cursor, $limit, $ctx));
+    }
+
+    private static function archived(ConnectionInterface $conn): ?Builder
+    {
+        return $conn->getSchemaBuilder()->hasTable('forums_archive_posts') ? self::archiveFilter($conn->table('forums_archive_posts')) : null;
+    }
+
+    private static function archiveFilter(Builder $q): Builder
+    {
+        return $q->where('archive_queued', 0)
+            ->whereNotExists(fn ($e) => $e->from('forums_posts')->whereColumn('forums_posts.topic_id', 'forums_archive_posts.archive_topic_id'));
+    }
+
+    /**
+     * Whether a forum was closed to guests AND members — a staff forum, or a
+     * club's forum (club_id), which only that club's members see. One query.
+     *
+     * core_permission_index.perm_view is '*' (everyone) or a CSV of group ids;
+     * guests and members are the guest_group / member_group settings (2 and 3
+     * out of the box). A forum with no permission row is left open.
+     *
+     * @return \Closure(object):bool
+     */
+    private static function forumRestricted(ConnectionInterface $conn): \Closure
+    {
+        $sb = $conn->getSchemaBuilder();
+        $view = $sb->hasTable('core_permission_index')
+            ? $conn->table('core_permission_index')->where('app', 'forums')->where('perm_type', 'forum')->pluck('perm_view', 'perm_type_id')->all()
+            : [];
+        $set = $sb->hasTable('core_sys_conf_settings')
+            ? $conn->table('core_sys_conf_settings')->whereIn('conf_key', ['guest_group', 'member_group'])->pluck('conf_value', 'conf_key')->all()
+            : [];
+        $open = [(string) (int) ($set['guest_group'] ?? 2) ?: '2', (string) (int) ($set['member_group'] ?? 3) ?: '3'];
+
+        return function ($f) use ($view, $open): bool {
+            if ((int) ($f->club_id ?? 0) > 0) {
+                return true;
+            }
+            $v = trim((string) ($view[$f->id] ?? '*'));
+
+            return $v !== '*' && ! array_intersect($open, array_map('trim', explode(',', $v)));
+        };
     }
 
     private static function forumWords(ConnectionInterface $conn, array $ids): array

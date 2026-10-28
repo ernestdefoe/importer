@@ -167,4 +167,61 @@ class XfIpsDiscourseFixesTest extends TestCase
             'waiting@x.example' => [false, null],
         ], $this->members(), 'The rejected sign-up with no posts is not brought');
     }
+
+    #[Test]
+    public function an_invision_board_keeps_archived_topics_its_tree_staff_forums_and_bans()
+    {
+        $future = time() + 86400 * 30;
+        $this->sql(
+            'CREATE TABLE forums_forums (id INTEGER PRIMARY KEY, parent_id INTEGER, name_seo TEXT, position INTEGER, redirect_on INTEGER, redirect_url TEXT, feature_color TEXT, club_id INTEGER)',
+            'CREATE TABLE core_permission_index (app TEXT, perm_type TEXT, perm_type_id INTEGER, perm_view TEXT)',
+            'CREATE TABLE core_sys_conf_settings (conf_key TEXT, conf_value TEXT)',
+            'CREATE TABLE core_members (member_id INTEGER PRIMARY KEY, name TEXT, email TEXT, joined INTEGER, members_pass_hash TEXT, members_pass_salt TEXT, temp_ban INTEGER)',
+            'CREATE TABLE core_validating (vid TEXT, member_id INTEGER, lost_pass INTEGER, new_reg INTEGER)',
+            'CREATE TABLE forums_topics (tid INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, starter_id INTEGER, start_date INTEGER, pinned INTEGER, state TEXT, moved_to TEXT, approved INTEGER, topic_archive_status INTEGER)',
+            'CREATE TABLE forums_posts (pid INTEGER PRIMARY KEY, topic_id INTEGER, author_id INTEGER, post TEXT, post_date INTEGER, queued INTEGER, pdelete_time INTEGER, edit_time INTEGER)',
+            'CREATE TABLE forums_archive_posts (archive_id INTEGER PRIMARY KEY, archive_topic_id INTEGER, archive_author_id INTEGER, archive_content TEXT, archive_content_date INTEGER, archive_queued INTEGER)',
+            "INSERT INTO forums_forums VALUES (1, -1, 'main', 1, 0, '', '', NULL), (2, 1, 'general', 1, 0, '', '', NULL), (3, 2, 'sub', 1, 0, '', '', NULL),
+                (4, -1, 'staff', 2, 0, '', '', NULL), (5, -1, 'club', 3, 0, '', '', 9), (6, 7, 'early', 1, 0, '', '', NULL), (7, -1, 'late', 4, 0, '', '', NULL)",
+            "INSERT INTO core_permission_index VALUES ('forums', 'forum', 1, '*'), ('forums', 'forum', 2, ',2,3,'), ('forums', 'forum', 3, ',3,'), ('forums', 'forum', 4, ',4,6,'), ('forums', 'forum', 5, '*')",
+            "INSERT INTO core_sys_conf_settings VALUES ('guest_group', '2'), ('member_group', '3')",
+            "INSERT INTO core_members VALUES (5, 'Ada', 'ada@i.example', 1600000000, '', '', 0), (6, 'Banned', 'banned@i.example', 1600000000, '', '', -1),
+                (7, 'Temp', 'temp@i.example', 1600000000, '', '', $future), (8, 'Validating', 'validating@i.example', 1600000000, '', '', 0),
+                (9, 'Reset', 'reset@i.example', 1600000000, '', '', 0)",
+            "INSERT INTO core_validating VALUES ('a', 8, 0, 1), ('b', 9, 1, 0)",
+            "INSERT INTO forums_topics VALUES (10, 2, 'Live', 5, 1600001000, 0, 'open', '', 1, 0), (11, 3, 'Archived &amp; old', 5, 1500000000, 0, 'open', '', 1, 2)",
+            "INSERT INTO forums_posts VALUES (100, 10, 5, '<p>Hello</p>', 1600001000, 0, 0, 0), (101, 10, 6, '<p>Reply</p>', 1600001100, 0, 0, 0)",
+            // Topic 11 lives in the archive; a stray archive row of topic 10 must not renumber it.
+            "INSERT INTO forums_archive_posts VALUES (200, 11, 5, '<p>First archived</p>', 1500000000, 0), (201, 11, 6, '<p>Archived reply</p>', 1500000100, 0),
+                (202, 11, 6, '<p>Hidden</p>', 1500000200, -1), (203, 10, 6, '<p>Stray</p>', 1600001200, 0)",
+        );
+
+        $this->import('invision');
+
+        $this->assertSame([
+            'Club' => [null, true],
+            'Early' => ['Late', false],
+            'General' => ['Main', false],
+            'Late' => [null, false],
+            'Main' => [null, false],
+            'Staff' => [null, true],
+            'Sub' => ['Main', false],
+        ], $this->tags(), 'Root categories are parents; a forum members can see is not restricted');
+
+        $this->assertSame(['Archived & old' => [false, false, 2], 'Live' => [false, false, 2]], $this->discussions());
+        $db = $this->database();
+        $archived = $db->table('discussions')->where('title', 'Archived & old')->first();
+        $this->assertSame([1, 2], $db->table('posts')->where('discussion_id', $archived->id)->orderBy('number')->pluck('number')->map(fn ($n) => (int) $n)->all());
+        $this->assertSame(2, (int) $archived->comment_count, 'The archived discussion is finished like any other');
+        $this->assertNotNull($archived->first_post_id);
+        $this->assertSame(2, $db->table('importer_map')->where('kind', 'post')->whereIn('source_id', ['200', '201'])->count(), 'Its posts are mapped for the redirects');
+
+        $this->assertSame([
+            'ada@i.example' => [true, null],
+            'banned@i.example' => [true, '2038'],
+            'reset@i.example' => [true, null],
+            'temp@i.example' => [true, date('Y', $future)],
+            'validating@i.example' => [false, null],
+        ], $this->members(), 'A password reset in core_validating is not an unconfirmed address');
+    }
 }

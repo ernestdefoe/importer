@@ -100,6 +100,8 @@ ernestdefoe-importer:
       needs_connection: "This import is from before connection settings were kept, so enter the old forum's database details again (the same ones as the import)."
       needs_upload: This import came from an uploaded file. Upload a fresh dump of the old forum to sync from it.
       summary: "Synced {topics} new discussions, {posts} new posts, {users} new members, {edited} edited posts ({kept} edits kept because the post was changed here)."
+    resume:
+      unavailable: Only the last import, after it failed, can be resumed.
     pm:
       summary: "{messages} private messages in {conversations} new conversations."
       groups_skipped: "{count} group conversations skipped: install Group Messages to bring them across, then sync."

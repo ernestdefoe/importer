@@ -22,6 +22,9 @@ class Runner
     /** Rows processed per step(). Small enough to finish well under any max_execution_time. */
     public const BATCH = 200;
 
+    /** Seconds before a stepper's lock counts as abandoned: longer than any step takes. */
+    private const STALE = 600;
+
     public static function start(string $source, array $cfg): array
     {
         $importer = Registry::get($source);
@@ -286,12 +289,14 @@ class Runner
         }
 
         // Serialise steppers — a queue worker and the browser may both be driving
-        // this run. Atomically claim the lock (stale after 30s in case a stepper died).
+        // this run. Atomically claim the lock; the time it was claimed at is the
+        // claim's token, so only its owner releases it or saves the run.
+        $claim = Carbon::now()->format('Y-m-d H:i:s');
         $got = Dst::db()->table('importer_runs')->where('id', $runId)
             ->where(function ($q) {
-                $q->whereNull('locked_at')->orWhere('locked_at', '<', Carbon::now()->subSeconds(30));
+                $q->whereNull('locked_at')->orWhere('locked_at', '<', Carbon::now()->subSeconds(self::STALE));
             })
-            ->update(['locked_at' => Carbon::now()]);
+            ->update(['locked_at' => $claim]);
         if (! $got) {
             return self::progress($runId, json_decode($run->state, true) ?: [], 'running') + ['skipped' => true];
         }
@@ -306,48 +311,104 @@ class Runner
             }
             $cfg = json_decode($run->config ?: '{}', true) ?: [];
             $state = json_decode($run->state, true) ?: [];
-            $importer = Registry::get($run->source);
-            if (! $importer) {
+            if (! Registry::get($run->source)) {
                 return self::finishFailed($runId, $state, Src::t('unknown_source'));
             }
 
-            Dst::reset();
-            Dst::$base = rtrim(trim((string) ($cfg['assets_base'] ?? '')), '/');
-            $ctx = new Ctx((int) ($state['sync']['base'] ?? $runId), $cfg, $state['sync'] ?? null);
-            $phases = Registry::phases($run->source, $cfg, $state);
-            $i = (int) ($state['phaseIndex'] ?? 0);
+            /*
+             * 🚨 One transaction for the batch AND the state that records it.
+             *
+             * A batch writes its rows one by one and records the id map and the
+             * cursor at the end. When PHP died in between (a time limit, memory,
+             * a worker restart), the retry ran the same batch again over rows
+             * that were already there: topics came out twice, and a post's number
+             * was taken, so it and every later post of that discussion were
+             * dropped without a word. Now a step either lands whole or not at all.
+             */
+            $result = Dst::db()->transaction(function () use ($runId, $run, $cfg, $state, $claim) {
+                Dst::reset();
+                Dst::$base = rtrim(trim((string) ($cfg['assets_base'] ?? '')), '/');
+                $ctx = new Ctx((int) ($state['sync']['base'] ?? $runId), $cfg, $state['sync'] ?? null);
+                $phases = Registry::phases($run->source, $cfg, $state);
+                $i = (int) ($state['phaseIndex'] ?? 0);
 
-            if ($i >= count($phases)) {
-                self::save($runId, $state, 'done', null, true);
+                if ($i < count($phases)) {
+                    $phase = $phases[$i];
+                    $res = ($phase->batch)($state['cursor'] ?? null, self::BATCH, $ctx);
+                    Dst::flushMentions();
 
-                return self::progress($runId, $state, 'done');
+                    foreach (($res['summary'] ?? []) as $k => $v) {
+                        $state['summary'][$k] = (int) ($state['summary'][$k] ?? 0) + (int) $v;
+                    }
+                    $state['processed'] = (int) ($state['processed'] ?? 0) + (int) ($res['processed'] ?? 0);
+                    $state['cursor'] = $res['cursor'] ?? null;
+                    $state['phaseLabel'] = $phase->label;
+
+                    if (! empty($res['done'])) {
+                        $state['phaseIndex'] = $i + 1;
+                        $state['cursor'] = $state['sync']['from'][$phases[$i + 1]->key ?? ''] ?? null;
+                    }
+                }
+
+                // A slower stepper whose lock went stale and was taken over writes nothing.
+                if (! Dst::db()->table('importer_runs')->where('id', $runId)->where('locked_at', $claim)->lockForUpdate()->exists()) {
+                    throw new LostLock();
+                }
+                $finished = $state['phaseIndex'] >= count($phases);
+                self::save($runId, $state, $finished ? 'done' : 'running', null, $finished);
+
+                return [$state, $finished];
+            });
+            [$state, $finished] = $result;
+            if ($finished) {
+                Upload::discard($cfg); // the scratch copy of the old board: emails, password hashes
             }
-
-            $phase = $phases[$i];
-            $res = ($phase->batch)($state['cursor'] ?? null, self::BATCH, $ctx);
-            Dst::flushMentions();
-
-            foreach (($res['summary'] ?? []) as $k => $v) {
-                $state['summary'][$k] = (int) ($state['summary'][$k] ?? 0) + (int) $v;
-            }
-            $state['processed'] = (int) ($state['processed'] ?? 0) + (int) ($res['processed'] ?? 0);
-            $state['cursor'] = $res['cursor'] ?? null;
-            $state['phaseLabel'] = $phase->label;
-
-            if (! empty($res['done'])) {
-                $state['phaseIndex'] = $i + 1;
-                $state['cursor'] = $state['sync']['from'][$phases[$i + 1]->key ?? ''] ?? null;
-            }
-
-            $finished = $state['phaseIndex'] >= count($phases);
-            self::save($runId, $state, $finished ? 'done' : 'running', null, $finished);
 
             return self::progress($runId, $state, $finished ? 'done' : 'running');
+        } catch (LostLock) {
+            return self::progress($runId, $state, 'running') + ['skipped' => true];
         } catch (\Throwable $e) {
             return self::finishFailed($runId, $state, $e->getMessage());
         } finally {
-            Dst::db()->table('importer_runs')->where('id', $runId)->update(['locked_at' => null]);
+            Dst::db()->table('importer_runs')->where('id', $runId)->where('locked_at', $claim)->update(['locked_at' => null]);
         }
+    }
+
+    /**
+     * Pick a failed run up where it stopped.
+     *
+     * Its state is what the last step that succeeded saved (a failing step
+     * rolls back whole), so the step that failed simply runs again: after the
+     * source database came back, or the cause was fixed. Only the newest run,
+     * and only when nothing else is running.
+     */
+    public static function resume(int $runId, array $override = []): array
+    {
+        $state = Dst::db()->transaction(function ($db) use ($runId, $override) {
+            $run = $db->table('importer_runs')->where('id', $runId)->first();
+            if (! $run || $run->status !== 'failed' || (int) $db->table('importer_runs')->max('id') !== $runId) {
+                throw new \RuntimeException(Src::t('resume.unavailable'));
+            }
+            if ($busy = $db->table('importer_runs')->where('status', 'running')->value('id')) {
+                throw new \RuntimeException(Src::t('busy', ['id' => $busy]));
+            }
+            $cfg = json_decode((string) $run->config, true) ?: [];
+            if (! empty($cfg['password_wiped'])) {
+                if (empty($override['password'])) {
+                    throw new \RuntimeException(Src::t('sync.needs_password'));
+                }
+                $cfg['password'] = (string) $override['password'];
+                unset($cfg['password_wiped']);
+            }
+            $db->table('importer_runs')->where('id', $runId)->update([
+                'status' => 'running', 'error' => null, 'locked_at' => null, 'config' => json_encode($cfg), 'updated_at' => Carbon::now(),
+            ]);
+
+            return json_decode((string) $run->state, true) ?: [];
+        });
+        self::dispatch($runId);
+
+        return self::progress($runId, $state, 'running');
     }
 
     public static function status(int $runId): array

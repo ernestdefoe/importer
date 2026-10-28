@@ -68,6 +68,7 @@ return [
         ->post('/importer/start', 'importer.start', Controller\StartImportController::class)
         ->post('/importer/step', 'importer.step', Controller\StepController::class)
         ->post('/importer/reset', 'importer.reset', Controller\ResetController::class)
+        ->post('/importer/resume', 'importer.resume', Controller\ResumeController::class)
         ->get('/importer/status', 'importer.status', Controller\StatusController::class)
         ->get('/importer/redirects', 'importer.redirects', Controller\RedirectPreviewController::class)
         ->post('/importer/redirects', 'importer.redirects.save', Controller\RedirectSaveController::class),

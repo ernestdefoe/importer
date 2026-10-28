@@ -43,11 +43,24 @@ class RunImportCommand extends AbstractCommand
             ->addOption('no-private-messages', null, InputOption::VALUE_NONE, 'Leave private messages behind. They come across by default when flarum/messages is enabled (conversations of three or more people need ernestdefoe/group-messages).')
             ->addOption('test', null, InputOption::VALUE_NONE, 'Only test the connection + show counts.')
             ->addOption('sync', null, InputOption::VALUE_NONE, 'Bring across only what the old forum gained since the last import (and edits, where the source records them). Reuses that import\'s connection settings; pass any that changed, and --password if the source has one.')
-            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'With --sync: count what would be imported, then roll it all back.');
+            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'With --sync: count what would be imported, then roll it all back.')
+            ->addOption('resume', null, InputOption::VALUE_NONE, 'Carry on with the last import that failed, from the step that failed (pass --password again if the source database has one).');
     }
 
     protected function fire(): int
     {
+        if ($this->input->getOption('resume')) {
+            try {
+                $run = Runner::latest();
+                $start = Runner::resume((int) ($run['runId'] ?? 0), ['password' => (string) $this->input->getOption('password')]);
+            } catch (\RuntimeException $e) {
+                $this->error($e->getMessage());
+
+                return 1;
+            }
+
+            return $this->drive($start, 'Import complete. ');
+        }
         if ($this->input->getOption('sync')) {
             return $this->sync();
         }

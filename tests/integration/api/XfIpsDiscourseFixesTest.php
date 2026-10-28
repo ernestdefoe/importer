@@ -2,6 +2,7 @@
 
 namespace ErnestDefoe\Importer\Tests\integration\api;
 
+use ErnestDefoe\Importer\Importers\DiscourseImporter;
 use ErnestDefoe\Importer\Importers\Dst;
 use Flarum\Testing\integration\RetrievesAuthorizedUsers;
 use Flarum\Testing\integration\TestCase;
@@ -223,5 +224,66 @@ class XfIpsDiscourseFixesTest extends TestCase
             'temp@i.example' => [true, date('Y', $future)],
             'validating@i.example' => [false, null],
         ], $this->members(), 'A password reset in core_validating is not an unconfirmed address');
+    }
+
+    #[Test]
+    public function a_discourse_site_keeps_its_categories_locks_unlisted_topics_and_members()
+    {
+        $future = date('Y-m-d H:i:s', time() + 86400 * 30);
+        $this->sql(
+            'CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT, slug TEXT, description TEXT, color TEXT, position INTEGER, parent_category_id INTEGER, read_restricted INTEGER, topic_id INTEGER)',
+            'CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, name TEXT, email TEXT, created_at TEXT, staged INTEGER, active INTEGER, suspended_till TEXT, password_hash TEXT, salt TEXT, password_algorithm TEXT)',
+            'CREATE TABLE topics (id INTEGER PRIMARY KEY, title TEXT, user_id INTEGER, category_id INTEGER, created_at TEXT, pinned_at TEXT, deleted_at TEXT, archetype TEXT, closed INTEGER, archived INTEGER, visible INTEGER)',
+            'CREATE TABLE posts (id INTEGER PRIMARY KEY, topic_id INTEGER, user_id INTEGER, cooked TEXT, created_at TEXT, deleted_at TEXT, post_type INTEGER, hidden INTEGER)',
+            "INSERT INTO categories VALUES (1, 'General', 'general', '', '0088CC', 1, NULL, 0, 50), (2, 'Staff', 'staff', '', '', 2, NULL, 1, NULL),
+                (3, 'Child', 'child', '', '', 1, 1, 0, NULL), (4, 'Early', 'early', '', '', 1, 5, 0, NULL), (5, 'Late', 'late', '', '', 3, NULL, 0, NULL)",
+            "INSERT INTO users VALUES (5, 'ada', 'Ada', 'ada@d.example', '2020-01-01', 0, 1, NULL, 'h', 's', 'pbkdf2'),
+                (6, 'staged', 'Staged', 'staged@d.example', '2020-01-01', 1, 0, NULL, 'h', 's', 'pbkdf2'),
+                (7, 'inactive', 'Inactive', 'inactive@d.example', '2020-01-01', 0, 0, NULL, NULL, NULL, NULL),
+                (8, 'suspended', 'Suspended', 'suspended@d.example', '2020-01-01', 0, 1, '$future', NULL, NULL, NULL),
+                (9, 'served', 'Served', 'served@d.example', '2020-01-01', 0, 1, '2021-01-01 00:00:00', NULL, NULL, NULL)",
+            "INSERT INTO topics VALUES (50, 'About the General category', 5, 1, '2020-01-02', NULL, NULL, 'regular', 0, 0, 1),
+                (51, 'Open', 5, 3, '2020-01-03', NULL, NULL, 'regular', 0, 0, 1), (52, 'Closed', 5, 1, '2020-01-04', NULL, NULL, 'regular', 1, 0, 1),
+                (53, 'Archived', 5, 1, '2020-01-05', NULL, NULL, 'regular', 0, 1, 1), (54, 'Unlisted', 5, 1, '2020-01-06', NULL, NULL, 'regular', 0, 0, 0)",
+            "INSERT INTO posts VALUES (500, 50, 5, '<p>About</p>', '2020-01-02', NULL, 1, 0), (510, 51, 5, '<p>Hi</p>', '2020-01-03', NULL, 1, 0),
+                (511, 51, 7, '<p>Flagged</p>', '2020-01-03 01:00', NULL, 1, 1), (512, 51, 8, '<p>Reply</p>', '2020-01-03 02:00', NULL, 1, 0),
+                (520, 52, 5, '<p>c</p>', '2020-01-04', NULL, 1, 0), (530, 53, 5, '<p>a</p>', '2020-01-05', NULL, 1, 0), (540, 54, 5, '<p>u</p>', '2020-01-06', NULL, 1, 0)",
+        );
+
+        $this->import('discourse');
+
+        $this->assertSame(4, DiscourseImporter::test(['driver' => 'sqlite', 'database' => $this->source])['counts']['users'], 'Staged users are not members');
+
+        $this->assertSame([
+            'Child' => ['General', false],
+            'Early' => ['Late', false],
+            'General' => [null, false],
+            'Late' => [null, false],
+            'Staff' => [null, true],
+        ], $this->tags());
+        $db = $this->database();
+        $slugs = $db->table('importer_map')->where('kind', 'tag-slug')->pluck('target_id', 'source_id')->map(fn ($v) => (int) $v)->all();
+        $tag = fn (int $category) => (int) $db->table('importer_map')->where('kind', 'tag')->where('source_id', (string) $category)->value('target_id');
+        $this->assertSame($tag(3), $slugs['general/child'] ?? null, '/c/general/child');
+        $this->assertSame($tag(3), $slugs['child'] ?? null);
+        $this->assertSame($tag(1), $slugs['general'] ?? null);
+
+        $this->assertSame([
+            'Archived' => [true, false, 1],
+            'Closed' => [true, false, 1],
+            'Open' => [false, false, 2],
+            'Unlisted' => [false, true, 1],
+        ], $this->discussions(), 'Not the category\'s "About" topic; not the post hidden by flags');
+
+        $this->assertSame([
+            'ada@d.example' => [true, null],
+            'inactive@d.example' => [false, null],
+            'served@d.example' => [true, null],
+            'staged@d.example' => [false, null],
+            'suspended@d.example' => [true, substr($future, 0, 4)],
+        ], $this->members());
+        $staged = $db->table('users')->where('email', 'staged@d.example')->value('id');
+        $this->assertFalse($db->table('importer_passwords')->where('user_id', $staged)->exists(), 'A staged user never had a password');
+        $this->assertTrue($db->table('importer_passwords')->where('user_id', $db->table('users')->where('email', 'ada@d.example')->value('id'))->exists());
     }
 }

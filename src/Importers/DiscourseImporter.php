@@ -2,6 +2,9 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
+
 /**
  * Discourse (PostgreSQL) → Flarum.
  *   categories → tags · users → users · topics → discussions · posts → posts
@@ -28,10 +31,11 @@ class DiscourseImporter
         }
 
         return ['ok' => true, 'counts' => [
-            'users' => (int) $conn->table('users')->where('id', '>', 0)->count(),
+            // Staged users are addresses that only ever emailed in: not members.
+            'users' => (int) $conn->table('users')->where('id', '>', 0)->when($sb->hasColumn('users', 'staged'), fn ($q) => $q->where('staged', false))->count(),
             'categories' => (int) $conn->table('categories')->count(),
-            'topics' => (int) $conn->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')->count(),
-            'posts' => (int) $conn->table('posts')->whereNull('deleted_at')->where('post_type', 1)->count(),
+            'topics' => (int) self::topics($conn)->count(),
+            'posts' => (int) self::posts($conn->table('posts'))->count(),
         ]];
     }
 
@@ -50,15 +54,52 @@ class DiscourseImporter
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table('categories')->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
-                    $map = [];
+                    /*
+                     * 🚨 Every category, once per batch (a site has dozens). A
+                     * subcategory came across as a top-level tag and a
+                     * staff-only (read_restricted) category open to everyone. A
+                     * subcategory is filed under its root category now — Flarum
+                     * nests one level, so a third level folds into the root.
+                     * The old addresses are /c/slug and /c/parent/child: both
+                     * are mapped for the redirects.
+                     */
+                    $cats = $ctx->src()->table('categories')->get()->keyBy('id');
+                    $chain = function (int $id) use ($cats): array {
+                        $up = [];
+                        for (; ($c = $cats->get($id)) && ! isset($up[$id]); $id = (int) ($c->parent_category_id ?? 0)) {
+                            $up[$id] = $c;
+                        }
+
+                        return array_reverse(array_values($up)); // root first
+                    };
+                    $make = fn ($c, ?int $parent) => Dst::tag($c->name ?: 'Category', Src::tagSlug($c->name ?: 'category', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0), $parent, ! empty($c->read_restricted));
+                    $rows = $cats->filter(fn ($c) => (int) $c->id > (int) $cursor)->sortBy('id')->take($limit)->values();
+                    $parents = [];
+                    foreach ($rows as $c) {
+                        if (($top = $chain((int) $c->id)[0] ?? null) && (int) $top->id !== (int) $c->id) {
+                            $parents[$c->id] = $top;
+                        }
+                    }
+                    $known = $ctx->mapGet('tag', array_map(fn ($t) => $t->id, $parents));
+                    $map = $made = $slugs = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->id;
-                        $map[$c->id] = Dst::tag($c->name ?: 'Category', Src::tagSlug($c->name ?: 'category', (int) $c->id), $c->description ?? null, $c->color ?? null, (int) ($c->position ?? 0));
+                        $parent = null;
+                        if ($top = $parents[$c->id] ?? null) {
+                            // A parent with a higher id than its child is made now; its
+                            // own row later finds it by slug and maps it then.
+                            $parent = $map[$top->id] ?? $known[(string) $top->id] ?? ($made[$top->id] ??= $make($top, null));
+                        }
+                        $map[$c->id] = $make($c, $parent);
+                        if (($slug = (string) ($c->slug ?? '')) !== '') {
+                            $slugs[$slug] = $map[$c->id];
+                            $slugs[implode('/', array_map(fn ($x) => (string) $x->slug, $chain((int) $c->id)))] = $map[$c->id];
+                        }
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
+                    $ctx->mapPut('tag-slug', $slugs);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
                 }
@@ -92,6 +133,15 @@ class DiscourseImporter
                     foreach ($rows as $u) {
                         $cursor = $u->id;
                         $email = trim((string) ($emailByUser[(string) $u->id] ?? ($hasInlineEmail ? ($u->email ?? '') : '')));
+                        /*
+                         * 🚨 Every account arrived confirmed and free to post: a
+                         * staged user (an address that only ever emailed in,
+                         * which never chose a password), one that never
+                         * activated, and a suspended member.
+                         */
+                        $staged = ! empty($u->staged);
+                        $confirmed = ! $staged && (bool) ($u->active ?? true);
+                        $until = ! empty($u->suspended_till) ? Src::ts($u->suspended_till) : null;
                         if ($email === '') {
                             $skip++;
 
@@ -100,8 +150,8 @@ class DiscourseImporter
 
                         try {
                             [$hash, $salt, $algo] = $pw[(string) $u->id] ?? [$u->password_hash ?? null, $u->salt ?? null, $u->password_algorithm ?? null];
-                            $legacy = $hash ? ['scheme' => 'discourse', 'hash' => (string) $hash, 'salt' => (string) $salt.'|'.(string) $algo] : null;
-                            $map[$u->id] = Dst::user(Src::username($u->username ?? ($u->name ?? null), (int) $u->id), $email, null, Src::ts($u->created_at ?? null), null, $legacy, display: $u->username ?? ($u->name ?? null));
+                            $legacy = $hash && ! $staged ? ['scheme' => 'discourse', 'hash' => (string) $hash, 'salt' => (string) $salt.'|'.(string) $algo] : null;
+                            $map[$u->id] = Dst::user(Src::username($u->username ?? ($u->name ?? null), (int) $u->id), $email, null, Src::ts($u->created_at ?? null), null, $legacy, $confirmed, $until, display: $u->username ?? ($u->name ?? null));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -116,10 +166,9 @@ class DiscourseImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')->count(),
+                fn () => (int) self::topics(Src::connect($cfg))->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
-                    $rows = $ctx->src()->table('topics')->whereNull('deleted_at')->where('archetype', 'regular')
-                        ->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
+                    $rows = self::topics($ctx->src())->where('id', '>', (int) $cursor)->orderBy('id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('user_id')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('category_id')->all()) : [];
                     $map = [];
@@ -130,7 +179,9 @@ class DiscourseImporter
                         if (isset($known[(string) $t->id])) {
                             continue;
                         }
-                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->created_at ?? null), ! empty($t->pinned_at));
+                        // Closed or archived: locked. Unlisted (visible false): hidden.
+                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->created_at ?? null), ! empty($t->pinned_at),
+                            ! empty($t->closed) || ! empty($t->archived), isset($t->visible) && ! $t->visible);
                         $map[$t->id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->category_id])) {
                             Dst::attachTag($did, $tagMap[(string) $t->category_id]);
@@ -147,15 +198,41 @@ class DiscourseImporter
                 'posts',
                 'topic_id',
                 'id',
-                fn () => (int) Src::connect($cfg)->table('posts')->whereNull('deleted_at')->where('post_type', 1)->count(),
+                fn () => (int) self::posts(Src::connect($cfg)->table('posts'))->count(),
                 fn ($post) => [
                     'tid' => (int) $post->topic_id, 'pid' => (int) $post->id, 'uid' => $post->user_id,
                     'html' => Src::sanitizeHtml($post->cooked ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
                 ],
-                fn ($q) => $q->whereNull('deleted_at')->where('post_type', 1),
+                fn ($q) => self::posts($q),
             ),
         ], Phases::tail());
     }
+    /**
+     * The topics that are discussions. 🚨 Each category's "About the X
+     * category" topic (categories.topic_id) is the category's description,
+     * not a conversation: it arrived as a discussion in every tag.
+     */
+    private static function topics(ConnectionInterface $conn): Builder
+    {
+        $q = $conn->table('topics')->whereNull('deleted_at')->where('archetype', 'regular');
+
+        return $conn->getSchemaBuilder()->hasColumn('categories', 'topic_id')
+            ? $q->whereNotIn('id', fn ($c) => $c->from('categories')->whereNotNull('topic_id')->select('topic_id'))
+            : $q;
+    }
+
+    /**
+     * The posts that are replies: not deleted, not whispers or small actions,
+     * and 🚨 not hidden by flags (posts.hidden) — those arrived visible to all.
+     * Skipped rather than hidden: the shared posts phase writes visible comments.
+     */
+    private static function posts(Builder $q): Builder
+    {
+        $q->whereNull('deleted_at')->where('post_type', 1);
+
+        return $q->getConnection()->getSchemaBuilder()->hasColumn('posts', 'hidden') ? $q->where('hidden', false) : $q;
+    }
+
     /**
      * Personal messages are topics with `archetype` 'private_message'; who is
      * in one is `topic_allowed_users` (a member who removes themselves is taken

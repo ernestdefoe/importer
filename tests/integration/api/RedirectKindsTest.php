@@ -159,6 +159,9 @@ class RedirectKindsTest extends TestCase
             'Discourse user' => ['discourse', '/u/ada/summary', $U],
 
             'Convoro topic' => ['convoro', '/topic/123-hello', $D],
+            'Convoro member' => ['convoro', '/member/9', $U],
+            'Convoro 1 topic' => ['convoro', '/t/123', $D],
+            'Convoro 1 profile' => ['convoro', '/u/Ada', $U],
             'Convoro forum' => ['convoro', '/forum/lounge', $T],
             'Convoro conversation' => ['convoro', '/messages/12', self::CONV],
 

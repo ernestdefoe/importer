@@ -227,6 +227,10 @@ final class Patterns
 
             'convoro' => [
                 ['kind' => 'topic', 'pattern' => '~topic/(\d+)~i', 'example' => '/topic/123-my-topic'],
+                ['kind' => 'user', 'pattern' => '~member/(\d+)~i', 'example' => '/member/9'],
+                // Convoro 1.
+                ['kind' => 'topic', 'pattern' => '~(?:^|/)t/(\d+)~i', 'example' => '/t/123'],
+                ['kind' => 'user-name', 'pattern' => '~(?:^|/)u/([^/?]+)~i', 'example' => '/u/alice'],
                 ['kind' => 'tag-slug', 'pattern' => '~forum/([^/?]+)~i', 'example' => '/forum/general'],
                 ['kind' => 'pm-conv', 'pattern' => '~(?:messages|conversations?)/(\d+)~i', 'example' => '/messages/12'],
             ],

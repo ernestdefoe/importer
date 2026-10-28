@@ -142,4 +142,36 @@ class PhpbbMybbSmfFixesTest extends TestCase
         $this->assertSame(1, (int) $this->discussion('Fish & chips')->is_locked);
         $this->assertSame([0, 1], [(int) $this->discussion('Pinned')->is_locked, (int) $this->discussion('Pinned')->is_sticky]);
     }
+
+    #[Test]
+    public function a_mybb_board_keeps_its_structure_locks_and_bans()
+    {
+        $pdo = new PDO('sqlite:'.$this->source);
+        $pdo->exec('CREATE TABLE mybb_forums (fid INTEGER PRIMARY KEY, name TEXT, description TEXT, type TEXT, pid INTEGER, parentlist TEXT, disporder INTEGER, linkto TEXT)');
+        $pdo->exec('CREATE TABLE mybb_forumpermissions (pid INTEGER PRIMARY KEY, fid INTEGER, gid INTEGER, canview INTEGER)');
+        $pdo->exec('CREATE TABLE mybb_users (uid INTEGER PRIMARY KEY, username TEXT, email TEXT, password TEXT, salt TEXT, regdate INTEGER, usergroup INTEGER)');
+        $pdo->exec('CREATE TABLE mybb_banned (uid INTEGER, lifted INTEGER)');
+        $pdo->exec('CREATE TABLE mybb_threads (tid INTEGER PRIMARY KEY, fid INTEGER, subject TEXT, uid INTEGER, dateline INTEGER, sticky INTEGER, visible INTEGER, closed TEXT)');
+        $pdo->exec('CREATE TABLE mybb_posts (pid INTEGER PRIMARY KEY, tid INTEGER, uid INTEGER, message TEXT, dateline INTEGER, visible INTEGER)');
+        $pdo->exec("INSERT INTO mybb_forums VALUES (1, 'Main', '', 'c', 0, '1', 1, ''), (2, 'Chat', '', 'f', 1, '1,2', 1, ''), (3, 'Sub', '', 'f', 2, '1,2,3', 1, ''), (4, 'Staff', '', 'f', 1, '1,4', 2, ''), (5, 'Elsewhere', '', 'f', 1, '1,5', 3, 'https://example.com'), (6, 'Empty', '', 'c', 0, '6', 2, ''), (7, 'Staff room', '', 'f', 4, '1,4,7', 1, '')");
+        // Sub is closed to guests only; Staff room has no rows and inherits Staff's.
+        $pdo->exec('INSERT INTO mybb_forumpermissions VALUES (1, 4, 1, 0), (2, 4, 2, 0), (3, 3, 1, 0)');
+        $pdo->exec("INSERT INTO mybb_users VALUES (5, 'Ada', 'ada@board.example', 'x', 's', 1600000000, 2), (6, 'Pending', 'pending@board.example', 'x', 's', 1600000000, 5), (7, 'Banned', 'banned@board.example', 'x', 's', 1600000000, 7), (8, 'Temp', 'temp@board.example', 'x', 's', 1600000000, 7), (9, 'Rowless', 'rowless@board.example', 'x', 's', 1600000000, 7)");
+        $pdo->exec('INSERT INTO mybb_banned VALUES (7, 0), (8, 1956528000)');
+        $pdo->exec("INSERT INTO mybb_threads VALUES (10, 2, 'Closed', 5, 1600001000, 0, 1, '1'), (11, 3, 'Closed', 5, 1600001000, 0, 1, 'moved|10'), (12, 3, 'Pinned', 5, 1600002000, 1, 1, '')");
+        $pdo->exec("INSERT INTO mybb_posts VALUES (100, 10, 5, 'Hello', 1600001000, 1), (101, 12, 5, 'Read me', 1600002000, 1)");
+
+        $run = $this->import('mybb', 'mybb_');
+
+        $this->assertBoard($run, 'Main', 'Chat', 'Sub');
+        $this->assertSame(1, (int) $this->tag('Staff room')->is_restricted, 'Inherited from its parent');
+        $this->assertNull($this->tag('Empty'));
+        $this->assertNull($this->tag('Elsewhere'), 'A link forum');
+        $this->assertMembers();
+        $this->assertSame(2038, (int) substr((string) $this->user('rowless@board.example')->suspended_until, 0, 4), 'In the Banned group with no ban row');
+
+        $this->assertSame(1, $this->database()->table('discussions')->where('title', 'Closed')->count(), 'Not the redirect');
+        $this->assertSame(1, (int) $this->discussion('Closed')->is_locked);
+        $this->assertSame([0, 1], [(int) $this->discussion('Pinned')->is_locked, (int) $this->discussion('Pinned')->is_sticky]);
+    }
 }

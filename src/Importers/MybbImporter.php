@@ -2,6 +2,9 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Support\Carbon;
+
 /**
  * MyBB 1.8.x → Flarum.
  *   mybb_forums (type 'f') → tags · mybb_users → users · mybb_threads → discussions · mybb_posts → posts
@@ -26,6 +29,50 @@ class MybbImporter
         return str_starts_with($hash, '$') ? Src::legacy($hash, str_starts_with($hash, '$2') ? 'native' : null) : ['scheme' => 'mybb', 'hash' => $hash, 'salt' => (string) ($u->salt ?? '')];
     }
 
+    /**
+     * 🚨 Moving a thread with "leave a redirect" keeps a stub behind
+     * (closed = 'moved|<tid>', no posts of its own): each one became an empty
+     * discussion and counted in the progress bar.
+     */
+    private static function threads(ConnectionInterface $conn, string $p): \Illuminate\Database\Query\Builder
+    {
+        return $conn->table($p.'threads')->where('visible', 1)->where('closed', 'not like', 'moved|%');
+    }
+
+    /**
+     * The forums neither guests (gid 1) nor registered members (gid 2) may
+     * view. A forum with no `forumpermissions` row for a group inherits its
+     * parent's, up `pid`, and the group's default (visible) at the top —
+     * exactly how MyBB's own forum_permissions() resolves it. One query.
+     *
+     * @param  \Illuminate\Support\Collection<array-key, \stdClass>  $forums  keyed by fid
+     * @return array<string, true>
+     */
+    private static function restricted(ConnectionInterface $conn, string $p, $forums): array
+    {
+        if (! $conn->getSchemaBuilder()->hasTable($p.'forumpermissions')) {
+            return [];
+        }
+        $can = [];
+        foreach ($conn->table($p.'forumpermissions')->whereIn('gid', [1, 2])->get(['fid', 'gid', 'canview']) as $r) {
+            $can[$r->fid][$r->gid] = (int) $r->canview === 1;
+        }
+        $out = [];
+        foreach ($forums as $fid => $f) {
+            foreach ([1, 2] as $gid) {
+                for ($at = $f, $i = 0; $at && ! isset($can[$at->fid][$gid]) && $i < 50; $i++) {
+                    $at = $forums[(int) ($at->pid ?? 0)] ?? null;
+                }
+                if (! $at || $can[$at->fid][$gid]) {
+                    continue 2;
+                }
+            }
+            $out[(string) $fid] = true;
+        }
+
+        return $out;
+    }
+
     public static function test(array $cfg): array
     {
         $conn = Src::connect($cfg);
@@ -40,7 +87,7 @@ class MybbImporter
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table($p.'users')->count(),
             'categories' => (int) $conn->table($p.'forums')->where('type', 'f')->count(),
-            'topics' => (int) $conn->table($p.'threads')->where('visible', 1)->count(),
+            'topics' => (int) self::threads($conn, $p)->count(),
             'posts' => (int) $conn->table($p.'posts')->where('visible', 1)->count(),
         ]];
     }
@@ -55,20 +102,47 @@ class MybbImporter
             new Phase(
                 'tags',
                 'categories',
-                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->where('type', 'f')->count() : 0,
+                fn () => $hasTags ? (int) Src::connect($cfg)->table($p.'forums')->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p.'forums')->where('type', 'f')->where('fid', '>', (int) $cursor)->orderBy('fid')->limit($limit)->get();
+                    /*
+                     * 🚨 The whole tree, once per batch: sub-forums lost their
+                     * parent and categories (type 'c') were dropped, so the
+                     * board arrived as one flat list. Flarum nests one level, so
+                     * every forum goes under its top-most ancestor — on MyBB
+                     * the category it sits in. A parent may have a higher fid.
+                     */
+                    $conn = $ctx->src();
+                    $forums = $conn->table($p.'forums')->orderBy('fid')->get()->keyBy('fid');
+                    $isLink = fn ($f) => trim((string) ($f->linkto ?? '')) !== '';
+                    $top = [];
+                    foreach ($forums as $fid => $f) {
+                        if (($f->type ?? 'f') === 'f' && ! $isLink($f)) {
+                            for ($t = $f, $i = 0; ($up = $forums[(int) ($t->pid ?? 0)] ?? null) && ! $isLink($up) && $i < 50; $i++) {
+                                $t = $up;
+                            }
+                            $top[$fid] = (int) $t->fid;
+                        }
+                    }
+                    $parents = array_flip($top);
+                    $restricted = self::restricted($conn, $p, $forums);
+                    $made = [];
+                    $tag = function ($f, ?int $parentId) use (&$made, $restricted) {
+                        return $made[$f->fid] ??= Dst::tag($f->name ?: 'Forum', Src::tagSlug($f->name ?: 'forum', (int) $f->fid), $f->description ?? null, null, (int) ($f->disporder ?? 0), $parentId, isset($restricted[(string) $f->fid]));
+                    };
+                    $rows = $forums->filter(fn ($f) => $f->fid > (int) $cursor)->take($limit);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $f) {
                         $cursor = $f->fid;
-                        if (trim((string) ($f->linkto ?? '')) !== '') {
-                            continue; // redirect/link forum — no content
+                        if (! isset($top[$f->fid]) && ! isset($parents[$f->fid])) {
+                            continue; // a link forum, or a category with no forum in it
                         }
-                        $map[$f->fid] = Dst::tag($f->name ?: 'Forum', Src::tagSlug($f->name ?: 'forum', (int) $f->fid), $f->description ?? null, null, (int) ($f->disporder ?? 0));
+                        $up = $top[$f->fid] ?? $f->fid;
+                        // A parent with a higher fid is made now; its own turn finds it by slug.
+                        $map[$f->fid] = $tag($f, $up === $f->fid ? null : $tag($forums[$up], null));
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -82,7 +156,16 @@ class MybbImporter
                 'members',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p.'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
+                    $conn = $ctx->src();
+                    $rows = $conn->table($p.'users')->where('uid', '>', (int) $cursor)->orderBy('uid')->limit($limit)->get();
+                    // 🚨 Banned members arrived free to post. The ban is the
+                    // Banned group (7); `banned.lifted` is when it ends, 0 = never.
+                    $bans = [];
+                    if ($rows->isNotEmpty() && $conn->getSchemaBuilder()->hasTable($p.'banned')) {
+                        foreach ($conn->table($p.'banned')->whereIn('uid', $rows->pluck('uid')->all())->get(['uid', 'lifted']) as $b) {
+                            $bans[$b->uid] = (int) $b->lifted === 0 ? Carbon::create(2038, 1, 1) : Src::ts($b->lifted);
+                        }
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -95,7 +178,11 @@ class MybbImporter
                         }
 
                         try {
-                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null), null, self::legacy($u), display: $u->username ?? null);
+                            $map[$u->uid] = Dst::user(Src::username($u->username ?? null, (int) $u->uid), $email, null, Src::ts($u->regdate ?? null), null, self::legacy($u),
+                                // usergroup 5 = Awaiting Activation · 7 = Banned
+                                confirmed: (int) ($u->usergroup ?? 2) !== 5,
+                                suspendedUntil: $bans[$u->uid] ?? ((int) ($u->usergroup ?? 2) === 7 ? Carbon::create(2038, 1, 1) : null),
+                                display: $u->username ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -110,9 +197,9 @@ class MybbImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table($p.'threads')->where('visible', 1)->count(),
+                fn () => (int) self::threads(Src::connect($cfg), $p)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
-                    $rows = $ctx->src()->table($p.'threads')->where('visible', 1)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
+                    $rows = self::threads($ctx->src(), $p)->where('tid', '>', (int) $cursor)->orderBy('tid')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('uid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('fid')->all()) : [];
                     $map = [];
@@ -123,7 +210,7 @@ class MybbImporter
                         if (isset($known[(string) $t->tid])) {
                             continue;
                         }
-                        $did = Dst::discussion($t->subject ?: 'Untitled', $userMap[(string) $t->uid] ?? null, Src::ts($t->dateline ?? null), (bool) ($t->sticky ?? false));
+                        $did = Dst::discussion($t->subject ?: 'Untitled', $userMap[(string) $t->uid] ?? null, Src::ts($t->dateline ?? null), (bool) ($t->sticky ?? false), (string) ($t->closed ?? '') === '1');
                         $map[$t->tid] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->fid])) {
                             Dst::attachTag($did, $tagMap[(string) $t->fid]);

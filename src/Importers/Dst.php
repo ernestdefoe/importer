@@ -229,7 +229,7 @@ class Dst
             $row['nickname'] = Str::limit($display, 255, '');
         }
         $id = (int) $db->table('users')->insertGetId($row);
-        if ($legacy && ($legacy['hash'] ?? '') !== '' && ($legacy['scheme'] ?? 'unknown') !== 'unknown' && $db->getSchemaBuilder()->hasTable('importer_passwords')) {
+        if ($legacy && ($legacy['hash'] ?? '') !== '' && ($legacy['scheme'] ?? 'unknown') !== 'unknown' && (self::$tables['importer_passwords'] ??= $db->getSchemaBuilder()->hasTable('importer_passwords'))) {
             $db->table('importer_passwords')->insert([
                 'user_id' => $id,
                 'scheme' => $legacy['scheme'],

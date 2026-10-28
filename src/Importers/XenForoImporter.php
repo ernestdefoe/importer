@@ -2,9 +2,14 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
+
 /**
  * XenForo 1.x / 2.x → Flarum.
- *   xf_node (Forum) → tags · xf_user → users · xf_thread → discussions · xf_post → posts
+ *   xf_node (Forum, and a Category that holds one) → tags · xf_user → users · xf_thread → discussions · xf_post → posts
  * Passwords come from xf_user_authenticate (XF2 stores the bcrypt under `hash`);
  * anything non-bcrypt is reset. Post bodies are BBCode.
  */
@@ -57,8 +62,8 @@ class XenForoImporter
 
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table('xf_user')->count(),
-            'categories' => $sb->hasTable('xf_node') ? (int) $conn->table('xf_node')->where('node_type_id', 'Forum')->count() : 0,
-            'topics' => (int) $conn->table('xf_thread')->count(),
+            'categories' => $sb->hasTable('xf_node') ? (int) $conn->table('xf_node')->whereIn('node_type_id', ['Forum', 'Category'])->count() : 0,
+            'topics' => (int) self::threads($conn)->count(),
             'posts' => (int) $conn->table('xf_post')->count(),
         ]];
     }
@@ -72,17 +77,63 @@ class XenForoImporter
             new Phase(
                 'tags',
                 'categories',
-                fn () => ($hasTags && Src::connect($cfg)->getSchemaBuilder()->hasTable('xf_node')) ? (int) Src::connect($cfg)->table('xf_node')->where('node_type_id', 'Forum')->count() : 0,
+                fn () => ($hasTags && Src::connect($cfg)->getSchemaBuilder()->hasTable('xf_node')) ? (int) Src::connect($cfg)->table('xf_node')->whereIn('node_type_id', ['Forum', 'Category'])->count() : 0,
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
-                    if (! $hasTags || ! $ctx->src()->getSchemaBuilder()->hasTable('xf_node')) {
+                    $conn = $ctx->src();
+                    if (! $hasTags || ! $conn->getSchemaBuilder()->hasTable('xf_node')) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table('xf_node')->where('node_type_id', 'Forum')->where('node_id', '>', (int) $cursor)->orderBy('node_id')->limit($limit)->get();
-                    $map = [];
+                    /*
+                     * 🚨 The whole node tree, once per batch (a board has a few
+                     * hundred nodes at most). Sub-forums came across as top-level
+                     * tags and Category nodes not at all, so a board's sections
+                     * were flattened into one long list. A Forum is filed under
+                     * the root-most Category or Forum above it — Flarum nests
+                     * one level, so deeper sub-forums fold into that root — and a
+                     * Category is a tag only when it holds a forum.
+                     */
+                    $nodes = $conn->table('xf_node')->get()->keyBy('node_id');
+                    $root = function (int $id) use ($nodes) {
+                        $top = null;
+                        for ($seen = []; ($n = $nodes->get($id)) && ! isset($seen[$id]); $id = (int) $n->parent_node_id) {
+                            $seen[$id] = true;
+                            $top = in_array($n->node_type_id, ['Forum', 'Category'], true) ? $n : $top;
+                        }
+
+                        return $top;
+                    };
+                    $tops = [];
+                    foreach ($nodes as $n) {
+                        if ($n->node_type_id === 'Forum' && ($t = $root((int) $n->node_id))) {
+                            $tops[$t->node_id] = true;
+                        }
+                    }
+                    $denied = self::nodeDenied($conn, $nodes);
+                    $make = fn ($n, ?int $parent) => Dst::tag($n->title ?: 'Forum', Src::tagSlug($n->title ?: 'forum', (int) $n->node_id), $n->description ?? null, null, (int) ($n->display_order ?? 0), $parent, $denied((int) $n->node_id));
+
+                    $rows = $nodes->filter(fn ($n) => in_array($n->node_type_id, ['Forum', 'Category'], true) && (int) $n->node_id > (int) $cursor)
+                        ->sortBy('node_id')->take($limit)->values();
+                    $parents = [];
+                    foreach ($rows as $c) {
+                        if (($t = $root((int) $c->node_id)) && (int) $t->node_id !== (int) $c->node_id) {
+                            $parents[$c->node_id] = $t;
+                        }
+                    }
+                    $known = $ctx->mapGet('tag', array_map(fn ($t) => $t->node_id, $parents));
+                    $map = $made = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cursor = $c->node_id;
-                        $map[$c->node_id] = Dst::tag($c->title ?: 'Forum', Src::tagSlug($c->title ?: 'forum', (int) $c->node_id), $c->description ?? null, null, (int) ($c->display_order ?? 0));
+                        if ($c->node_type_id === 'Category' && ! isset($tops[$c->node_id])) {
+                            continue; // an empty section, or one nested inside another
+                        }
+                        $parent = null;
+                        if ($t = $parents[$c->node_id] ?? null) {
+                            // A parent with a higher id than its child is made now; its
+                            // own row later finds it by slug and maps it then.
+                            $parent = $map[$t->node_id] ?? $known[(string) $t->node_id] ?? ($made[$t->node_id] ??= $make($t, null));
+                        }
+                        $map[$c->node_id] = $make($c, $parent);
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -107,19 +158,44 @@ class XenForoImporter
                             }
                         }
                     }
+                    /*
+                     * 🚨 Every account arrived confirmed and free to post: one
+                     * still waiting on its confirmation email or on approval, a
+                     * banned member and a registration the staff had rejected.
+                     * Bans live in xf_user_ban (end_date 0 = for good); a
+                     * rejected sign-up with nothing posted is not brought at all.
+                     */
+                    $bans = $posters = [];
+                    $banned = $rows->filter(fn ($u) => ! empty($u->is_banned))->pluck('user_id')->all();
+                    if ($banned && $conn->getSchemaBuilder()->hasTable('xf_user_ban')) {
+                        $bans = $conn->table('xf_user_ban')->whereIn('user_id', $banned)->pluck('end_date', 'user_id')->all();
+                    }
+                    $rejected = $rows->where('user_state', 'rejected')->pluck('user_id')->all();
+                    if ($rejected) {
+                        $posters = array_flip($conn->table('xf_post')->whereIn('user_id', $rejected)->distinct()->pluck('user_id')->all());
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
                         $cursor = $u->user_id;
                         $email = trim((string) ($u->email ?? ''));
-                        if ($email === '') {
+                        $state = (string) ($u->user_state ?? 'valid');
+                        if ($email === '' || ($state === 'rejected' && ! isset($posters[$u->user_id]))) {
                             $skip++;
 
                             continue;
                         }
+                        $until = null;
+                        if ($state === 'rejected') {
+                            $until = Carbon::create(2038, 1, 1);
+                        } elseif (! empty($u->is_banned)) {
+                            $end = (int) ($bans[$u->user_id] ?? 0);
+                            $until = $end > 0 ? Carbon::createFromTimestamp($end) : Carbon::create(2038, 1, 1);
+                        }
+                        $confirmed = ! in_array($state, ['email_confirm', 'email_confirm_edit', 'moderated'], true);
 
                         try {
-                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null), null, $legacy[$u->user_id] ?? null, display: $u->username ?? null);
+                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $pw[$u->user_id] ?? null, Src::ts($u->register_date ?? null), null, $legacy[$u->user_id] ?? null, $confirmed, $until, display: $u->username ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -134,9 +210,9 @@ class XenForoImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table('xf_thread')->count(),
+                fn () => (int) self::threads(Src::connect($cfg))->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($hasTags) {
-                    $rows = $ctx->src()->table('xf_thread')->where('thread_id', '>', (int) $cursor)->orderBy('thread_id')->limit($limit)->get();
+                    $rows = self::threads($ctx->src())->where('thread_id', '>', (int) $cursor)->orderBy('thread_id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('user_id')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('node_id')->all()) : [];
                     $map = [];
@@ -150,7 +226,8 @@ class XenForoImporter
                         if (($t->discussion_state ?? 'visible') !== 'visible') {
                             continue;
                         }
-                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->post_date ?? null), (bool) ($t->sticky ?? false));
+                        // A locked thread (discussion_open 0) arrived open to replies.
+                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->user_id] ?? null, Src::ts($t->post_date ?? null), (bool) ($t->sticky ?? false), (int) ($t->discussion_open ?? 1) === 0);
                         $map[$t->thread_id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->node_id])) {
                             Dst::attachTag($did, $tagMap[(string) $t->node_id]);
@@ -178,6 +255,64 @@ class XenForoImporter
             ),
         ], Phases::tail());
     }
+    /**
+     * The threads that are discussions. 🚨 A thread moved with "leave a
+     * redirect" stays behind as discussion_type 'redirect' with no posts of
+     * its own: it was imported as an empty discussion beside the real one.
+     */
+    private static function threads(ConnectionInterface $conn): Builder
+    {
+        $q = $conn->table('xf_thread');
+
+        return $conn->getSchemaBuilder()->hasColumn('xf_thread', 'discussion_type')
+            ? $q->where(fn ($w) => $w->whereNull('discussion_type')->orWhere('discussion_type', '<>', 'redirect'))
+            : $q;
+    }
+
+    /**
+     * Whether a node was closed to guests (group 1) AND registered members
+     * (group 2) — a staff forum. One query for every node.
+     *
+     * XenForo keeps per-node overrides in xf_permission_entry_content: 'reset'
+     * (revoke what the group had) or 'deny' takes viewing away, 'content_allow'
+     * gives it back. The nearest node up the tree that says anything decides,
+     * except that a 'deny' anywhere on the way wins, as XenForo resolves it.
+     *
+     * @param  Collection<int|string,\stdClass>  $nodes  every xf_node row by id
+     * @return \Closure(int):bool
+     */
+    private static function nodeDenied(ConnectionInterface $conn, Collection $nodes): \Closure
+    {
+        $entries = [];
+        if ($conn->getSchemaBuilder()->hasTable('xf_permission_entry_content')) {
+            $q = $conn->table('xf_permission_entry_content')->where('content_type', 'node')->where('permission_group_id', 'forum')
+                ->whereIn('permission_id', ['view', 'viewContent'])->whereIn('user_group_id', [1, 2]);
+            if ($conn->getSchemaBuilder()->hasColumn('xf_permission_entry_content', 'user_id')) {
+                $q->where('user_id', 0);
+            }
+            foreach ($q->get(['content_id', 'user_group_id', 'permission_value']) as $e) {
+                $entries[(int) $e->content_id][(int) $e->user_group_id][] = (string) $e->permission_value;
+            }
+        }
+        $blocked = function (int $id, int $group) use ($nodes, $entries): bool {
+            $verdict = null;
+            for ($seen = []; ($n = $nodes->get($id)) && ! isset($seen[$id]); $id = (int) $n->parent_node_id) {
+                $seen[$id] = true;
+                $v = $entries[$id][$group] ?? [];
+                if (in_array('deny', $v, true)) {
+                    return true;
+                }
+                if ($v && $verdict === null && (in_array('content_allow', $v, true) || in_array('reset', $v, true))) {
+                    $verdict = ! in_array('content_allow', $v, true);
+                }
+            }
+
+            return (bool) $verdict;
+        };
+
+        return fn (int $id) => $entries && $blocked($id, 1) && $blocked($id, 2);
+    }
+
     /**
      * Conversations: `xf_conversation_master` (title, starter),
      * `xf_conversation_message` and `xf_conversation_recipient` — one row per

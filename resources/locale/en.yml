@@ -91,7 +91,16 @@ ernestdefoe-importer:
       polls: polls
       poll_votes: poll votes
       polls_skipped: polls skipped
-      avatars: avatars
+      groups_created: groups created
+      groups_mapped: groups matched
+      groups_skipped: groups not copied
+      group_members: group memberships
+      avatars: profile photos
+      avatars_missing: profile photos not found
+      birthdays: birthdays
+      birthdays_skipped: birthdays skipped
+      attachments: attachments
+      attachments_missing: attachments not found
       empty_removed: empty discussions left out
       pruned_tags: empty tags removed
   api:

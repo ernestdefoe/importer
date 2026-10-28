@@ -35,12 +35,22 @@ const COUNTS = [
   'polls',
   'poll_votes',
   'polls_skipped',
+  'groups_created',
+  'groups_mapped',
+  'groups_skipped',
+  'group_members',
   'avatars',
+  'avatars_missing',
+  'birthdays',
+  'birthdays_skipped',
+  'attachments',
+  'attachments_missing',
   'empty_removed',
   'pruned_tags',
 ];
-// Flags in the summary rather than counts: explained in the closing line instead.
+// Flags in the summary rather than counts, and the reasons groups were skipped: explained in the closing line instead.
 const HIDDEN = ['pms_unavailable', 'polls_unavailable'];
+const hidden = (k: string): boolean => HIDDEN.includes(k) || k.startsWith('groups_skipped_');
 const enabled = (id: string): boolean => {
   try {
     return JSON.parse(app.data.settings.extensions_enabled || '[]').includes(id);
@@ -427,7 +437,7 @@ export default class ImporterPage extends Component {
         m(
           '.ImporterPage-counts',
           Object.keys(summary)
-            .filter((k) => !HIDDEN.includes(k))
+            .filter((k) => !hidden(k))
             .map((k) => m('span.ImporterPage-count', [m('b', (summary[k] || 0).toLocaleString()), ' ', countLabel(k)]))
         ),
       this.status.lastStatus && m('p.helpText', this.status.lastStatus),

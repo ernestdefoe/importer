@@ -216,6 +216,25 @@ class SourceProfilesTest extends TestCase
         $this->assertNull($this->database()->table('users')->where('id', 5)->value('avatar_url'));
     }
 
+    #[Test]
+    public function a_photo_on_a_dead_host_is_a_member_without_a_photo_not_a_failed_import()
+    {
+        $this->fixturePhpbb();
+        // A port nothing listens on: the connection is refused, as on a long-dead image host.
+        $socket = stream_socket_server('tcp://127.0.0.1:0');
+        $dead = 'http://'.stream_socket_get_name($socket, false);
+        fclose($socket);
+        $this->sql("UPDATE phpbb_users SET user_avatar = '{$dead}/face.png', user_avatar_type = 'avatar.driver.remote' WHERE user_id = 12");
+        $this->extensions = ['ernestdefoe-importer'];
+        $cfg = ['driver' => 'sqlite', 'database' => $this->file, 'prefix' => 'phpbb_', 'files_path' => $this->dir, 'assets_base' => $dead];
+
+        $summary = $this->runPhases('phpbb', $cfg);
+
+        $this->assertSame(1, $summary['avatars'] ?? 0, 'The members after it still get theirs');
+        $this->assertSame(1, $summary['avatars_missing'] ?? 0);
+        $this->assertNull($this->database()->table('users')->where('id', 5)->value('avatar_url'));
+    }
+
     /* ── One fixture per source ─────────────────────────────────────────── */
 
     private function fixturePhpbb(): array

@@ -73,7 +73,7 @@ final class Profiles
             if (! $user) {
                 continue;
             }
-            if (! empty($p['avatar']) && ($user->avatar_url ?? '') === '') {
+            if (! empty($p['avatar']) && ($user->avatar_url ?? '') === '' && ! Dst::$dryRun) { // a dry run downloads nothing
                 $bytes = Files::bytes($p['avatar'], $ctx->cfg, 3_000_000, 15);
                 $add($bytes !== null && Dst::avatarBytes((int) $user->id, $bytes) ? 'avatars' : 'avatars_missing');
             }

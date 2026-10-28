@@ -27,8 +27,15 @@ final class SafeFetch
 
     public static function get(string $url, int $maxBytes, int $timeout, string $trustedHost = ''): ?string
     {
-        $client = new Client();
+        try {
+            return self::fetch(new Client(), $url, $maxBytes, $timeout, $trustedHost);
+        } catch (\Exception) {
+            return null; // refused, unresolvable, timed out or cut off: an old board's dead link
+        }
+    }
 
+    private static function fetch(Client $client, string $url, int $maxBytes, int $timeout, string $trustedHost): ?string
+    {
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
             $target = self::vet($url, $trustedHost);
             if ($target === null) {

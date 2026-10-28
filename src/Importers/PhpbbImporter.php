@@ -2,6 +2,9 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Support\Carbon;
+
 /**
  * phpBB 3.x → Flarum.
  *   phpbb_forums → tags · phpbb_users → users · phpbb_topics → discussions · phpbb_posts → posts.
@@ -11,6 +14,54 @@ class PhpbbImporter
     private static function prefix(array $cfg): string
     {
         return trim((string) ($cfg['prefix'] ?? 'phpbb_')) ?: 'phpbb_';
+    }
+
+    /** phpBB stores subjects and forum names HTML-escaped (request_var runs htmlspecialchars). */
+    private static function decode(string $s): string
+    {
+        return trim(html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * 🚨 A moved topic leaves a SHADOW behind in the old forum (topic_moved_id
+     * pointing at the real one, no posts of its own). Each one became an empty
+     * duplicate discussion, and counted in the progress bar.
+     */
+    private static function topics(ConnectionInterface $conn, string $p): \Illuminate\Database\Query\Builder
+    {
+        $q = $conn->table($p.'topics');
+
+        return $conn->getSchemaBuilder()->hasColumn($p.'topics', 'topic_moved_id') ? $q->where('topic_moved_id', 0) : $q;
+    }
+
+    /**
+     * The forums GUESTS or REGISTERED may read (f_read = yes, set directly or
+     * through a role), or null when the board has no ACL to go by. Everything
+     * else is a staff forum and becomes a restricted tag. Three queries for the
+     * whole board, whatever its size.
+     *
+     * @return array<string, true>|null
+     */
+    private static function readable(ConnectionInterface $conn, string $p): ?array
+    {
+        $sb = $conn->getSchemaBuilder();
+        foreach (['acl_groups', 'acl_options', 'groups'] as $t) {
+            if (! $sb->hasTable($p.$t)) {
+                return null;
+            }
+        }
+        $groups = $conn->table($p.'groups')->whereIn('group_name', ['GUESTS', 'REGISTERED'])->where('group_type', 3)->pluck('group_id')->all();
+        $read = $conn->table($p.'acl_options')->where('auth_option', 'f_read')->value('auth_option_id');
+        if (! $groups || ! $read || ! $conn->table($p.'acl_groups')->where('forum_id', '>', 0)->exists()) {
+            return null;
+        }
+        $roles = $sb->hasTable($p.'acl_roles_data');
+        $ids = $conn->table($p.'acl_groups')->whereIn('group_id', $groups)->where('forum_id', '>', 0)
+            ->where(fn ($q) => $q->where(fn ($q) => $q->where('auth_option_id', $read)->where('auth_setting', 1))
+                ->when($roles, fn ($q) => $q->orWhereIn('auth_role_id', $conn->table($p.'acl_roles_data')->where('auth_option_id', $read)->where('auth_setting', 1)->select('role_id'))))
+            ->distinct()->pluck('forum_id');
+
+        return array_fill_keys($ids->map(fn ($id) => (string) $id)->all(), true);
     }
 
     public static function test(array $cfg): array
@@ -47,17 +98,46 @@ class PhpbbImporter
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
+                    /*
+                     * 🚨 The whole tree, once per batch (a board has dozens of
+                     * forums, not thousands): a sub-forum's parent may have a
+                     * higher id than it, and Flarum nests only one level, so
+                     * every forum goes under its top-most ancestor. A category
+                     * (forum_type 0) holds no topics but is that ancestor for
+                     * the forums inside it, so it becomes their parent tag —
+                     * dropping it lost the board's whole structure.
+                     */
                     $conn = $ctx->src();
-                    $hasType = $conn->getSchemaBuilder()->hasColumn($p.'forums', 'forum_type');
-                    $rows = $conn->table($p.'forums')->where('forum_id', '>', (int) $cursor)->orderBy('forum_id')->limit($limit)->get();
+                    $forums = $conn->table($p.'forums')->orderBy('forum_id')->get()->keyBy('forum_id');
+                    $type = fn ($f) => (int) ($f->forum_type ?? 1); // 0 category · 1 forum · 2 link
+                    $top = [];
+                    foreach ($forums as $id => $f) {
+                        if ($type($f) === 1) {
+                            for ($t = $f, $i = 0; ($up = $forums[(int) ($t->parent_id ?? 0)] ?? null) && $type($up) !== 2 && $i < 50; $i++) {
+                                $t = $up;
+                            }
+                            $top[$id] = (int) $t->forum_id;
+                        }
+                    }
+                    $parents = array_flip($top);
+                    $readable = self::readable($conn, $p);
+                    $made = [];
+                    $tag = function ($f, ?int $parentId) use (&$made, $readable) {
+                        $name = self::decode((string) $f->forum_name) ?: 'Forum';
+
+                        return $made[$f->forum_id] ??= Dst::tag($name, Src::tagSlug($name, (int) $f->forum_id), self::decode((string) ($f->forum_desc ?? '')) ?: null, null, (int) ($f->left_id ?? 0), $parentId, $readable !== null && ! isset($readable[(string) $f->forum_id]));
+                    };
+                    $rows = $forums->filter(fn ($f) => $f->forum_id > (int) $cursor)->take($limit);
                     $map = [];
                     $n = 0;
                     foreach ($rows as $f) {
                         $cursor = $f->forum_id;
-                        if ($hasType && (int) ($f->forum_type ?? 1) !== 1) {
-                            continue;
+                        if (! isset($top[$f->forum_id]) && ! isset($parents[$f->forum_id])) {
+                            continue; // a link, or a category with no forum in it
                         }
-                        $map[$f->forum_id] = Dst::tag($f->forum_name ?: 'Forum', Src::tagSlug($f->forum_name ?: 'forum', (int) $f->forum_id), $f->forum_desc ?? null, null, (int) ($f->left_id ?? 0));
+                        $up = $top[$f->forum_id] ?? $f->forum_id;
+                        // A parent with a higher id is made now; its own turn finds it by slug.
+                        $map[$f->forum_id] = $tag($f, $up === $f->forum_id ? null : $tag($forums[$up], null));
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
@@ -71,12 +151,23 @@ class PhpbbImporter
                 'members',
                 fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $rows = $ctx->src()->table($p.'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
+                    $conn = $ctx->src();
+                    $rows = $conn->table($p.'users')->where('user_id', '>', (int) $cursor)->orderBy('user_id')->limit($limit)->get();
+                    // 🚨 Banned members arrived free to post: the ban lives in
+                    // `banlist` (ban_end 0 = for ever; ban_exclude = a whitelist row).
+                    $bans = [];
+                    if ($rows->isNotEmpty() && $conn->getSchemaBuilder()->hasColumn($p.'banlist', 'ban_userid')) {
+                        foreach ($conn->table($p.'banlist')->whereIn('ban_userid', $rows->pluck('user_id')->all())->where('ban_exclude', 0)->get(['ban_userid', 'ban_end']) as $b) {
+                            $end = (int) $b->ban_end === 0 ? Carbon::create(2038, 1, 1) : Src::ts($b->ban_end);
+                            $bans[$b->ban_userid] = isset($bans[$b->ban_userid]) && $bans[$b->ban_userid]->gt($end) ? $bans[$b->ban_userid] : $end;
+                        }
+                    }
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
                         $cursor = $u->user_id;
                         $email = trim((string) ($u->user_email ?? ''));
+                        // user_type 0 normal · 1 inactive (never activated, or deactivated) · 2 bots + guest · 3 founder
                         if ($email === '' || (int) ($u->user_type ?? 0) === 2) {
                             $skip++;
 
@@ -84,7 +175,7 @@ class PhpbbImporter
                         }
 
                         try {
-                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $u->user_password ?? null, Src::ts($u->user_regdate ?? null), null, Src::legacy($u->user_password ?? null), display: $u->username ?? null);
+                            $map[$u->user_id] = Dst::user(Src::username($u->username ?? null, (int) $u->user_id), $email, $u->user_password ?? null, Src::ts($u->user_regdate ?? null), null, Src::legacy($u->user_password ?? null), confirmed: (int) ($u->user_type ?? 0) !== 1, suspendedUntil: $bans[$u->user_id] ?? null, display: self::decode((string) ($u->username ?? '')) ?: null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -99,11 +190,11 @@ class PhpbbImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table($p.'topics')->count(),
+                fn () => (int) self::topics(Src::connect($cfg), $p)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
                     $conn = $ctx->src();
                     $visCol = $conn->getSchemaBuilder()->hasColumn($p.'topics', 'topic_visibility') ? 'topic_visibility' : null;
-                    $rows = $conn->table($p.'topics')->where('topic_id', '>', (int) $cursor)->orderBy('topic_id')->limit($limit)->get();
+                    $rows = self::topics($conn, $p)->where('topic_id', '>', (int) $cursor)->orderBy('topic_id')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('topic_poster')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forum_id')->all()) : [];
                     $known = $ctx->known('topic', $rows->pluck('topic_id'));
@@ -114,7 +205,8 @@ class PhpbbImporter
                         if (isset($known[(string) $t->topic_id]) || $visCol && (int) ($t->$visCol ?? 1) !== 1) {
                             continue;
                         }
-                        $did = Dst::discussion($t->topic_title ?: 'Untitled', $userMap[(string) $t->topic_poster] ?? null, Src::ts($t->topic_time ?? null), (int) ($t->topic_type ?? 0) >= 1);
+                        // topic_type 1 sticky · 2 announce · 3 global; topic_status 1 = locked
+                        $did = Dst::discussion(self::decode((string) $t->topic_title) ?: 'Untitled', $userMap[(string) $t->topic_poster] ?? null, Src::ts($t->topic_time ?? null), (int) ($t->topic_type ?? 0) >= 1, (int) ($t->topic_status ?? 0) === 1);
                         $map[$t->topic_id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->forum_id])) {
                             Dst::attachTag($did, $tagMap[(string) $t->forum_id]);

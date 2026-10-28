@@ -29,6 +29,8 @@ ernestdefoe-importer:
     failed: Import failed
     shared_note: Runs in small batches straight from your browser — no queue worker or SSH needed, so it works on shared hosting. Keep this tab open; if it's interrupted, reopen this page and it resumes where it left off.
     import_another: Import another
+    resume: Resume
+    resume_help: Fix what stopped it (the old database went away, the server ran out of time), then resume — it carries on from the step that failed, and that step wrote nothing. For a database connection, enter its password again first; it is never kept. Import another starts over.
     sync:
       title: Keep the old forum in sync
       messages_only_intro: "Content from {source} cannot be synced yet, but its private messages can be brought across: messages between members who were imported, added once each, however many times you run it."
@@ -47,9 +49,9 @@ ernestdefoe-importer:
       intro: >
         Your old forum's addresses are in Google, in bookmarks, and in every
         post that ever linked to a discussion. Turn this on and Flarum answers
-        them — each old topic, tag and profile URL sends people to wherever that
-        content ended up, with a permanent redirect so search engines move the
-        ranking across instead of dropping it.
+        them — each old topic, post, forum, profile, private message and poll
+        URL sends people to wherever that content ended up, with a permanent
+        redirect so search engines move the ranking across instead of dropping it.
       loading: Checking what this forum has to redirect…
       no_runs: Nothing to redirect yet. Once an import has finished, this is where you point the old forum's addresses at their new homes.
       run: Use the map from
@@ -83,6 +85,12 @@ ernestdefoe-importer:
       skipped: skipped
       edited: edits copied
       kept: edits kept (changed here)
+      polls: polls
+      poll_votes: poll votes
+      polls_skipped: polls skipped
+      avatars: avatars
+      empty_removed: empty discussions left out
+      pruned_tags: empty tags removed
   api:
     unknown_source: Unknown import source.
     missing_run_id: Missing run id.

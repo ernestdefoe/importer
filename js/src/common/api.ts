@@ -84,6 +84,11 @@ export function importStatus(runId?: number): Promise<ImportStatus> {
   return app.request({ method: 'GET', url: `${base()}/importer/status${q}` });
 }
 
+/** Carry on with a failed import from the step that failed; the source password again when it has one. */
+export function resumeImport(runId: number, password?: string): Promise<ImportStatus> {
+  return app.request({ method: 'POST', url: `${base()}/importer/resume`, body: { runId, password: password || '' } });
+}
+
 export function resetImport(runId?: number): Promise<any> {
   return app.request({ method: 'POST', url: `${base()}/importer/reset`, body: runId ? { runId } : {} });
 }

@@ -2,6 +2,7 @@ import app from 'flarum/admin/app';
 import Component from 'flarum/common/Component';
 import Button from 'flarum/common/components/Button';
 import Switch from 'flarum/common/components/Switch';
+import extractText from 'flarum/common/utils/extractText';
 import {
   testConnection,
   uploadDump,
@@ -10,6 +11,7 @@ import {
   stepImport,
   importStatus,
   resetImport,
+  resumeImport,
   type ImportStatus,
   type TestResult,
   type SourceConfig,
@@ -19,9 +21,26 @@ import {
 declare const m: any;
 const t = (k: string, p?: any): any => app.translator.trans('ernestdefoe-importer.admin.' + k, p);
 // Row-count keys the server sends (test counts + import summary); anything else shows as-is.
-const COUNTS = ['users', 'categories', 'topics', 'posts', 'skipped', 'edited', 'kept', 'messages', 'conversations', 'pm_groups_skipped'];
+const COUNTS = [
+  'users',
+  'categories',
+  'topics',
+  'posts',
+  'skipped',
+  'edited',
+  'kept',
+  'messages',
+  'conversations',
+  'pm_groups_skipped',
+  'polls',
+  'poll_votes',
+  'polls_skipped',
+  'avatars',
+  'empty_removed',
+  'pruned_tags',
+];
 // Flags in the summary rather than counts: explained in the closing line instead.
-const HIDDEN = ['pms_unavailable'];
+const HIDDEN = ['pms_unavailable', 'polls_unavailable'];
 const enabled = (id: string): boolean => {
   try {
     return JSON.parse(app.data.settings.extensions_enabled || '[]').includes(id);
@@ -197,6 +216,25 @@ export default class ImporterPage extends Component {
         break;
       }
     }
+  }
+
+  /** Pick a failed run up at the step that failed (after the cause is fixed). */
+  resume() {
+    if (!this.runId) return;
+    this.starting = true;
+    resumeImport(this.runId, this.config.password)
+      .then((s) => {
+        this.status = s;
+        this.loop();
+      })
+      .catch((e: any) => {
+        const msg = e && e.response && e.response.error ? e.response.error : t('start_failed');
+        this.status = { ...this.status, running: false, failed: true, status: msg };
+      })
+      .finally(() => {
+        this.starting = false;
+        m.redraw();
+      });
   }
 
   /** Back to the wizard. A finished run is kept — its map is what syncs and redirects read; a failed one is cleared. */
@@ -384,8 +422,26 @@ export default class ImporterPage extends Component {
           done &&
             this.syncInfo &&
             m(Button, { className: 'Button Button--primary', icon: 'fas fa-rotate', onclick: () => this.openSync() }, t('sync.open')),
+          failed &&
+            this.runId &&
+            this.mode === 'connect' &&
+            m('input.FormControl.ImporterPage-resumePassword', {
+              type: 'password',
+              autocomplete: 'off',
+              placeholder: extractText(t('password')),
+              value: this.config.password,
+              oninput: (e: any) => (this.config.password = e.target.value),
+            }),
+          failed &&
+            this.runId &&
+            m(
+              Button,
+              { className: 'Button Button--primary', icon: 'fas fa-play', loading: this.starting, onclick: () => this.resume() },
+              t('resume')
+            ),
           m(Button, { className: 'Button', onclick: () => this.reset() }, t('import_another')),
         ]),
+      failed && this.runId && m('p.helpText', t('resume_help')),
     ]);
   }
 }

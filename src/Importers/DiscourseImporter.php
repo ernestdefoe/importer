@@ -208,6 +208,7 @@ class DiscourseImporter
                     $out[] = [
                         'id' => (string) $m->id,
                         'conv' => (string) $m->topic_id,
+                        'thread' => (string) $m->topic_id,
                         'title' => (string) ($m->title ?? ''),
                         'uid' => $m->user_id,
                         'people' => $in,

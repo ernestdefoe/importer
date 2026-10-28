@@ -207,6 +207,7 @@ class VbulletinImporter
                     $out[] = [
                         'id' => (string) $m->pmtextid,
                         'conv' => PrivateMessages::conv('', $people),
+                        'aliases' => array_map(fn ($c) => (string) $c->pmid, $mine), // each member's copy: private.php?pmid=
                         'title' => (string) ($m->title ?? ''),
                         'uid' => $m->fromuserid,
                         'people' => $people,

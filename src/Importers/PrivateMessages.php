@@ -184,11 +184,14 @@ class PrivateMessages
      * the dialogs and one for the read markers. Only a NEW dialog is inserted
      * on its own, because its id is needed straight away.
      *
-     * @param  list<array{id:string,conv:string,title?:?string,uid:mixed,people:array,bcc?:array,keep?:?array,unread?:array,html:string,at:Carbon}>  $messages
+     * @param  list<array{id:string,conv:string,title?:?string,uid:mixed,people:array,bcc?:array,keep?:?array,unread?:array,html:string,at:Carbon,thread?:?string,aliases?:list<string>}>  $messages
      *         `id` unique per message (≤ 60 chars); `conv` the source conversation;
      *         `people` everybody it was visibly addressed to (the author is added);
      *         `bcc` blind copies; `keep` who still has it (null: everyone);
-     *         `unread` who has not read it yet
+     *         `unread` who has not read it yet; `thread` the conversation's id where
+     *         the old board's addresses name one (/conversations/…12/) and `aliases`
+     *         other ids of this same message there (one member's copy of it), so
+     *         old links to either can be redirected
      * @return array<string,int>
      */
     public static function write(array $messages, Ctx $ctx): array
@@ -205,7 +208,7 @@ class PrivateMessages
             $todo[] = ['people' => $people, 'keep' => $keep ?? $people] + $base;
             foreach (array_diff(self::ids($m['bcc'] ?? []), $people) as $b) {
                 $pair = self::ids([$m['uid'], $b]);
-                $todo[] = ['id' => $m['id'].':b'.$b, 'people' => $pair, 'keep' => $keep ?? $pair] + $base;
+                $todo[] = ['id' => $m['id'].':b'.$b, 'people' => $pair, 'keep' => $keep ?? $pair, 'thread' => null, 'aliases' => []] + $base;
             }
         }
 
@@ -368,7 +371,7 @@ class PrivateMessages
         ]);
 
         // Pointers, map entries and who has not read what, in message order.
-        $mapped = $markers = $unread = $first = $last = [];
+        $mapped = $markers = $unread = $first = $last = $threads = $copies = [];
         foreach ($ready as $i => $d) {
             if (! isset($placed[$i], $newIds[$placed[$i]])) {
                 continue;
@@ -379,6 +382,12 @@ class PrivateMessages
             $first[$did] ??= ['id' => $mid, 'at' => $d['at']];
             $last[$did] = ['id' => $mid, 'at' => $d['at'], 'user' => $users[(string) $d['uid']] ?? null];
             $mapped[$d['id']] = $mid;
+            foreach ($d['aliases'] ?? [] as $alias) {
+                $copies[(string) $alias] ??= $mid;
+            }
+            if (($d['thread'] ?? '') !== '') {
+                $threads[(string) $d['thread']] ??= $did;
+            }
             foreach ($member(array_diff(array_intersect($d['unread'], $d['keepers']), [(string) $d['uid']])) as $u) {
                 $k = $did.':'.$u;
                 if (! isset($earlier['pm-unread'][$k]) && ! isset($unread[$k])) {
@@ -390,6 +399,9 @@ class PrivateMessages
         Dst::mentions('dialog_messages', array_combine(array_values($newIds), array_map(fn ($k) => $stored[$k] ?? '', array_keys($newIds))) ?: []);
         $sum['messages'] = count($mapped);
         $ctx->mapPut('pm', $mapped);
+        // A copy's id can be another message's id (separate sequences), so they are kept apart.
+        $ctx->mapPut('pm-copy', $copies);
+        $ctx->mapPut('pm-conv', array_diff_key($threads, $ctx->mapGet('pm-conv', array_keys($threads))));
         $ctx->mapPut('pm-unread', $markers);
         $ctx->mapPut('pm-reorder', array_diff_key($reorder, $earlier['pm-reorder']));
 

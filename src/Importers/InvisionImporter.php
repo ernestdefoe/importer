@@ -189,6 +189,7 @@ class InvisionImporter
                     $out[] = [
                         'id' => (string) $m->msg_id,
                         'conv' => (string) $m->msg_topic_id,
+                        'thread' => (string) $m->msg_topic_id,
                         'title' => (string) ($t->mt_title ?? ''),
                         'uid' => $m->msg_author_id,
                         'people' => array_map(fn ($r) => $r->map_user_id, $rs),

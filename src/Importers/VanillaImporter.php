@@ -231,6 +231,7 @@ class VanillaImporter
                     $out[] = [
                         'id' => (string) $m->MessageID,
                         'conv' => (string) $m->ConversationID,
+                        'thread' => (string) $m->ConversationID,
                         'title' => (string) ($subjects[$m->ConversationID] ?? ''),
                         'uid' => $m->InsertUserID,
                         'people' => array_map(fn ($r) => $r->UserID, $rs),

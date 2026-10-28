@@ -210,6 +210,7 @@ class MybbImporter
                     $out[] = [
                         'id' => $m->fromid.':'.$m->dateline.':'.substr(md5((string) $m->subject), 0, 12),
                         'conv' => PrivateMessages::conv('', $people),
+                        'aliases' => array_map(fn ($c) => (string) $c->pmid, $all), // each member's copy: private.php?pmid=
                         'title' => (string) ($m->subject ?? ''),
                         'uid' => $m->fromid,
                         'people' => array_values($people),

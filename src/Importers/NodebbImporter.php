@@ -325,6 +325,7 @@ class NodebbImporter
                     $out[] = [
                         'id' => (string) $mid,
                         'conv' => $room !== '' ? $room : PrivateMessages::conv('', $people),
+                        'thread' => $room,
                         'title' => $title,
                         'uid' => $m['fromuid'] ?? null,
                         'people' => $people,

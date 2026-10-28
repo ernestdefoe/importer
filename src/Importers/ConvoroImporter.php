@@ -290,6 +290,7 @@ class ConvoroImporter
                     $out[] = [
                         'id' => (string) $m->id,
                         'conv' => (string) $m->conversation_id,
+                        'thread' => (string) $m->conversation_id,
                         'title' => (string) ($titles[$m->conversation_id] ?? ''),
                         'uid' => $m->user_id,
                         'people' => array_map(fn ($r) => $r->user_id, $rs),

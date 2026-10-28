@@ -130,6 +130,34 @@ jobs:
             exit 0
           fi
 
+          # 🚨 A "#12" in release notes is never this forum's discussion 12.
+          #
+          # It is a GitHub issue or pull request (release-drafter appends
+          # "(#12)"), a post in a discuss.flarum.org thread ("Discuss d/40107
+          # #94"), or a post in one of this forum's threads ("d/98 #30"). The
+          # support site runs cross-references, which reads every bare "#12"
+          # as ITS discussion 12: Curio 1.18.1 linked "Marginalia" and left a
+          # backlink there. So each one becomes what it means before the
+          # render, in one pass so a link made here is never rewritten again
+          # (a link's text is not parsed for cross-references). A private
+          # repo's issues are a 404 for readers, so there the number goes.
+          POST_BODY=$(printf '%s\n' "${POST_BODY:-}" | PRIVATE="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private 2>/dev/null || echo true)" perl -pe '
+            BEGIN { $r = $ENV{GITHUB_REPOSITORY}; $p = $ENV{PRIVATE} ne "false"; }
+            if (/^\s*(```|~~~)/) { $f = !$f; next; }
+            next if $f;
+            $_ = join "", map {
+              /^`/ ? $_ : do {
+                s{\bd/(\d+)(?:/| #)(\d+)|(?<![\w/&\[#])#(\d+)\b(?!/p)}{
+                  defined $1
+                    ? ($1 >= 10000 ? "[d/$1 #$2](https://discuss.flarum.org/d/$1/$2)" : "#$1/p$2")
+                    : ($p ? "" : "[#$3](https://github.com/$r/issues/$3)")
+                }ge;
+                s/\s*\(\s*\)//g;
+                $_;
+              }
+            } split /(`[^`\n]*`)/, $_;
+          ')
+
           CONTENT_MD=$(printf '## %s %s\n\n%s\n\n[View release on GitHub](%s)\n\n☕ If you like the things I have built, consider [buying me a coffee](https://buymeacoffee.com/ernestdefoe).\n' \
             "$REPO_NAME" "$RELEASE_TAG" "${POST_BODY:-_No release notes provided._}" "$RELEASE_URL")
 

@@ -44,7 +44,7 @@ $cases = [
     'vbulletin' => [
         ['/threads/123-my-topic', 'topic', '123'],
         ['/showthread.php?t=123', 'topic', '123'],
-        ['/showthread.php?p=99&t=123', 'topic', '123'],
+        ['/showthread.php?p=99&t=123', 'post', '99'], // the post it names, not just its thread
         ['/forums/4-general', 'tag', '4'],
         ['/forumdisplay.php?f=4', 'tag', '4'],
         ['/member.php?u=9', 'user', '9'],
@@ -57,7 +57,7 @@ $cases = [
     ],
     'smf' => [
         ['/index.php?topic=123.0', 'topic', '123'],
-        ['/index.php?topic=123.msg456', 'topic', '123'],
+        ['/index.php?topic=123.msg456', 'post', '456'],
         ['/index.php?board=4.0', 'tag', '4'],
     ],
     'vanilla' => [
@@ -88,8 +88,8 @@ $cases = [
          */
         ['/t/123/456', 'topic', '123'],
         ['/t/my-topic/123/45', 'topic', '123'],
-        ['/c/general', 'tag', 'general'],
-        ['/u/alice', 'user', 'alice'],
+        ['/c/general', 'tag-slug', 'general'],
+        ['/u/alice', 'user-name', 'alice'],
     ],
     'convoro' => [
         ['/topic/123-my-topic', 'topic', '123'],
@@ -97,7 +97,7 @@ $cases = [
     ],
     'webwiz' => [
         ['/forum_posts.asp?TID=123', 'topic', '123'],
-        ['/forum_posts.asp?TID=123&PID=456', 'topic', '123'],
+        ['/forum_posts.asp?TID=123&PID=456', 'post', '456'],
         ['/forum_topics.asp?FID=4', 'tag', '4'],
     ],
 ];

@@ -39,7 +39,7 @@ class VbulletinFixesTest extends TestCase
     {
         // The importer writes one tag and one member per source record by
         // design (Dst::tag and Dst::user reuse what is already there).
-        return ['into "imp_tags"', 'from "imp_tags" where "slug" = ?', 'from "imp_users" where "email" = ?', 'LOWER(username) = ?', 'into "imp_importer_passwords"'];
+        return ['tags" ("name", "slug"', 'tags` (`name`, `slug`', 'tags" where "slug" = ?', 'tags` where `slug` = ?', 'users" where "email" = ?', 'users` where `email` = ?', 'LOWER(username) = ?', 'importer_passwords'];
     }
 
     protected function tearDown(): void

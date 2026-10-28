@@ -33,7 +33,7 @@ class PhpbbMybbSmfFixesTest extends TestCase
     {
         // Dst::user() and Dst::tag() write one row per source record by design
         // (the address, name and slug checks are what keep them unique).
-        return ['LOWER(username)', 'importer_passwords', 'where "email" = ?', 'where `email` = ?', 'where "slug" = ?', 'where `slug` = ?', 'into "imp_tags"', 'into `imp_tags`'];
+        return ['LOWER(username)', 'importer_passwords', 'where "email" = ?', 'where `email` = ?', 'where "slug" = ?', 'where `slug` = ?', 'tags" ("name", "slug"', 'tags` (`name`, `slug`'];
     }
 
     protected function tearDown(): void

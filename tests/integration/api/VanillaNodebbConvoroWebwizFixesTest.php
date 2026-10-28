@@ -183,4 +183,34 @@ class VanillaNodebbConvoroWebwizFixesTest extends TestCase
         $this->assertSame(1, (int) $this->user('ada@c1.example')->is_email_confirmed, 'Convoro 1 never verified anybody: null means nothing there');
         $this->assertSame($this->map('tag')['1'], $this->map('tag-slug')['general'] ?? null);
     }
+
+    /* ── Web Wiz ──────────────────────────────────────────────────────── */
+
+    #[Test]
+    public function web_wiz_keeps_locks_moved_topics_and_hides_what_it_held_even_without_date_columns()
+    {
+        $this->extension('flarum-tags', 'ernestdefoe-importer');
+        // flarum/lock is not installed here: its column is enough for the importer.
+        $this->database()->getSchemaBuilder()->table('discussions', fn ($t) => $t->boolean('is_locked')->default(false));
+        // No Join_date, Start_date or Message_date: an install that names them some other way.
+        $cfg = $this->sqlite([
+            'CREATE TABLE tblForum (Forum_ID INTEGER PRIMARY KEY, Forum_name TEXT)',
+            'CREATE TABLE tblAuthor (Author_ID INTEGER PRIMARY KEY, Username TEXT, Author_email TEXT)',
+            'CREATE TABLE tblTopic (Topic_ID INTEGER PRIMARY KEY, Forum_ID INTEGER, Subject TEXT, Author_ID INTEGER, Locked INTEGER, Priority INTEGER, Moved_ID INTEGER, Hide INTEGER)',
+            'CREATE TABLE tblThread (Thread_ID INTEGER PRIMARY KEY, Topic_ID INTEGER, Author_ID INTEGER, Message TEXT, Hide INTEGER)',
+            "INSERT INTO tblForum VALUES (1, 'General'), (2, 'Old home')",
+            "INSERT INTO tblAuthor VALUES (5, 'Ada', 'ada@ww.example')",
+            "INSERT INTO tblTopic VALUES (10, 1, 'Locked one', 5, 1, 0, 0, 0), (11, 1, 'Moved here', 5, 0, 0, 2, 0), (12, 1, 'Held topic', 5, 0, 0, 0, 1)",
+            "INSERT INTO tblThread VALUES (100, 10, 5, 'Hello', 0), (101, 10, 5, 'Held reply', 1), (110, 11, 5, 'Moved body', 0), (120, 12, 5, 'Held body', 0)",
+        ]);
+
+        $this->import('webwiz', $cfg + ['prefix' => 'tbl']);
+
+        $this->assertNotNull($this->user('ada@ww.example'), 'A member is not dropped for want of a join date');
+        $this->assertSame(['Locked one', 'Moved here'], $this->titles(), 'A moved topic is the topic itself; a held one stays behind');
+        $this->assertSame(['Hello'], $this->texts('Locked one'), 'A held reply stays behind');
+        $this->assertSame(['Moved body'], $this->texts('Moved here'));
+        $locked = $this->database()->table('discussions')->orderBy('id')->pluck('is_locked')->map(fn ($v) => (int) $v)->all();
+        $this->assertSame([1, 0], $locked);
+    }
 }

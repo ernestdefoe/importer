@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
 
 /**
  * Web Wiz Forums (ASP / SQL Server) → Flarum.
@@ -91,7 +92,8 @@ class WebWizImporter
             'topic_date' => self::col($conn, $p.'Topic', ['Start_date', 'Topic_date', 'Date']),
             'topic_locked' => self::col($conn, $p.'Topic', ['Locked', 'Is_locked']),
             'topic_sticky' => self::col($conn, $p.'Topic', ['Priority', 'Sticky', 'Is_sticky']),
-            'topic_moved' => self::col($conn, $p.'Topic', ['Moved_ID']),
+            // Held for a moderator (Web Wiz's approval queue): not on the board.
+            'topic_hide' => self::col($conn, $p.'Topic', ['Hide']),
 
             // tblThread (= a post)
             'thread_id' => self::col($conn, $p.'Thread', ['Thread_ID', 'Message_ID']),
@@ -99,6 +101,7 @@ class WebWizImporter
             'thread_author' => self::col($conn, $p.'Thread', ['Author_ID']),
             'thread_body' => self::col($conn, $p.'Thread', ['Message', 'Thread_message', 'Body', 'Post']),
             'thread_date' => self::col($conn, $p.'Thread', ['Message_date', 'Thread_date', 'Date', 'Post_date']),
+            'thread_hide' => self::col($conn, $p.'Thread', ['Hide']),
         ];
 
         // Without these there is nothing to import; the rest degrade to null.
@@ -111,6 +114,12 @@ class WebWizImporter
         $missing = array_values(array_filter($required, fn ($k) => $cols[$k] === null));
 
         return ['cols' => $cols, 'missing' => $missing];
+    }
+
+    /** Rows the board shows: `Hide` off (or never set, on a version without the queue). */
+    private static function shown(Builder $q, ?string $hide): Builder
+    {
+        return $hide ? $q->where(fn ($w) => $w->where($hide, 0)->orWhereNull($hide)) : $q;
     }
 
     public static function test(array $cfg): array
@@ -209,7 +218,8 @@ class WebWizImporter
                                 Src::username($u->{$c['username']} ?? null, $id),
                                 $email,
                                 null,
-                                $c['joined'] ? Src::ts($u->{$c['joined']} ?? null) : null,
+                                // 🚨 Never null: Dst::user() would throw, and the member was skipped without a word.
+                                Src::ts($c['joined'] ? ($u->{$c['joined']} ?? null) : null),
                                 display: $u->{$c['username']} ?? null
                             );
                             $n++;
@@ -226,9 +236,9 @@ class WebWizImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table($p.'Topic')->count(),
+                fn () => (int) self::shown(Src::connect($cfg)->table($p.'Topic'), $c['topic_hide'])->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $c) {
-                    $rows = $ctx->src()->table($p.'Topic')
+                    $rows = self::shown($ctx->src()->table($p.'Topic'), $c['topic_hide'])
                         ->where($c['topic_id'], '>', (int) $cursor)
                         ->orderBy($c['topic_id'])->limit($limit)->get();
                     $userMap = $c['topic_author'] ? $ctx->mapGet('user', $rows->pluck($c['topic_author'])->all()) : [];
@@ -243,18 +253,19 @@ class WebWizImporter
                             continue;
                         }
 
-                        // A "moved" topic is a pointer left behind when a topic
-                        // was relocated — its content lives under the target id,
-                        // so importing it would duplicate the discussion.
-                        if ($c['topic_moved'] && (int) ($t->{$c['topic_moved']} ?? 0) > 0) {
-                            continue;
-                        }
-
+                        /*
+                         * 🚨 `Moved_ID` is NOT a pointer row. Web Wiz moves a
+                         * topic by changing its `Forum_ID` and keeping the forum
+                         * it came from in `Moved_ID`, so the old forum can list
+                         * it as "moved". Skipping those dropped every topic a
+                         * moderator had ever moved, with all of its posts.
+                         */
                         $did = Dst::discussion(
                             (string) ($t->{$c['topic_subj']} ?? '') ?: 'Untitled',
                             $c['topic_author'] ? ($userMap[(string) $t->{$c['topic_author']}] ?? null) : null,
-                            $c['topic_date'] ? Src::ts($t->{$c['topic_date']} ?? null) : null,
-                            $c['topic_sticky'] ? ((int) ($t->{$c['topic_sticky']} ?? 0) > 0) : false
+                            Src::ts($c['topic_date'] ? ($t->{$c['topic_date']} ?? null) : null),
+                            $c['topic_sticky'] && (int) ($t->{$c['topic_sticky']} ?? 0) > 0,
+                            $c['topic_locked'] && (int) ($t->{$c['topic_locked']} ?? 0) !== 0,
                         );
                         $map[$id] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->{$c['topic_forum']}])) {
@@ -272,15 +283,16 @@ class WebWizImporter
                 $p.'Thread',
                 $c['thread_topic'],
                 $c['thread_id'],
-                fn () => (int) Src::connect($cfg)->table($p.'Thread')->count(),
+                fn () => (int) self::shown(Src::connect($cfg)->table($p.'Thread'), $c['thread_hide'])->count(),
                 fn ($post) => [
                     'tid' => (int) $post->{$c['thread_topic']},
                     'pid' => (int) $post->{$c['thread_id']},
                     'uid' => $c['thread_author'] ? $post->{$c['thread_author']} : null,
                     'html' => self::body((string) ($post->{$c['thread_body']} ?? '')),
-                    'at' => $c['thread_date'] ? Src::ts($post->{$c['thread_date']} ?? null) : null,
+                    'at' => Src::ts($c['thread_date'] ? ($post->{$c['thread_date']} ?? null) : null),
                     'ok' => true,
                 ],
+                fn (Builder $q) => self::shown($q, $c['thread_hide']),
             ),
         ], Phases::tail());
     }

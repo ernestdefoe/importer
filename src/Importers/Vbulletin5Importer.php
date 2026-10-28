@@ -3,6 +3,7 @@
 namespace ErnestDefoe\Importer\Importers;
 
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Support\Carbon;
 
 /**
  * vBulletin 5 / 6 (node architecture) → Flarum.
@@ -10,26 +11,111 @@ use Illuminate\Database\ConnectionInterface;
  * Everything is a `node` typed by contenttype.class:
  *   class 'Channel'                       → a forum (tag)
  *   'Text' whose parent is a Channel      → a thread; its own text.rawtext is post #1
- *   'Text' whose parent is a thread node  → a reply
+ *     (or a Poll, Gallery, Video, Link or Event: kinds of Text)
+ *   'Text' whose `starter` is a thread    → a reply, or a comment on one
  * Bodies live in text.rawtext as BBCode (htmlstate='on' means raw HTML). vB tokens
  * aren't portable, so members reset. Delegated to from VbulletinImporter.
  */
 class Vbulletin5Importer
 {
-    /** @return array{0:int[],1:int[]} [channelTypeIds, textTypeIds] (Text and Poll) */
+    /**
+     * Content types a thread (or a reply) can be: Text and the kinds built on
+     * it, whose body is in `text` as well. A poll thread's starter is a Poll
+     * node; 🚨 Gallery, Video, Link and Event threads were dropped with all
+     * their replies. Photo and Attach nodes have no `text` row and are never
+     * posts of their own.
+     */
+    private const POST_CLASSES = ['Text', 'Poll', 'Gallery', 'Video', 'Link', 'Event'];
+
+    /** @return array{0:int[],1:int[]} [channelTypeIds, postTypeIds] */
     private static function typeIds(ConnectionInterface $conn, string $p): array
     {
         $channel = $text = [];
         foreach ($conn->table($p.'contenttype')->get(['contenttypeid', 'class']) as $ct) {
             if ((string) $ct->class === 'Channel') {
                 $channel[] = (int) $ct->contenttypeid;
-            } elseif (in_array((string) $ct->class, ['Text', 'Poll'], true)) {
-                // A poll thread's starter is a Poll node: Text with a poll on it.
+            } elseif (in_array((string) $ct->class, self::POST_CLASSES, true)) {
                 $text[] = (int) $ct->contenttypeid;
             }
         }
 
         return [$channel, $text];
+    }
+
+    /** vBulletin stores titles and names HTML-escaped ("Q&amp;A"). */
+    public static function plain(?string $s): string
+    {
+        return trim(html_entity_decode((string) $s, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * Bans for a batch of members, from `userban` (vBulletin 3 to 6): userid
+     * => when it lifts (0 = never). One query per batch.
+     *
+     * @return array<string,int>
+     */
+    public static function bans(ConnectionInterface $conn, string $p, array $userIds): array
+    {
+        if (! $userIds || ! $conn->getSchemaBuilder()->hasTable($p.'userban')) {
+            return [];
+        }
+        $out = [];
+        foreach ($conn->table($p.'userban')->whereIn('userid', $userIds)->get(['userid', 'liftdate']) as $b) {
+            $out[(string) $b->userid] = (int) $b->liftdate;
+        }
+
+        return $out;
+    }
+
+    /**
+     * [confirmed, suspendedUntil] for a member. System group ids are the same
+     * on every vBulletin: 3 = awaiting email confirmation, 4 = awaiting
+     * moderation, 8 = banned. 🚨 Banned members and never-activated accounts
+     * used to arrive as ordinary members who could sign straight in.
+     *
+     * @param  array<string,int>  $bans  {@see bans()}
+     * @return array{0:bool,1:?Carbon}
+     */
+    public static function standing(object $u, array $bans): array
+    {
+        $group = (int) ($u->usergroupid ?? 0);
+        $lift = $bans[(string) $u->userid] ?? null;
+        $until = null;
+        if ($lift !== null || $group === 8) {
+            // No end date (0), or a member moved into Banned by hand: permanent.
+            $until = $lift ? Carbon::createFromTimestamp($lift) : Carbon::create(2038, 1, 1);
+        }
+
+        return [! in_array($group, [3, 4], true), $until];
+    }
+
+    /**
+     * Neither guests (usergroup 1) nor registered members (2) could see this
+     * forum: a staff forum. `forumpermissions` bit 1 is canview; a forum with
+     * no row of its own for a group inherits its nearest ancestor's, and one
+     * with none anywhere the group's default.
+     *
+     * @param  int[]  $chain  the forum, then its parent, … up to the root
+     * @param  array<int,array<int,int>>  $perm  forum id => group id => bits
+     * @param  array<int,int|null>  $defaults  group id => its default bits (null: unknown, so visible)
+     */
+    public static function restricted(array $chain, array $perm, array $defaults): bool
+    {
+        foreach ([1, 2] as $group) {
+            $bits = $defaults[$group] ?? null;
+            foreach ($chain as $id) {
+                if (isset($perm[$id][$group])) {
+                    $bits = $perm[$id][$group];
+
+                    break;
+                }
+            }
+            if ($bits === null || ($bits & 1)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -41,7 +127,7 @@ class Vbulletin5Importer
      * vBulletin system group ids are stable across installs: 6 = Administrators,
      * 5 = Super Moderators, 7 = Moderators.
      */
-    private static function coreGroupFor(int $primaryGroupId, string $secondaryGroupIds = ''): int
+    public static function coreGroupFor(int $primaryGroupId, string $secondaryGroupIds = ''): int
     {
         $ids = array_filter(array_map('intval', explode(',', $secondaryGroupIds)));
         $ids[] = $primaryGroupId;
@@ -76,7 +162,7 @@ class Vbulletin5Importer
      * @param  array<int,object{nodeid:int,parentid:int,title:string}>  $nodes  every forum node, order doesn't matter
      * @return array<int,array{parentSrcId:int|null,namePrefix:string}>  keyed by nodeid, root omitted
      */
-    private static function tagPlacement(array $nodes): array
+    public static function tagPlacement(array $nodes): array
     {
         $byId = [];
         foreach ($nodes as $n) {
@@ -261,16 +347,79 @@ class Vbulletin5Importer
         }
         [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
         $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
+        $import = $textTypeIds && $channelIds;
+        // What the import will write, not every Text node: blog entries,
+        // visitor messages and deleted posts are nodes too.
+        $starters = fn () => self::live($conn, $p, $conn->table($p.'node'))->whereIn($p.'node.contenttypeid', $textTypeIds)->whereIn($p.'node.parentid', $channelIds);
+        $posts = 0;
+        if ($import) {
+            $q = self::live($conn, $p, $conn->table($p.'node'))->whereIn($p.'node.contenttypeid', $textTypeIds);
+            $posts = $sb->hasColumn($p.'node', 'starter')
+                ? (int) $q->whereIn($p.'node.starter', $starters()->select($p.'node.nodeid'))->count()
+                : (int) $starters()->count() + (int) $q->whereIn($p.'node.parentid', $starters()->select($p.'node.nodeid'))->count();
+        }
 
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table($p.'user')->count(),
             'categories' => count($channelIds),
-            'topics' => $textTypeIds && $channelIds
-                ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->whereIn('parentid', $channelIds)->count()
-                : 0,
-            'posts' => $textTypeIds ? (int) $conn->table($p.'node')->whereIn('contenttypeid', $textTypeIds)->count() : 0,
+            'topics' => $import ? (int) $starters()->count() : 0,
+            'posts' => $posts,
             'avatars' => $sb->hasTable($p.'customavatar') ? (int) $conn->table($p.'customavatar')->count() : 0,
         ]];
+    }
+
+    /**
+     * Only what the board itself shows: approved, published, not deleted.
+     * 🚨 A soft-deleted thread or reply keeps `approved` = 1 and was imported
+     * as a visible post; vBulletin marks it with `showpublished` = 0 and the
+     * deleting member's `deleteuserid`. Both columns are checked first, as
+     * an older or trimmed schema may lack them.
+     */
+    private static function live(ConnectionInterface $conn, string $p, \Illuminate\Database\Query\Builder $q): \Illuminate\Database\Query\Builder
+    {
+        $sb = $conn->getSchemaBuilder();
+        $q->where($p.'node.approved', 1);
+        if ($sb->hasColumn($p.'node', 'showpublished')) {
+            $q->where($p.'node.showpublished', 1);
+        }
+        if ($sb->hasColumn($p.'node', 'deleteuserid')) {
+            $q->where(fn ($w) => $w->whereNull($p.'node.deleteuserid')->orWhere($p.'node.deleteuserid', '<', 1));
+        }
+
+        return $q;
+    }
+
+    /**
+     * Channels of this batch that guests and members could not view, from
+     * vBulletin 5's `permission` table (nodeid, groupid, forumpermissions; a
+     * channel without rows inherits its parent channel's). Two queries for
+     * the whole batch.
+     *
+     * @param  int[]  $ids
+     * @return array<int,true>
+     */
+    private static function restrictedChannels(ConnectionInterface $conn, string $p, array $channelTypeIds, array $ids): array
+    {
+        if (! $ids || ! $conn->getSchemaBuilder()->hasTable($p.'permission')) {
+            return [];
+        }
+        $perm = [];
+        foreach ($conn->table($p.'permission')->whereIn('groupid', [1, 2])->get(['nodeid', 'groupid', 'forumpermissions']) as $r) {
+            $perm[(int) $r->nodeid][(int) $r->groupid] = (int) $r->forumpermissions;
+        }
+        $parent = $conn->table($p.'node')->whereIn('contenttypeid', $channelTypeIds)->pluck('parentid', 'nodeid')->all();
+        $out = [];
+        foreach ($ids as $id) {
+            $chain = [];
+            for ($cur = (int) $id; $cur > 0 && count($chain) < 50; $cur = (int) ($parent[$cur] ?? 0)) {
+                $chain[] = $cur;
+            }
+            if (self::restricted($chain, $perm, [])) {
+                $out[(int) $id] = true;
+            }
+        }
+
+        return $out;
     }
 
     /** @return Phase[] */
@@ -311,6 +460,11 @@ class Vbulletin5Importer
                     $rowsSorted = $rows->sortBy(fn ($c) => ($placement[$c->nodeid]['parentSrcId'] ?? null) === null ? 0 : 1);
                     $parentSrcIds = $rowsSorted->map(fn ($c) => $placement[$c->nodeid]['parentSrcId'] ?? null)->filter()->unique()->all();
                     $parentTagMap = $ctx->mapGet('tag', $parentSrcIds);
+                    $restricted = self::restrictedChannels($conn, $p, $channelTypeIds, $rows->pluck('nodeid')->all());
+                    // Old /forum/… links name the channel by its route prefix.
+                    $prefixes = $conn->getSchemaBuilder()->hasTable($p.'routenew') && $rows->isNotEmpty()
+                        ? $conn->table($p.'routenew')->where('class', 'vB5_Route_Channel')->whereIn('contentid', $rows->pluck('nodeid')->all())->get(['prefix', 'contentid'])
+                        : collect();
 
                     $map = [];
                     $n = 0;
@@ -319,7 +473,7 @@ class Vbulletin5Importer
                     }
                     foreach ($rowsSorted as $c) {
                         $place = $placement[$c->nodeid] ?? ['parentSrcId' => null, 'namePrefix' => ''];
-                        $name = trim((string) ($c->title ?? '')) ?: ('Channel '.$c->nodeid);
+                        $name = self::plain($c->title ?? '') ?: ('Channel '.$c->nodeid);
                         if ($place['namePrefix'] !== '') {
                             $name .= ' ('.$place['namePrefix'].')';
                         }
@@ -329,7 +483,7 @@ class Vbulletin5Importer
                         // Safety net: a parent tag that can't be resolved (it lands in a
                         // later batch because of an out-of-order nodeid) leaves this one a
                         // top-level tag rather than one pointing at a parent that isn't there.
-                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), $c->description ?? null, null, (int) ($c->displayorder ?? 0), $parentTagId);
+                        $tagId = Dst::tag($name, Src::tagSlug($name, (int) $c->nodeid), isset($c->description) ? self::plain($c->description) : null, null, (int) ($c->displayorder ?? 0), $parentTagId, isset($restricted[$c->nodeid]));
                         $map[$c->nodeid] = $tagId;
                         if ($place['parentSrcId'] === null) {
                             // Make this batch's own primary tags resolvable as a parent
@@ -339,6 +493,14 @@ class Vbulletin5Importer
                         $n++;
                     }
                     $ctx->mapPut('tag', $map);
+                    $slugs = [];
+                    foreach ($prefixes as $r) {
+                        // 🚨 importer_map.source_id is 64 characters: a deeper path would fail the step.
+                        if (isset($map[$r->contentid]) && (string) $r->prefix !== '' && strlen((string) $r->prefix) <= 64) {
+                            $slugs[(string) $r->prefix] = $map[$r->contentid];
+                        }
+                    }
+                    $ctx->mapPut('tag-slug', $slugs);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rowsRaw), 'done' => count($rowsRaw) < $limit, 'summary' => ['categories' => $n]];
                 }
@@ -352,6 +514,7 @@ class Vbulletin5Importer
                     $conn = $ctx->src();
                     $hasDisplayName = $conn->getSchemaBuilder()->hasColumn($p.'user', 'displayname');
                     $rows = $conn->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
+                    $bans = self::bans($conn, $p, $rows->pluck('userid')->all());
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -362,15 +525,15 @@ class Vbulletin5Importer
 
                             continue;
                         }
-                        $name = trim((string) (($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? ''));
+                        $name = self::plain(($hasDisplayName ? ($u->displayname ?? null) : null) ?: $u->username ?? '');
                         $lastSeen = ((int) ($u->lastactivity ?? 0)) > 0 ? Src::ts($u->lastactivity) : (((int) ($u->lastvisit ?? 0)) > 0 ? Src::ts($u->lastvisit) : null);
+                        [$confirmed, $suspended] = self::standing($u, $bans);
                         try {
-                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen, self::legacy($u), display: $name !== '' ? $name : null);
+                            $uid = Dst::user(Src::username($name !== '' ? $name : null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), $lastSeen, self::legacy($u), $confirmed, $suspended, $name !== '' ? $name : null);
                             $map[$u->userid] = $uid;
                             // vBulletin's "Administrators"/"Super Moderators"/"Moderators" system
-                            // groups map onto Flarum's built-in Admin/Mod groups. Everything else
-                            // (custom titles, awaiting-confirmation states, banned, …) has no
-                            // Flarum equivalent and is intentionally left alone.
+                            // groups map onto Flarum's built-in Admin/Mod groups; banned and
+                            // unconfirmed members come across by {@see standing()} above.
                             Dst::assignCoreGroup($uid, self::coreGroupFor((int) ($u->usergroupid ?? 0), (string) ($u->membergroupids ?? '')));
                             $n++;
                         } catch (\Throwable) {
@@ -423,8 +586,8 @@ class Vbulletin5Importer
                 }
             ),
 
-            // Thread starters: Text nodes whose parent is a Channel. The node's own
-            // text row is the discussion's first post (#1).
+            // Thread starters: Text (or Poll, Gallery, …) nodes whose parent is a
+            // Channel. The node's own text row is the discussion's first post (#1).
             new Phase(
                 'topics',
                 'topics',
@@ -444,11 +607,10 @@ class Vbulletin5Importer
                         }
                         $limit = min($limit, $maxTopics - $already);
                     }
-                    $rows = $conn->table($p.'node')
+                    $rows = self::live($conn, $p, $conn->table($p.'node'))
                         ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
                         ->whereIn($p.'node.contenttypeid', $textTypeIds)
                         ->whereIn($p.'node.parentid', $channelIds)
-                        ->where($p.'node.approved', 1)
                         ->where($p.'node.nodeid', '>', (int) $cursor)
                         ->orderBy($p.'node.nodeid')
                         ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
@@ -461,19 +623,22 @@ class Vbulletin5Importer
                         $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
                     }
                     Dst::prepare($ctx, $bodies);
-                    $map = [];
+                    $map = $posts = [];
                     $n = 0;
                     foreach ($rows as $node) {
                         $cursor = $node->nodeid;
-                        $title = trim((string) ($node->title ?? '')) ?: 'Untitled';
+                        $title = self::plain($node->title ?? '') ?: 'Untitled';
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         $uid = $userMap[(string) $node->userid] ?? null;
-                        $did = Dst::discussion($title, $uid, $created, (bool) ($node->sticky ?? false));
+                        // `open` = 0 is a closed thread.
+                        $did = Dst::discussion($title, $uid, $created, (bool) ($node->sticky ?? false), (int) ($node->open ?? 1) === 0);
                         $map[$node->nodeid] = $did;
                         if ($hasTags && isset($tagMap[(string) $node->parentid])) {
                             Dst::attachTag($did, $tagMap[(string) $node->parentid]);
                         }
-                        Dst::post($did, 1, $uid, $bodies[$node->nodeid], $created);
+                        // The starter's own nodeid is what an old /node/123 or ?p= link names.
+                        $posts[$node->nodeid] = Dst::post($did, 1, $uid, $bodies[$node->nodeid], $created);
+                        Dst::ref('post', (string) $node->nodeid, $posts[$node->nodeid]);
                         // Finalize immediately: topics with zero replies are never
                         // visited again by the posts phase, so without this their
                         // first_post_id/last_post_id/comment_count stay NULL/0 and
@@ -482,13 +647,17 @@ class Vbulletin5Importer
                         $n++;
                     }
                     $ctx->mapPut('topic', $map);
+                    $ctx->mapPut('post', $posts);
 
                     return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['topics' => $n, 'posts' => $n]];
                 }
             ),
 
-            // Replies: Text nodes whose parent is a thread starter (not a Channel).
-            // They continue each discussion's numbering after the starter (#1).
+            // Replies, and comments on replies: every post node below a thread
+            // starter. 🚨 A comment's parent is the reply it answers, not the
+            // thread, so they were all dropped; `starter` names the thread for
+            // both. Walked by (thread, node) like Phases::posts, so each
+            // discussion is numbered in one run and finalised once.
             new Phase(
                 'posts',
                 'posts',
@@ -496,55 +665,69 @@ class Vbulletin5Importer
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $conn = $ctx->src();
                     [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
-                    $channelIds = self::channelNodeIds($conn, $p, $channelTypeIds);
                     if (! $textTypeIds) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $cur = is_array($cursor) ? $cursor : ['nid' => 0, 'carry' => null];
+                    // A schema without `starter` (none seen in the wild) still has direct replies by parent.
+                    $hasStarter = $conn->getSchemaBuilder()->hasColumn($p.'node', 'starter');
+                    $tid = $hasStarter ? 'starter' : 'parentid';
+                    $cur = is_array($cursor) && isset($cursor['tid']) ? $cursor : ['tid' => 0, 'nid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
 
-                    $rows = $conn->table($p.'node')
+                    $q = self::live($conn, $p, $conn->table($p.'node'))
                         ->join($p.'text', $p.'text.nodeid', '=', $p.'node.nodeid')
-                        ->whereIn($p.'node.contenttypeid', $textTypeIds)
-                        ->when($channelIds, fn ($q) => $q->whereNotIn($p.'node.parentid', $channelIds))
-                        ->where($p.'node.approved', 1)
-                        ->where($p.'node.nodeid', '>', (int) $cur['nid'])
-                        ->orderBy($p.'node.nodeid')
+                        ->whereIn($p.'node.contenttypeid', $textTypeIds);
+                    if ($hasStarter) {
+                        $q->where($p.'node.starter', '>', 0)->whereColumn($p.'node.nodeid', '!=', $p.'node.starter');
+                    } elseif ($channelIds = self::channelNodeIds($conn, $p, $channelTypeIds)) {
+                        $q->whereNotIn($p.'node.parentid', $channelIds);
+                    }
+                    $rows = $q->where(fn ($w) => $w->where($p.'node.'.$tid, '>', (int) $cur['tid'])
+                        ->orWhere(fn ($w2) => $w2->where($p.'node.'.$tid, (int) $cur['tid'])->where($p.'node.nodeid', '>', (int) $cur['nid'])))
+                        ->orderBy($p.'node.'.$tid)->orderBy($p.'node.nodeid')
                         ->select($p.'node.*', $p.'text.rawtext', $p.'text.htmlstate')
                         ->limit($limit)->get();
 
-                    $topicMap = $ctx->mapGet('topic', $rows->pluck('parentid')->all());
+                    $topicMap = $ctx->mapGet('topic', $rows->pluck($tid)->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $attachmentResolver = self::attachmentResolver($conn, $p);
                     $bodies = [];
                     foreach ($rows as $node) {
-                        if (isset($topicMap[(string) $node->parentid])) {
+                        if (isset($topicMap[(string) $node->$tid])) {
                             $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
                         }
                     }
                     Dst::prepare($ctx, $bodies);
-                    $db = Dst::db();
+                    // Where each discussion's numbering stands, in one query for the
+                    // batch (the starter is #1).
+                    $fresh = array_values(array_diff(array_unique(array_values($topicMap)), [(int) ($carry['did'] ?? 0)]));
+                    $top = $fresh ? Dst::db()->table('posts')->whereIn('discussion_id', $fresh)->groupBy('discussion_id')
+                        ->selectRaw('discussion_id, MAX(number) AS n')->pluck('n', 'discussion_id')->all() : [];
                     $n = 0;
+                    $posts = [];
                     foreach ($rows as $node) {
+                        $cur['tid'] = (int) $node->$tid;
                         $cur['nid'] = (int) $node->nodeid;
-                        $did = $topicMap[(string) $node->parentid] ?? null;
+                        $did = $topicMap[(string) $node->$tid] ?? null;
                         if (! $did) {
-                            continue; // reply to something we didn't import as a thread
+                            continue; // in a thread we didn't import
                         }
                         if (! $carry || (int) $carry['did'] !== (int) $did) {
                             if ($carry && ! empty($carry['did'])) {
                                 Dst::finalizeDiscussion((int) $carry['did']);
                             }
-                            $carry = ['did' => (int) $did, 'num' => (int) ($db->table('posts')->where('discussion_id', $did)->max('number') ?? 0)];
+                            $carry = ['did' => (int) $did, 'num' => (int) ($top[$did] ?? 0)];
                         }
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         try {
-                            Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, $bodies[$node->nodeid], $created);
+                            $posts[$node->nodeid] = Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, $bodies[$node->nodeid], $created);
+                            Dst::ref('post', (string) $node->nodeid, $posts[$node->nodeid]);
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;
                         }
                     }
+                    $ctx->mapPut('post', $posts);
 
                     $done = count($rows) < $limit;
                     if ($done && $carry && ! empty($carry['did'])) {

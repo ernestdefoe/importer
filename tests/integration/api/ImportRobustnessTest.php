@@ -67,16 +67,22 @@ class ImportRobustnessTest extends TestCase
     public function a_step_that_fails_half_way_writes_nothing_and_the_run_resumes()
     {
         $this->extension('flarum-tags', 'ernestdefoe-importer');
+        $this->app();
+        if (in_array($this->database()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            // The failure is made by renaming a table, and MySQL commits a schema
+            // change — the test's own transaction with it. SQLite and PostgreSQL roll it back.
+            $this->markTestSkipped('Needs transactional DDL.');
+        }
         $this->phpbb();
         $run = $this->post('start', ['source' => 'phpbb', 'config' => ['driver' => 'sqlite', 'database' => $this->source, 'prefix' => 'phpbb_']]);
         $db = $this->database();
-        $schema = $db->getSchemaBuilder();
 
         // Through tags and members, to the topics phase.
         while ($run['running'] && $db->table('importer_map')->where('kind', 'user')->count() < 3) {
             $run = $this->post('step', ['runId' => $run['runId']]);
         }
         // The topics step writes a discussion, then cannot tag it.
+        $schema = $db->getSchemaBuilder();
         $schema->rename('discussion_tag', 'discussion_tag_away');
         $run = $this->drive($run);
         $this->assertTrue($run['failed'], json_encode($run));

@@ -5,7 +5,6 @@ namespace ErnestDefoe\Importer\Tests\integration\api;
 use ErnestDefoe\Importer\Importers\Dst;
 use Flarum\Testing\integration\RetrievesAuthorizedUsers;
 use Flarum\Testing\integration\TestCase;
-use Illuminate\Database\Schema\Blueprint;
 use PDO;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -24,7 +23,7 @@ class PhpbbMybbSmfFixesTest extends TestCase
     {
         parent::setUp();
 
-        $this->extension('flarum-tags', 'flarum-suspend', 'flarum-nicknames', 'ernestdefoe-importer');
+        $this->extension('flarum-tags', 'flarum-lock', 'flarum-sticky', 'flarum-suspend', 'flarum-nicknames', 'ernestdefoe-importer');
         $this->prepareDatabase(['users' => [$this->normalUser()]]);
         $this->source = tempnam(sys_get_temp_dir(), 'board').'.sqlite';
     }
@@ -45,13 +44,6 @@ class PhpbbMybbSmfFixesTest extends TestCase
 
     private function import(string $source, string $prefix): array
     {
-        // flarum/lock + flarum/sticky are not installed here: their columns are enough.
-        $this->database()->getSchemaBuilder()->table('discussions', function (Blueprint $t) {
-            $t->boolean('is_locked')->default(false);
-            $t->boolean('is_sticky')->default(false);
-        });
-        // Dst caches which columns exist for the whole process.
-        (new \ReflectionClass(Dst::class))->setStaticPropertyValue('tables', []);
 
         $post = fn (string $path, array $json) => json_decode((string) $this->send($this->request('POST', "/api/importer/$path", ['authenticatedAs' => 1, 'json' => $json]))->getBody(), true);
         $run = $post('start', ['source' => $source, 'config' => ['driver' => 'sqlite', 'database' => $this->source, 'prefix' => $prefix]]);

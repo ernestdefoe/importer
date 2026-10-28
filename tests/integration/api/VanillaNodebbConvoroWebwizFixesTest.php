@@ -189,9 +189,7 @@ class VanillaNodebbConvoroWebwizFixesTest extends TestCase
     #[Test]
     public function web_wiz_keeps_locks_moved_topics_and_hides_what_it_held_even_without_date_columns()
     {
-        $this->extension('flarum-tags', 'ernestdefoe-importer');
-        // flarum/lock is not installed here: its column is enough for the importer.
-        $this->database()->getSchemaBuilder()->table('discussions', fn ($t) => $t->boolean('is_locked')->default(false));
+        $this->extension('flarum-tags', 'flarum-lock', 'ernestdefoe-importer');
         // No Join_date, Start_date or Message_date: an install that names them some other way.
         $cfg = $this->sqlite([
             'CREATE TABLE tblForum (Forum_ID INTEGER PRIMARY KEY, Forum_name TEXT)',

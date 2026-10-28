@@ -25,7 +25,7 @@ class XfIpsDiscourseFixesTest extends TestCase
     {
         parent::setUp();
 
-        $this->extension('flarum-tags', 'flarum-suspend', 'ernestdefoe-importer');
+        $this->extension('flarum-tags', 'flarum-lock', 'flarum-suspend', 'ernestdefoe-importer');
         $this->prepareDatabase(['users' => [$this->normalUser()]]);
         $this->source = tempnam(sys_get_temp_dir(), 'xid').'.sqlite';
         $this->pdo = new PDO('sqlite:'.$this->source);
@@ -43,7 +43,10 @@ class XfIpsDiscourseFixesTest extends TestCase
         // Dst writes one tag / member / discussion / post per source record by
         // design (Dst::tag's slug check, Dst::user's address and name checks,
         // then the insert) — not what this test is about.
-        return ['tags" where "slug" = ?', 'tags" ("name", "slug"', 'users" where "email" = ?', 'LOWER(username) = ?', 'users" ("username"', 'discussions" ("title"', 'posts" ("discussion_id", "number"'];
+        $shapes = ['tags" where "slug" = ?', 'tags" ("name", "slug"', 'users" where "email" = ?', 'users" ("username"', 'discussions" ("title"', 'posts" ("discussion_id", "number"'];
+
+        // Quoted as each database quotes them (MySQL with backticks).
+        return [...$shapes, ...str_replace('"', '`', $shapes), 'LOWER(username) = ?'];
     }
 
     private function sql(string ...$statements): void
@@ -55,13 +58,6 @@ class XfIpsDiscourseFixesTest extends TestCase
 
     private function import(string $source, string $prefix = ''): array
     {
-        // flarum/lock is not installed here: give the discussions its column.
-        $this->app();
-        $schema = $this->database()->getSchemaBuilder();
-        if (! $schema->hasColumn('discussions', 'is_locked')) {
-            $schema->table('discussions', fn ($t) => $t->boolean('is_locked')->default(0));
-        }
-        (new \ReflectionProperty(Dst::class, 'tables'))->setValue(null, []);
 
         $post = function (string $path, array $json) {
             $response = $this->send($this->request('POST', '/api/importer/'.$path, ['authenticatedAs' => 1, 'json' => $json]));

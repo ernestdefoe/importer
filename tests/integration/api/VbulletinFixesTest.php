@@ -29,7 +29,7 @@ class VbulletinFixesTest extends TestCase
     {
         parent::setUp();
 
-        $this->extension('flarum-tags', 'flarum-suspend', 'flarum-nicknames', 'ernestdefoe-importer');
+        $this->extension('flarum-tags', 'flarum-lock', 'flarum-suspend', 'flarum-nicknames', 'ernestdefoe-importer');
         $this->prepareDatabase(['users' => [$this->normalUser()]]);
         $this->source = tempnam(sys_get_temp_dir(), 'vbfix').'.sqlite';
         $this->lift = Carbon::now()->addDays(30)->startOfSecond()->getTimestamp();
@@ -51,9 +51,6 @@ class VbulletinFixesTest extends TestCase
 
     private function import(string $source): void
     {
-        // flarum/lock is not installed here: give discussions its column.
-        $this->database()->getSchemaBuilder()->table('discussions', fn ($t) => $t->boolean('is_locked')->default(false));
-        (new \ReflectionProperty(Dst::class, 'tables'))->setValue(null, []);
 
         $response = $this->send($this->request('POST', '/api/importer/start', [
             'authenticatedAs' => 1,

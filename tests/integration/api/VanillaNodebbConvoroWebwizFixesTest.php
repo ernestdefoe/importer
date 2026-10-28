@@ -263,4 +263,86 @@ class VanillaNodebbConvoroWebwizFixesTest extends TestCase
         $this->assertSame('2038', substr((string) $gone->suspended_until, 0, 4), 'and cannot sign in');
         $this->assertNull($this->user('spam@va.example'), 'A deleted member with no posts stays behind');
     }
+
+    /* ── NodeBB ───────────────────────────────────────────────────────── */
+
+    private function redis(): \Redis
+    {
+        if (! class_exists(\Redis::class)) {
+            $this->markTestSkipped('No phpredis.');
+        }
+        $r = new \Redis;
+        try {
+            $usable = @$r->connect('127.0.0.1', 6379, 1.0) && $r->select(self::REDIS_DB) && $r->dbSize() === 0;
+        } catch (\Throwable) {
+            $usable = false;
+        }
+        if (! $usable) {
+            $this->markTestSkipped('No empty Redis database '.self::REDIS_DB.' on 127.0.0.1:6379.');
+        }
+
+        return $this->redis = $r;
+    }
+
+    #[Test]
+    public function nodebb_skips_disabled_scheduled_and_deleted_topics_keeps_unconfirmed_and_banned_members_and_maps_posts()
+    {
+        $this->extension('flarum-tags', 'flarum-suspend', 'flarum-markdown', 'ernestdefoe-importer');
+        $r = $this->redis();
+        $ms = fn (int $t) => (string) ($t * 1000);
+        $past = 1600000000;
+        $future = time() + 86400 * 30;
+
+        $r->hSet('global', 'nextMid', '0');
+        foreach ([1 => ['name' => 'General'], 2 => ['name' => 'Disabled', 'disabled' => '1']] as $cid => $c) {
+            $r->zAdd('categories:cid', $cid, (string) $cid);
+            $r->hMSet("category:{$cid}", ['cid' => (string) $cid] + $c);
+        }
+        foreach ([
+            5 => ['username' => 'Ada', 'email' => 'ada@nb.example', 'email:confirmed' => '1'],
+            6 => ['username' => 'Bob', 'email' => 'bob@nb.example', 'banned' => '1', 'banned:expire' => '0'],
+            7 => ['username' => 'Cy', 'email' => 'cy@nb.example', 'banned' => '1', 'banned:expire' => $ms($future)],
+            8 => ['username' => 'Dee', 'email' => 'dee@nb.example', 'email:confirmed' => '0'],
+            9 => ['username' => 'Eve'], // NodeBB 1.19+: no confirmed address, none on the hash
+        ] as $uid => $u) {
+            $r->zAdd('users:joindate', $past + $uid, (string) $uid);
+            $r->hMSet("user:{$uid}", ['uid' => (string) $uid, 'joindate' => $ms($past + $uid)] + $u);
+        }
+        foreach ([
+            10 => ['cid' => 1, 'title' => 'Live', 'mainPid' => 100, 'timestamp' => $past + 100],
+            11 => ['cid' => 2, 'title' => 'In a disabled category', 'mainPid' => 110, 'timestamp' => $past + 110],
+            12 => ['cid' => 1, 'title' => 'Scheduled', 'mainPid' => 120, 'timestamp' => $future],
+            13 => ['cid' => 1, 'title' => 'Deleted', 'mainPid' => 130, 'timestamp' => $past + 130, 'deleted' => '1'],
+        ] as $tid => $t) {
+            $r->zAdd('topics:tid', $t['timestamp'], (string) $tid);
+            $r->hMSet("topic:{$tid}", ['tid' => (string) $tid, 'uid' => '5', 'cid' => (string) $t['cid'], 'title' => $t['title'], 'mainPid' => (string) $t['mainPid'], 'timestamp' => $ms($t['timestamp']), 'deleted' => $t['deleted'] ?? '0']);
+        }
+        foreach ([
+            100 => [10, 5, 'Hello'], 101 => [10, 9, 'From Eve'], 102 => [10, 6, 'Deleted reply', '1'],
+            110 => [11, 5, 'Hidden'], 120 => [12, 5, 'Later'], 130 => [13, 5, 'Gone'],
+        ] as $pid => [$tid, $uid, $text]) {
+            $r->zAdd('posts:pid', $past + $pid, (string) $pid);
+            $r->hMSet("post:{$pid}", ['pid' => (string) $pid, 'tid' => (string) $tid, 'uid' => (string) $uid, 'content' => $text, 'timestamp' => $ms($past + $pid), 'deleted' => $text === 'Deleted reply' ? '1' : '0']);
+        }
+
+        $this->import('nodebb', ['host' => '127.0.0.1', 'port' => '6379', 'database' => (string) self::REDIS_DB]);
+        $db = $this->database();
+
+        $this->assertSame(['Live'], $this->titles(), 'Disabled category, scheduled and deleted topics stay behind');
+        $this->assertSame(['Hello', 'From Eve'], $this->texts('Live'), 'A deleted reply stays behind');
+
+        $eve = $this->user('nodebb-9@users.invalid');
+        $this->assertNotNull($eve, 'A member with no confirmed address is kept');
+        $this->assertSame(0, (int) $eve->is_email_confirmed);
+        $this->assertSame((int) $eve->id, (int) $db->table('posts')->where('number', 2)->value('user_id'), 'Their post keeps its author');
+        $this->assertSame(0, (int) $this->user('dee@nb.example')->is_email_confirmed);
+        $this->assertSame(1, (int) $this->user('ada@nb.example')->is_email_confirmed);
+        $this->assertNull($this->user('ada@nb.example')->suspended_until);
+        $this->assertSame('2038', substr((string) $this->user('bob@nb.example')->suspended_until, 0, 4), 'A ban with no end');
+        $this->assertSame(date('Y-m-d', $future), substr((string) $this->user('cy@nb.example')->suspended_until, 0, 10), 'A ban until its expiry');
+
+        $posts = $db->table('posts')->orderBy('number')->pluck('id')->map(fn ($v) => (int) $v)->all();
+        $map = $this->map('post');
+        $this->assertSame($posts, [$map['100'] ?? null, $map['101'] ?? null], 'The main post and the reply are mapped for /post/{pid}');
+    }
 }

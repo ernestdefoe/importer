@@ -47,6 +47,42 @@ class NodebbImporter
         return is_array($h) ? $h : [];
     }
 
+    /**
+     * Many hashes in ONE round trip: a pipeline, where a call per key costs a
+     * network round trip per topic, post or member.
+     *
+     * @param  string[]  $keys
+     * @return array<int|string, array<string, string>>  same keys as $keys, [] for a missing hash
+     */
+    private static function hashes(\Redis $r, array $keys): array
+    {
+        if (! $keys) {
+            return [];
+        }
+        $pipe = $r->multi(\Redis::PIPELINE);
+        foreach ($keys as $key) {
+            $pipe->hGetAll($key);
+        }
+        $res = array_values($r->exec() ?: []);
+        $out = [];
+        foreach (array_keys($keys) as $i => $k) {
+            $out[$k] = is_array($res[$i] ?? null) ? $res[$i] : [];
+        }
+
+        return $out;
+    }
+
+    /** "{prefix}{id}" for each id, keyed by the id. */
+    private static function keys(string $prefix, array $ids): array
+    {
+        $out = [];
+        foreach ($ids as $id) {
+            $out[(string) $id] = $prefix.$id;
+        }
+
+        return $out;
+    }
+
     /** NodeBB timestamps are epoch milliseconds. */
     private static function ts(mixed $ms): Carbon
     {
@@ -85,10 +121,11 @@ class NodebbImporter
                     $r = self::redis($cfg);
                     $off = (int) $cursor;
                     $cids = $r->zRange('categories:cid', $off, $off + $limit - 1);
+                    $cats = self::hashes($r, self::keys('category:', $cids));
                     $map = [];
                     $n = 0;
                     foreach ($cids as $cid) {
-                        $c = self::hash($r, "category:{$cid}");
+                        $c = $cats[(string) $cid];
                         if (! $c || ($c['disabled'] ?? '0') === '1') {
                             continue;
                         }
@@ -110,22 +147,34 @@ class NodebbImporter
                     $r = self::redis($cfg);
                     $off = (int) $cursor;
                     $uids = $r->zRange('users:joindate', $off, $off + $limit - 1);
+                    $users = self::hashes($r, self::keys('user:', $uids));
                     $map = [];
                     $n = $skip = 0;
                     foreach ($uids as $uid) {
-                        $u = self::hash($r, "user:{$uid}");
-                        $email = trim((string) ($u['email'] ?? ''));
-                        if (! $u || $email === '') {
+                        $u = $users[(string) $uid];
+                        if (! $u) {
                             $skip++;
 
                             continue;
                         }
+                        /*
+                         * 🚨 NodeBB 1.19+ keeps only a CONFIRMED address on
+                         * user:{uid}, so a member who never confirmed has none,
+                         * and was dropped — their posts lost their author. They
+                         * come with a placeholder address instead, unconfirmed.
+                         */
+                        $email = trim((string) ($u['email'] ?? ''));
+                        $confirmed = $email !== '' && ($u['email:confirmed'] ?? '1') !== '0';
+                        $email = $email !== '' ? $email : "nodebb-{$uid}@users.invalid";
+                        // banned:expire is ms, 0 (or missing) for a ban with no end.
+                        $expire = (int) ($u['banned:expire'] ?? 0);
+                        $banned = ($u['banned'] ?? '0') === '1' ? ($expire > 0 ? self::ts($expire) : Carbon::create(2038, 1, 1)) : null;
 
                         try {
                             // bcrypt of the password, or of its sha512 where NodeBB "shaWrapped" it.
                             $hash = (string) ($u['password'] ?? '');
                             $wrapped = (int) ($u['password:shaWrapped'] ?? 0) === 1;
-                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, $wrapped ? null : $hash, self::ts($u['joindate'] ?? null), null, $wrapped && $hash !== '' ? ['scheme' => 'nodebb', 'hash' => $hash, 'salt' => null] : null, display: $u['username'] ?? null);
+                            $map[$uid] = Dst::user(Src::username($u['username'] ?? null, (int) $uid), $email, $wrapped ? null : $hash, self::ts($u['joindate'] ?? null), null, $wrapped && $hash !== '' ? ['scheme' => 'nodebb', 'hash' => $hash, 'salt' => null] : null, $confirmed, $banned, display: $u['username'] ?? null);
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -147,32 +196,47 @@ class NodebbImporter
                     $r = self::redis($cfg);
                     $off = (int) $cursor;
                     $tids = $r->zRange('topics:tid', $off, $off + $limit - 1);
-                    $hashes = $uids = $cids = [];
-                    foreach ($tids as $tid) {
-                        $t = self::hash($r, "topic:{$tid}");
-                        $hashes[$tid] = $t;
-                        if ($t) {
-                            $uids[] = $t['uid'] ?? null;
-                            $cids[] = $t['cid'] ?? null;
+                    $hashes = self::hashes($r, self::keys('topic:', $tids));
+                    $uids = $cids = $mainKeys = [];
+                    $now = Carbon::now()->getTimestamp() * 1000;
+                    foreach ($hashes as $tid => $t) {
+                        /*
+                         * Not on the board: deleted, or scheduled (NodeBB
+                         * publishes a topic whose timestamp is still to come
+                         * when that time arrives).
+                         */
+                        if (! $t || ($t['deleted'] ?? '0') === '1' || (int) ($t['timestamp'] ?? 0) > $now) {
+                            $hashes[$tid] = [];
+
+                            continue;
+                        }
+                        $uids[] = $t['uid'] ?? null;
+                        $cids[(string) ($t['cid'] ?? '')] = true;
+                        if (($t['mainPid'] ?? '') !== '') {
+                            $mainKeys[$tid] = 'post:'.$t['mainPid'];
                         }
                     }
-                    $mains = $bodies = [];
-                    foreach ($tids as $tid) {
-                        $mainPid = $hashes[$tid]['mainPid'] ?? null;
-                        if ($hashes[$tid] && $mainPid !== null && $mainPid !== '') {
-                            $mains[$tid] = self::hash($r, "post:{$mainPid}");
-                            $uids[] = $mains[$tid]['uid'] ?? null;
-                            $bodies[$tid] = Src::markdown($mains[$tid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
+                    // 🚨 A disabled category is not imported, so its topics came across untagged and public.
+                    $disabled = [];
+                    foreach (self::hashes($r, self::keys('category:', array_filter(array_keys($cids), fn ($k) => $k !== ''))) as $cid => $c) {
+                        if (($c['disabled'] ?? '0') === '1') {
+                            $disabled[(string) $cid] = true;
                         }
+                    }
+                    $mains = self::hashes($r, $mainKeys);
+                    $bodies = [];
+                    foreach ($mains as $tid => $post) {
+                        $uids[] = $post['uid'] ?? null;
+                        $bodies[$tid] = Src::markdown($post['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
                     }
                     $userMap = $ctx->mapGet('user', $uids);
-                    $tagMap = $hasTags ? $ctx->mapGet('tag', $cids) : [];
+                    $tagMap = $hasTags ? $ctx->mapGet('tag', array_keys($cids)) : [];
                     Dst::prepare($ctx, $bodies);
-                    $topicMap = $mainMap = [];
+                    $topicMap = $mainMap = $postMap = [];
                     $n = 0;
                     foreach ($tids as $tid) {
-                        $t = $hashes[$tid];
-                        if (! $t || ($t['deleted'] ?? '0') === '1') {
+                        $t = $hashes[(string) $tid];
+                        if (! $t || isset($disabled[(string) ($t['cid'] ?? '')])) {
                             continue;
                         }
                         $title = trim((string) ($t['title'] ?? '')) ?: 'Untitled';
@@ -184,9 +248,10 @@ class NodebbImporter
                             Dst::attachTag($did, $tagMap[(string) $t['cid']]);
                         }
                         $mainPid = $t['mainPid'] ?? null;
-                        if (isset($mains[$tid])) {
-                            $post = $mains[$tid];
-                            Dst::post($did, 1, $userMap[(string) ($post['uid'] ?? '')] ?? $uid, $bodies[$tid], self::ts($post['timestamp'] ?? ($t['timestamp'] ?? null)));
+                        if (isset($mains[(string) $tid])) {
+                            $post = $mains[(string) $tid];
+                            $postMap[$mainPid] = Dst::post($did, 1, $userMap[(string) ($post['uid'] ?? '')] ?? $uid, $bodies[(string) $tid], self::ts($post['timestamp'] ?? ($t['timestamp'] ?? null)));
+                            Dst::ref('post', (string) $mainPid, $postMap[$mainPid]);
                             $mainMap[$mainPid] = $did;
                         } else {
                             Dst::post($did, 1, $uid, '<p></p>', $created);
@@ -196,6 +261,7 @@ class NodebbImporter
                     }
                     $ctx->mapPut('topic', $topicMap);
                     $ctx->mapPut('main', $mainMap);
+                    $ctx->mapPut('post', $postMap); // /post/{pid} redirects to it
 
                     return ['cursor' => $off + count($tids), 'processed' => count($tids), 'done' => count($tids) < $limit, 'summary' => ['topics' => $n, 'posts' => $n]];
                 }
@@ -210,10 +276,9 @@ class NodebbImporter
                     $r = self::redis($cfg);
                     $off = (int) $cursor;
                     $pids = $r->zRange('posts:pid', $off, $off + $limit - 1);
-                    $hashes = $tids = $uids = [];
-                    foreach ($pids as $pid) {
-                        $post = self::hash($r, "post:{$pid}");
-                        $hashes[$pid] = $post;
+                    $hashes = self::hashes($r, self::keys('post:', $pids));
+                    $tids = $uids = [];
+                    foreach ($hashes as $post) {
                         if ($post) {
                             $tids[] = $post['tid'] ?? null;
                             $uids[] = $post['uid'] ?? null;
@@ -224,8 +289,8 @@ class NodebbImporter
                     $mainMap = $ctx->mapGet('main', $pids);
                     $bodies = [];
                     foreach ($pids as $pid) {
-                        if ($hashes[$pid] && ! isset($mainMap[(string) $pid])) {
-                            $bodies[$pid] = Src::markdown($hashes[$pid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
+                        if ($hashes[(string) $pid] && ! isset($mainMap[(string) $pid])) {
+                            $bodies[$pid] = Src::markdown($hashes[(string) $pid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
                         }
                     }
                     Dst::prepare($ctx, $bodies);
@@ -235,10 +300,11 @@ class NodebbImporter
                     // dozens of discussions. Fetch every starting post number in a
                     // single grouped query instead of one MAX() per discussion.
                     $counts = self::maxPostNumbers(array_values(array_unique(array_filter(
-                        array_map(fn ($pid) => $topicMap[(string) ($hashes[$pid]['tid'] ?? '')] ?? null, $pids)
+                        array_map(fn ($pid) => $topicMap[(string) ($hashes[(string) $pid]['tid'] ?? '')] ?? null, $pids)
                     ))));
+                    $ids = [];
                     foreach ($pids as $pid) {
-                        $post = $hashes[$pid];
+                        $post = $hashes[(string) $pid];
                         if (! $post || ($post['deleted'] ?? '0') === '1' || isset($mainMap[(string) $pid])) {
                             continue; // deleted, or already imported as a topic's first post
                         }
@@ -249,13 +315,15 @@ class NodebbImporter
                         $counts[$did] ??= 0;
 
                         try {
-                            Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, $bodies[$pid], self::ts($post['timestamp'] ?? null));
+                            $ids[$pid] = Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, $bodies[$pid], self::ts($post['timestamp'] ?? null));
+                            Dst::ref('post', (string) $pid, $ids[$pid]);
                             $n++;
                             $touched[$did] = true;
                         } catch (\Throwable) {
                             $counts[$did]--;
                         }
                     }
+                    $ctx->mapPut('post', $ids);
                     foreach (array_keys($touched) as $did) {
                         Dst::finalizeDiscussion((int) $did);
                     }

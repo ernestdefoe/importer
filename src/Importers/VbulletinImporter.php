@@ -235,13 +235,72 @@ class VbulletinImporter
                 'threadid',
                 'postid',
                 fn () => (int) Src::connect($cfg)->table($p.'post')->count(),
-                fn ($post) => [
+                fn ($post, ?Attachments $files = null) => [
                     'tid' => (int) $post->threadid, 'pid' => (int) $post->postid, 'uid' => $post->userid,
-                    'html' => Bbcode::toHtml($post->pagetext ?? ''), 'at' => Src::ts($post->dateline ?? null),
+                    'html' => Bbcode::toHtml($post->pagetext ?? '', array_filter(['attachment' => $files?->resolver($post->postid)])), 'at' => Src::ts($post->dateline ?? null),
                     'ok' => (int) ($post->visible ?? 1) === 1,
                 ],
+                files: self::attachments($cfg),
             ),
         ], Phases::tail());
+    }
+
+    /** The same tables on every generation: {@see Vbulletin5Importer::groups()}. */
+    public static function groups(array $cfg): array
+    {
+        return Vbulletin5Importer::groups($cfg);
+    }
+
+    /** {@see Vbulletin5Importer::profiles()} */
+    public static function profiles(array $cfg): array
+    {
+        return Vbulletin5Importer::profiles($cfg);
+    }
+
+    /**
+     * Attachments. vBulletin 3 keeps the file on `attachment` itself
+     * (`filedata`, or on disk as <attachpath>/<member digits>/<attachment
+     * id>.attach); vBulletin 4 puts it in `filedata`, shared by every
+     * attachment of the same file (<filedata id>.attach on disk), with
+     * `attachment.contentid` the post. Either way a post places one with
+     * [ATTACH]<attachment id>[/ATTACH], and attachment.php serves it.
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p) {
+            $conn = $ctx->src();
+            $sb = $conn->getSchemaBuilder();
+            if (! $sb->hasTable($p.'attachment')) {
+                return [];
+            }
+            $folder = Vbulletin5Importer::attachFolder($conn, $p);
+            $v4 = $sb->hasColumn($p.'attachment', 'filedataid');
+            $q = $conn->table($p.'attachment as a');
+            if ($v4) {
+                $post = $sb->hasTable($p.'contenttype') ? $conn->table($p.'contenttype')->where('class', 'Post')->value('contenttypeid') : null;
+                $q->whereIn('a.contentid', $ids)->when($post, fn ($w) => $w->where('a.contenttypeid', $post))
+                    ->select('a.attachmentid', 'a.contentid as postid', 'a.userid', 'a.filename', 'a.filedataid');
+            } else {
+                $q->whereIn('a.postid', $ids)->select('a.attachmentid', 'a.postid', 'a.userid', 'a.filename');
+            }
+            // One held for moderation was never shown under the post.
+            $q->when($sb->hasColumn($p.'attachment', 'state'), fn ($w) => $w->where('a.state', 'visible'))
+                ->when(! $v4 && $sb->hasColumn($p.'attachment', 'visible'), fn ($w) => $w->where('a.visible', 1));
+            $out = [];
+            foreach ($q->orderBy('a.attachmentid')->get() as $a) {
+                [$table, $key, $id] = $v4 ? [$p.'filedata', 'filedataid', $a->filedataid] : [$p.'attachment', 'attachmentid', $a->attachmentid];
+                $out[$a->postid][] = $folder + [
+                    'id' => (string) $a->attachmentid, 'name' => (string) $a->filename, 'uid' => $a->userid,
+                    'bytes' => fn () => (string) $conn->table($table)->where($key, $id)->value('filedata'),
+                    'path' => Vbulletin5Importer::digits($a->userid).'/'.(int) $id.'.attach',
+                    'url' => 'attachment.php?attachmentid='.$a->attachmentid,
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/attachment\.php$#'];
     }
     /**
      * vBulletin 3/4: `pmtext` holds each message once (`fromuserid`, `title`,

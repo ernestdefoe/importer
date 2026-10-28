@@ -120,6 +120,9 @@ class Runner
                 'posts' => $hw['post'] ? max(0, $hw['post'] - self::CATCHUP) : 0,
                 // An import from before messages came across: all of them, once.
                 'pms' => PrivateMessages::syncFrom((int) $base->id),
+                // Likewise groups, pictures and birthdays: every member once, then new members.
+                'group-members' => self::mapped((int) $base->id, 'group') ? $hw['user'] : 0,
+                'profiles' => self::mapped((int) $base->id, 'profiles') ? $hw['user'] : 0,
             ],
             // Edits since the previous run began, with an hour's slack for clocks.
             'since' => $last ? Carbon::parse($last)->getTimestamp() - 3600 : 0,
@@ -162,7 +165,7 @@ class Runner
         }
         $cfg = self::storedConfig((int) $base->id);
         $upload = ! empty($cfg['file']);
-        $keys = $upload ? ['prefix'] : ['driver', 'host', 'port', 'database', 'username', 'prefix', 'assets_base'];
+        $keys = $upload ? ['prefix', 'assets_base', 'files_path'] : ['driver', 'host', 'port', 'database', 'username', 'prefix', 'assets_base', 'files_path'];
 
         return [
             'baseRunId' => (int) $base->id,
@@ -235,6 +238,11 @@ class Runner
         // LENGTH first: source_id is a string, and '99' sorts above '100'.
         return (int) Dst::db()->table('importer_map')->where('run_id', $runId)->where('kind', $kind)
             ->orderByRaw('LENGTH(source_id) DESC')->orderByDesc('source_id')->value('source_id');
+    }
+
+    private static function mapped(int $runId, string $kind): bool
+    {
+        return Dst::db()->table('importer_map')->where('run_id', $runId)->where('kind', $kind)->exists();
     }
 
     /**
@@ -436,6 +444,7 @@ class Runner
             Upload::discard(json_decode($run->config, true) ?: []); // remove the scratch sqlite, if any
         }
         Dst::db()->table('importer_map')->where('run_id', $runId)->delete();
+        Dst::db()->table('importer_files')->where('run_id', $runId)->delete();
         // An import's syncs go with it: their content is in its map.
         Dst::db()->table('importer_runs')->where('id', $runId)->orWhere('base_run_id', $runId)->delete();
     }
@@ -504,6 +513,27 @@ class Runner
         }
         if (! empty($s['polls_unavailable'])) {
             $line .= ' '.Src::t('polls.unavailable');
+        }
+
+        // Groups, profiles and attachments: what came across, and what did not and why.
+        foreach (['groups' => ['groups_created', 'groups_mapped', 'group_members'], 'avatars' => ['avatars'], 'birthdays' => ['birthdays'], 'attachments' => ['attachments']] as $key => $need) {
+            if (array_filter(array_intersect_key($s, array_flip($need)))) {
+                $line .= ' '.Src::t('extras.'.$key, array_intersect_key($s, array_flip($need)) + array_fill_keys($need, 0));
+            }
+        }
+        if (! empty($s['groups_skipped'])) {
+            $why = [];
+            foreach (['banned', 'pending', 'bots', 'automatic', 'ranks', 'permissions'] as $r) {
+                if (! empty($s['groups_skipped_'.$r])) {
+                    $why[] = Src::t('extras.group_reason.'.$r, ['count' => $s['groups_skipped_'.$r]]);
+                }
+            }
+            $line .= ' '.Src::t('extras.groups_skipped', ['count' => $s['groups_skipped'], 'reasons' => implode('; ', $why)]);
+        }
+        foreach (['avatars_missing', 'birthdays_skipped', 'attachments_missing'] as $key) {
+            if (! empty($s[$key])) {
+                $line .= ' '.Src::t('extras.'.$key, ['count' => $s[$key]]);
+            }
         }
 
         // Private messages, when the source has them and they were asked for.

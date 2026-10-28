@@ -196,6 +196,7 @@ class InvisionImporter
                 ],
                 fn ($q) => $q->where('queued', 0),
                 'edit_time',
+                self::attachments(),
             ),
             self::archivePosts($cfg),
         ], Phases::tail());
@@ -290,6 +291,7 @@ class InvisionImporter
                 'ok' => true,
             ],
             fn ($q) => self::archiveFilter($q),
+            files: self::attachments(),
         )[0];
 
         return new Phase('archive-posts', 'posts', $phase->count, fn ($cursor, $limit, Ctx $ctx) => $ctx->sync || ! $ctx->src()->getSchemaBuilder()->hasTable('forums_archive_posts')
@@ -377,6 +379,100 @@ class InvisionImporter
      * Quotes, spoilers, code languages, mentions and emoticons are recognised
      * by their IPS classes in Html::clean().
      */
+    /** A board setting (`core_sys_conf_settings`), or $default. */
+    private static function setting(ConnectionInterface $conn, string $key, string $default): string
+    {
+        static $cache = [];
+
+        return $cache[$key] ??= (string) (($conn->getSchemaBuilder()->hasTable('core_sys_conf_settings')
+            ? $conn->table('core_sys_conf_settings')->where('conf_key', $key)->value('conf_value') : null) ?? $default);
+    }
+
+    /**
+     * Groups: `core_groups`, named in `core_sys_lang_words` (core_group_<id>;
+     * `g_title` before 4.x), a member's primary group in `member_group_id`
+     * and the rest in `mgroup_others`. Which group is guests, members,
+     * awaiting validation and banned is a setting; one that may use the admin
+     * control panel is an admin group, a super moderators' one a mods' group.
+     */
+    public static function groups(array $cfg): array
+    {
+        return [
+            'needs' => ['core_groups'],
+            'groups' => function (Ctx $ctx) {
+                $conn = $ctx->src();
+                $special = [self::setting($conn, 'guest_group', '2') => 'guest', self::setting($conn, 'member_group', '3') => 'member',
+                    self::setting($conn, 'auth_group', '1') => 'pending', self::setting($conn, 'banned_group', '5') => 'banned'];
+                $groups = $conn->table('core_groups')->orderBy('g_id')->get();
+                $names = [];
+                if ($conn->getSchemaBuilder()->hasTable('core_sys_lang_words')) {
+                    foreach ($conn->table('core_sys_lang_words')->whereIn('word_key', $groups->map(fn ($g) => 'core_group_'.$g->g_id)->all())->orderByDesc('lang_id')->get(['word_key', 'word_default', 'word_custom']) as $w) {
+                        $names[$w->word_key] = trim((string) ($w->word_custom ?: $w->word_default));
+                    }
+                }
+
+                return $groups->map(fn ($g) => [
+                    'id' => (string) $g->g_id, 'name' => ($names['core_group_'.$g->g_id] ?? '') ?: (string) ($g->g_title ?? ''),
+                    'color' => preg_match('/color\s*:\s*(#[0-9a-f]{3,6})/i', (string) ($g->prefix ?? ''), $m) ? $m[1] : null,
+                    'role' => $special[(string) $g->g_id] ?? (! empty($g->g_access_cp) ? 'admin' : (! empty($g->g_is_supmod) ? 'mod' : null)),
+                ])->all();
+            },
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::byMember($ctx, $after, $limit, fn (Ctx $c) => $c->src()->table('core_members'), 'member_id',
+                fn ($u) => [$u->member_group_id, ...Groups::ids((string) ($u->mgroup_others ?? ''))]),
+        ];
+    }
+
+    /**
+     * Profile photos: `pp_main_photo`, a file under uploads/ (or an address),
+     * or the Gravatar of `pp_gravatar`. Birthdays: `bday_day`, `bday_month`,
+     * `bday_year`.
+     */
+    public static function profiles(array $cfg): array
+    {
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table('core_members')->count(),
+            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table('core_members'), 'member_id', $after, $limit, function ($u) {
+                $photo = trim((string) ($u->pp_main_photo ?? ''));
+                $avatar = match (true) {
+                    ($u->pp_photo_type ?? '') === 'gravatar' && trim((string) ($u->pp_gravatar ?? '')) !== '' => Profiles::gravatar((string) $u->pp_gravatar),
+                    $photo === '' => null,
+                    (bool) preg_match('#^(https?:)?//#i', $photo) => ['url' => $photo],
+                    default => ['root' => 'uploads', 'path' => $photo, 'url' => 'uploads/'.$photo],
+                };
+
+                return ['avatar' => $avatar, 'birthday' => (int) ($u->bday_day ?? 0) ? [(int) ($u->bday_year ?? 0) ?: null, (int) $u->bday_month, (int) $u->bday_day] : null];
+            }),
+        ];
+    }
+
+    /**
+     * Attachments: `core_attachments_map` (forums_Forums, `id2` the post)
+     * over `core_attachments`, the file at uploads/<attach_location>. A post
+     * shows one as an image of that file or a link to attachment.php?id=,
+     * which are matched to it; the rest are listed under the post.
+     */
+    public static function attachments(): array
+    {
+        return ['fetch' => function (array $ids, Ctx $ctx) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable('core_attachments_map')) {
+                return [];
+            }
+            $out = [];
+            foreach ($conn->table('core_attachments_map as m')->join('core_attachments as a', 'a.attach_id', '=', 'm.attachment_id')
+                ->where('m.location_key', 'forums_Forums')->whereIn('m.id2', $ids)->orderBy('a.attach_id')
+                ->get(['m.id2', 'a.attach_id', 'a.attach_file', 'a.attach_location', 'a.attach_member_id']) as $a) {
+                $out[$a->id2][] = [
+                    'id' => (string) $a->attach_id, 'name' => (string) $a->attach_file, 'uid' => $a->attach_member_id,
+                    'root' => 'uploads', 'path' => (string) $a->attach_location, 'url' => 'uploads/'.$a->attach_location,
+                    'keys' => [(string) $a->attach_location, 'attachment.php?id='.$a->attach_id],
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/uploads/#', 'disk' => ['#^.*?/uploads/#', 'uploads']];
+    }
+
     public static function ipsHtml(?string $html, string $base = ''): string
     {
         $html = trim((string) $html);

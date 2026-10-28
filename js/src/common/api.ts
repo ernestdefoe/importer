@@ -9,6 +9,8 @@ export interface SourceConfig {
   password?: string;
   prefix?: string;
   file?: string; // handle from an uploaded dump
+  assets_base?: string; // the old forum's address, for files it serves (avatars, attachments, linked uploads)
+  files_path?: string; // the old forum's folder on this server, for files it keeps on disk
   private_messages?: string; // '1' to bring private messages across (the default), '0' to leave them
 }
 

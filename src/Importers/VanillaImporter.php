@@ -131,7 +131,7 @@ class VanillaImporter
                 'topics',
                 'discussions',
                 fn () => (int) Src::connect($cfg)->table($p.'Discussion')->count(),
-                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
+                function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags, $cfg) {
                     $rows = $ctx->src()->table($p.'Discussion')->where('DiscussionID', '>', (int) $cursor)->orderBy('DiscussionID')->limit($limit)->get();
                     /*
                      * 🚨 The comments phase finalises the discussions it writes
@@ -144,10 +144,12 @@ class VanillaImporter
                         ->whereIn('DiscussionID', $rows->pluck('DiscussionID')->all())->distinct()->pluck('DiscussionID')->all())) : [];
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('CategoryID')->all()) : [];
+                    $files = Attachments::batch(self::attachments($cfg), $ctx, $rows->map(fn ($d) => 'd'.$d->DiscussionID)->all());
                     $bodies = [];
                     foreach ($rows as $d) {
-                        $bodies[$d->DiscussionID] = self::body($d->Body ?? '', $d->Format ?? '') ?: '<p></p>';
+                        $bodies['d'.$d->DiscussionID] = self::body($d->Body ?? '', $d->Format ?? '') ?: '<p></p>';
                     }
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     $map = [];
                     $n = 0;
@@ -161,7 +163,7 @@ class VanillaImporter
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
                         }
-                        Dst::post($did, 1, $uid, $bodies[$d->DiscussionID], $created);
+                        $files->link('d'.$d->DiscussionID, Dst::post($did, 1, $uid, $bodies['d'.$d->DiscussionID], $created));
                         if (! isset($replied[(string) $d->DiscussionID])) {
                             Dst::finalizeDiscussion($did);
                         }
@@ -169,7 +171,7 @@ class VanillaImporter
                     }
                     $ctx->mapPut('topic', $map);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['topics' => $n, 'posts' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => $files->done(['topics' => $n, 'posts' => $n])];
                 }
             ),
 
@@ -178,7 +180,7 @@ class VanillaImporter
                 'posts',
                 'comments',
                 fn () => (int) Src::connect($cfg)->table($p.'Comment')->count(),
-                function ($cursor, $limit, Ctx $ctx) use ($p) {
+                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
                     $rows = $ctx->src()->table($p.'Comment')
@@ -187,12 +189,13 @@ class VanillaImporter
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
+                    $live = $rows->filter(fn ($c) => isset($topicMap[(string) $c->DiscussionID]));
+                    $files = Attachments::batch(self::attachments($cfg), $ctx, $live->map(fn ($c) => 'c'.$c->CommentID)->all());
                     $bodies = [];
-                    foreach ($rows as $c) {
-                        if (isset($topicMap[(string) $c->DiscussionID])) {
-                            $bodies[$c->CommentID] = self::body($c->Body ?? '', $c->Format ?? '') ?: '<p></p>';
-                        }
+                    foreach ($live as $c) {
+                        $bodies['c'.$c->CommentID] = self::body($c->Body ?? '', $c->Format ?? '') ?: '<p></p>';
                     }
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     // Where each discussion's numbering stands, in one grouped query for the batch.
                     $dids = array_values(array_unique($topicMap));
@@ -216,7 +219,8 @@ class VanillaImporter
                         $created = Src::ts($c->DateInserted ?? null);
 
                         try {
-                            $ids[$c->CommentID] = Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies[$c->CommentID], $created);
+                            $ids[$c->CommentID] = Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies['c'.$c->CommentID], $created);
+                            $files->link('c'.$c->CommentID, $ids[$c->CommentID]);
                             Dst::ref('post', (string) $c->CommentID, $ids[$c->CommentID]);
                             $n++;
                         } catch (\Throwable) {
@@ -231,10 +235,94 @@ class VanillaImporter
                     }
                     $cur['carry'] = $done ? null : $carry;
 
-                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['posts' => $n]];
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $files->done(['posts' => $n])];
                 }
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Groups are roles: `Role` and `UserRole`. `Role.Type` says what each is
+     * (older boards have none, and keep Vanilla's stock ids: 2 guest, 3
+     * unconfirmed, 4 applicant, 8 member, 16 administrator, 32 moderator).
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $types = ['guest' => 'guest', 'member' => 'member', 'unconfirmed' => 'pending', 'applicant' => 'pending', 'administrator' => 'admin', 'moderator' => 'mod'];
+        $stock = [2 => 'guest', 3 => 'pending', 4 => 'pending', 8 => 'member', 16 => 'admin', 32 => 'mod'];
+
+        return [
+            'needs' => [$p.'Role', $p.'UserRole'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table($p.'Role')->orderBy('RoleID')->get()->map(fn ($r) => [
+                'id' => (string) $r->RoleID, 'name' => (string) $r->Name,
+                'role' => property_exists($r, 'Type') ? ($types[strtolower((string) $r->Type)] ?? null) : ($stock[(int) $r->RoleID] ?? null),
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::pivot($ctx->src()->table($p.'User'), 'UserID', $after, $limit,
+                fn (array $ids) => $ctx->src()->table($p.'UserRole')->whereIn('UserID', $ids)->get()->map(fn ($r) => [$r->UserID, $r->RoleID])),
+        ];
+    }
+
+    /**
+     * Profile photos: `User.Photo`, an address or a path under uploads/
+     * ("userpics/12/abc.jpg", whose full-size copy is "p" + the name beside
+     * it). Birthdays: `DateOfBirth`.
+     */
+    public static function profiles(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
+            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table($p.'User'), 'UserID', $after, $limit, function ($u) {
+                $photo = trim((string) ($u->Photo ?? ''));
+                $avatar = null;
+                if (preg_match('#^(https?:)?//#i', $photo)) {
+                    $avatar = ['url' => $photo];
+                } elseif ($photo !== '' && ! str_starts_with($photo, '~')) {
+                    $full = dirname($photo).'/p'.basename($photo);
+                    $avatar = ['root' => 'uploads', 'path' => [$full, $photo], 'url' => 'uploads/'.$full];
+                }
+                $dob = (string) ($u->DateOfBirth ?? '');
+
+                return ['avatar' => $avatar, 'birthday' => str_starts_with($dob, '0000') ? null : Profiles::date($dob)];
+            }),
+        ];
+    }
+
+    /**
+     * Attachments: `Media` rows of the discussion ('d<id>') or comment
+     * ('c<id>'), `Path` under uploads/. Images a Rich post shows are
+     * addresses on the old board's uploads, copied where they stand.
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable($p.'Media')) {
+                return [];
+            }
+            $by = ['discussion' => [], 'comment' => []];
+            foreach ($ids as $id) {
+                $by[$id[0] === 'd' ? 'discussion' : 'comment'][] = (int) substr($id, 1);
+            }
+            $out = [];
+            foreach ($conn->table($p.'Media')->where(fn ($q) => $q
+                ->where(fn ($w) => $w->where('ForeignTable', 'discussion')->whereIn('ForeignID', $by['discussion'] ?: [0]))
+                ->orWhere(fn ($w) => $w->where('ForeignTable', 'comment')->whereIn('ForeignID', $by['comment'] ?: [0])))
+                ->orderBy('MediaID')->get() as $m) {
+                $path = ltrim((string) $m->Path, '/');
+                $out[($m->ForeignTable === 'discussion' ? 'd' : 'c').$m->ForeignID][] = [
+                    'id' => (string) $m->MediaID, 'name' => (string) $m->Name, 'uid' => $m->InsertUserID ?? null,
+                    'root' => 'uploads', 'path' => $path, 'url' => preg_match('#^https?://#i', $path) ? $path : 'uploads/'.$path,
+                    'keys' => ['uploads/'.$path],
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/uploads/#'];
     }
 
     /**

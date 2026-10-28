@@ -37,6 +37,7 @@ class RunImportCommand extends AbstractCommand
             ->addOption('password', null, InputOption::VALUE_REQUIRED, 'DB password', '')
             ->addOption('prefix', null, InputOption::VALUE_REQUIRED, 'Source table prefix', '')
             ->addOption('assets-base', null, InputOption::VALUE_REQUIRED, 'Origin for RELATIVE image paths on the old board, e.g. https://old.example.com. Absolute URLs are used as they are; without this, relative ones are skipped.', '')
+            ->addOption('files-path', null, InputOption::VALUE_REQUIRED, 'The old forum\'s folder on this server (where it was installed, or a copy of it): its uploaded avatars and attachments are read from there. Without it they are fetched from --assets-base where the old forum serves them.', '')
             ->addOption('avatar-path', null, InputOption::VALUE_REQUIRED, 'Local filesystem path to the source forum\'s avatar directory (vBulletin customavatars/, etc.) — only needed when avatars aren\'t stored as DB blobs.', '')
             ->addOption('prune-empty-tags', null, InputOption::VALUE_NONE, 'After import, delete tags this run created that ended up with zero discussions and no children (e.g. an empty vBulletin sub-forum). Never touches pre-existing tags.')
             ->addOption('max-topics', null, InputOption::VALUE_REQUIRED, 'Import at most this many topics (oldest-id-first) instead of the whole forum — a fast, representative subset for testing a patch or a fresh source connection before committing to a full run.', '')
@@ -107,7 +108,7 @@ class RunImportCommand extends AbstractCommand
     }
 
     /** CLI option => config key, for the source connection. */
-    private const CONNECTION = ['driver' => 'driver', 'host' => 'host', 'port' => 'port', 'database' => 'database', 'username' => 'username', 'password' => 'password', 'prefix' => 'prefix', 'assets-base' => 'assets_base'];
+    private const CONNECTION = ['driver' => 'driver', 'host' => 'host', 'port' => 'port', 'database' => 'database', 'username' => 'username', 'password' => 'password', 'prefix' => 'prefix', 'assets-base' => 'assets_base', 'files-path' => 'files_path'];
 
     private function sync(): int
     {

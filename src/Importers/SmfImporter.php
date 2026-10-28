@@ -55,11 +55,13 @@ class SmfImporter
         return ($bin = self::recycleBoard($conn, $p)) ? $q->where('id_board', '!=', $bin) : $q;
     }
 
-    private static function body(?string $body): string
+    private static function body(?string $body, ?\Closure $attachment = null): string
     {
         $body = preg_replace('#<br\s*/?>#i', "\n", (string) $body) ?? (string) $body;
+        // SMF 2.1 may write [attach id=12] with no closing tag.
+        $body = preg_replace('#\[attach(\s[^\]]*)\](?![^\[]*\[/attach\])#i', '[attach$1][/attach]', $body) ?? $body;
 
-        return Bbcode::toHtml($body, ['escaped' => true]);
+        return Bbcode::toHtml($body, array_filter(['escaped' => true, 'attachment' => $attachment]));
     }
 
     public static function test(array $cfg): array
@@ -228,14 +230,154 @@ class SmfImporter
                 'id_topic',
                 'id_msg',
                 fn () => (int) Src::connect($cfg)->table($p.'messages')->where('approved', 1)->count(),
-                fn ($m) => [
+                fn ($m, ?Attachments $files = null) => [
                     'tid' => (int) $m->id_topic, 'pid' => (int) $m->id_msg, 'uid' => $m->id_member,
-                    'html' => self::body($m->body ?? ''), 'at' => Src::ts($m->poster_time ?? null), 'ok' => true,
+                    'html' => self::body($m->body ?? '', $files?->resolver($m->id_msg)), 'at' => Src::ts($m->poster_time ?? null), 'ok' => true,
                 ],
                 fn ($q) => $q->where('approved', 1),
                 'modified_time',
+                self::attachments($cfg),
             ),
         ], Phases::tail());
+    }
+
+    /** One of the board's settings (`settings`), or ''. */
+    private static function setting(ConnectionInterface $conn, string $p, string $name): string
+    {
+        static $cache = [];
+
+        return $cache[$p.$name] ??= (string) (($conn->getSchemaBuilder()->hasTable($p.'settings') ? $conn->table($p.'settings')->where('variable', $name)->value('value') : null) ?? '');
+    }
+
+    /**
+     * The attachment folders by `id_folder`: `attachmentUploadDir` is one
+     * path, or with several folders JSON (2.1) or a serialized array (2.0).
+     *
+     * @return array<int, array{root?:string,dir?:string}>
+     */
+    private static function attachFolders(ConnectionInterface $conn, string $p): array
+    {
+        $raw = self::setting($conn, $p, 'attachmentUploadDir');
+        $dirs = json_decode($raw, true);
+        if (! is_array($dirs)) {
+            $dirs = @unserialize($raw, ['allowed_classes' => false]);
+        }
+        $out = [];
+        foreach (is_array($dirs) ? $dirs : [1 => $raw] as $id => $dir) {
+            $out[(int) $id] = Files::folder(is_string($dir) ? $dir : '', 'attachments');
+        }
+
+        return $out;
+    }
+
+    /**
+     * The file of one attachment row: <id>_<hash>.dat (2.1), <id>_<hash>
+     * (2.0), or 1.x's <id>_<name><md5 of name>, in its folder.
+     */
+    private static function attachFile(object $a, array $folders): array
+    {
+        $clean = (string) preg_replace(['/\s/', '/[^\w_\.\-]/'], ['_', ''], (string) $a->filename);
+
+        return ($folders[(int) ($a->id_folder ?? 1)] ?? reset($folders) ?: ['root' => 'attachments']) + [
+            'path' => array_filter([($a->file_hash ?? '') !== '' ? $a->id_attach.'_'.$a->file_hash.'.dat' : null, ($a->file_hash ?? '') !== '' ? $a->id_attach.'_'.$a->file_hash : null, $a->id_attach.'_'.str_replace('.', '_', $clean).md5($clean)]),
+        ];
+    }
+
+    /**
+     * Groups: `membergroups`, a member's primary group in `id_group` (0 =
+     * none) and the rest in `additional_groups`. 1 Administrator and 2 Global
+     * Moderator are SMF's own; 3 Moderator is filled by SMF from each board's
+     * moderators, and a group with `min_posts` of 0 or more is a post-count
+     * rank SMF moves members through itself.
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'needs' => [$p.'membergroups'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table($p.'membergroups')->orderBy('id_group')->get()->map(fn ($g) => [
+                'id' => (string) $g->id_group, 'name' => self::decode((string) $g->group_name), 'color' => $g->online_color ?? null,
+                'role' => match (true) {
+                    (int) $g->id_group === 1 => 'admin',
+                    (int) $g->id_group === 2 => 'mod',
+                    (int) $g->id_group === 3 => 'automatic',
+                    (int) ($g->min_posts ?? -1) >= 0 => 'ranks',
+                    default => null,
+                },
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::byMember($ctx, $after, $limit, fn (Ctx $c) => $c->src()->table($p.'members'), 'id_member',
+                fn ($u) => [$u->id_group ?? 0, ...Groups::ids((string) ($u->additional_groups ?? ''))]),
+        ];
+    }
+
+    /**
+     * Profile photos: an uploaded one is an `attachments` row of the member's
+     * with no message (in the custom avatar folder when `attachment_type` is
+     * 1, else among the attachments); otherwise `avatar` is an address or a
+     * picture from the gallery. Birthdays: `birthdate`, the year 0001/0004/
+     * 1004 when not given (and 0001-01-01 not set at all).
+     */
+    public static function profiles(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'members')->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p) {
+                $conn = $ctx->src();
+                $page = Profiles::page($conn->table($p.'members'), 'id_member', $after, $limit, fn ($u) => [
+                    'avatar' => ($a = trim((string) ($u->avatar ?? ''))) === '' ? null
+                        : (preg_match('#^(https?:)?//#i', $a) ? ['url' => $a] : Files::folder(self::setting($conn, $p, 'avatar_directory'), 'avatars') + ['path' => $a, 'url' => rtrim(self::setting($conn, $p, 'avatar_url'), '/').'/'.$a]),
+                    'birthday' => ($b = Profiles::date((string) ($u->birthdate ?? ''))) && ! (($b[0] ?? 0) < 1900 && $b[1] === 1 && $b[2] === 1) ? $b : null,
+                ]);
+                $ids = array_column($page['profiles'], 'uid');
+                if ($ids && $conn->getSchemaBuilder()->hasTable($p.'attachments')) {
+                    $folders = self::attachFolders($conn, $p);
+                    $custom = Files::folder(self::setting($conn, $p, 'custom_avatar_dir'), 'custom_avatar');
+                    $uploads = [];
+                    foreach ($conn->table($p.'attachments')->whereIn('id_member', $ids)->where('id_msg', 0)->get() as $a) {
+                        $uploads[$a->id_member] = ((int) ($a->attachment_type ?? 0) === 1 ? $custom + ['path' => (string) $a->filename] : self::attachFile($a, $folders))
+                            + ['url' => 'index.php?action=dlattach;attach='.$a->id_attach.';type=avatar'];
+                    }
+                    foreach ($page['profiles'] as &$prof) {
+                        $prof['avatar'] = $uploads[$prof['uid']] ?? $prof['avatar'];
+                    }
+                    unset($prof);
+                }
+
+                return $page;
+            },
+        ];
+    }
+
+    /**
+     * Attachments: `attachments` rows of the message (`attachment_type` 3
+     * is a thumbnail of another), once approved, served by
+     * index.php?action=dlattach. SMF 2.1 places one with [attach id=n].
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable($p.'attachments')) {
+                return [];
+            }
+            $folders = self::attachFolders($conn, $p);
+            $out = [];
+            foreach ($conn->table($p.'attachments')->whereIn('id_msg', $ids)->where('attachment_type', 0)
+                ->when($conn->getSchemaBuilder()->hasColumn($p.'attachments', 'approved'), fn ($q) => $q->where('approved', 1))
+                ->orderBy('id_attach')->get() as $a) {
+                $out[$a->id_msg][] = self::attachFile($a, $folders) + [
+                    'id' => (string) $a->id_attach, 'name' => self::decode((string) $a->filename), 'uid' => $a->id_member ?: null,
+                    'url' => 'index.php?action=dlattach;attach='.$a->id_attach,
+                ];
+            }
+
+            return $out;
+        }];
     }
     /**
      * `personal_messages` (one row per message: sender, `deleted_by_sender`,

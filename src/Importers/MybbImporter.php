@@ -228,14 +228,97 @@ class MybbImporter
                 'tid',
                 'pid',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->where('visible', 1)->count(),
-                fn ($post) => [
+                fn ($post, ?Attachments $files = null) => [
                     'tid' => (int) $post->tid, 'pid' => (int) $post->pid, 'uid' => $post->uid,
-                    'html' => Bbcode::toHtml($post->message ?? '', ['size' => 'pt']), 'at' => Src::ts($post->dateline ?? null), 'ok' => true,
+                    // MyBB's [attachment=<aid>] has no closing tag.
+                    'html' => Bbcode::toHtml(preg_replace('/\[attachment=(\d+)\]/i', '[attach]$1[/attach]', (string) ($post->message ?? '')), array_filter(['size' => 'pt', 'attachment' => $files?->resolver($post->pid)])),
+                    'at' => Src::ts($post->dateline ?? null), 'ok' => true,
                 ],
                 fn ($q) => $q->where('visible', 1),
                 'edittime',
+                self::attachments($cfg),
             ),
         ], Phases::tail());
+    }
+
+    /** One of the board's settings (`settings`), or ''. */
+    private static function setting(ConnectionInterface $conn, string $p, string $name): string
+    {
+        static $cache = [];
+
+        return $cache[$p.$name] ??= (string) (($conn->getSchemaBuilder()->hasTable($p.'settings') ? $conn->table($p.'settings')->where('name', $name)->value('value') : null) ?? '');
+    }
+
+    /**
+     * Groups: `usergroups`, a member's primary group in `users.usergroup` and
+     * the rest in `additionalgroups`. MyBB's own: 1 guests, 2 registered,
+     * 3 super moderators, 4 administrators, 5 awaiting activation, 6
+     * moderators, 7 banned; a group of the board's own that may use the admin
+     * control panel (`cancp`) is an admin group, one with `issupermod` a
+     * moderators' group.
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $roles = [1 => 'guest', 2 => 'member', 3 => 'mod', 4 => 'admin', 5 => 'pending', 6 => 'mod', 7 => 'banned'];
+
+        return [
+            'needs' => [$p.'usergroups'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table($p.'usergroups')->orderBy('gid')->get()->map(fn ($g) => [
+                'id' => (string) $g->gid, 'name' => (string) $g->title,
+                'color' => preg_match('/color\s*:\s*(#[0-9a-f]{3,6})/i', (string) ($g->namestyle ?? ''), $m) ? $m[1] : null,
+                'role' => $roles[(int) $g->gid] ?? (! empty($g->cancp) ? 'admin' : (! empty($g->issupermod) ? 'mod' : null)),
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::byMember($ctx, $after, $limit, fn (Ctx $c) => $c->src()->table($p.'users'), 'uid',
+                fn ($u) => [$u->usergroup, ...Groups::ids((string) ($u->additionalgroups ?? ''))]),
+        ];
+    }
+
+    /**
+     * Profile photos (`avatar`, by `avatartype`: an uploaded file under
+     * uploads/avatars, a remote address, or Gravatar's) and birthdays
+     * (`birthday` "d-m-yyyy", or "d-m-" without the year).
+     */
+    public static function profiles(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
+            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table($p.'users'), 'uid', $after, $limit, function ($u) {
+                $file = trim(explode('?', (string) ($u->avatar ?? ''))[0]);
+                $avatar = $file === '' ? null : (preg_match('#^(https?:)?//#i', $file) ? ['url' => $file]
+                    : ['path' => preg_replace('#^\./#', '', $file), 'url' => preg_replace('#^\./#', '', $file)]);
+
+                return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'dmy')];
+            }),
+        ];
+    }
+
+    /**
+     * Attachments: `attachments` (`pid`, shown once `visible`), the file at
+     * <uploadspath>/<attachname>, served by attachment.php?aid=.
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable($p.'attachments')) {
+                return [];
+            }
+            $folder = Files::folder(self::setting($conn, $p, 'uploadspath'), 'uploads');
+            $out = [];
+            foreach ($conn->table($p.'attachments')->whereIn('pid', $ids)->where('visible', 1)->orderBy('aid')->get() as $a) {
+                $out[$a->pid][] = $folder + [
+                    'id' => (string) $a->aid, 'name' => (string) $a->filename, 'uid' => $a->uid,
+                    'path' => (string) $a->attachname, 'url' => 'attachment.php?aid='.$a->aid,
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/attachment\.php$#'];
     }
     /**
      * `privatemessages` keeps a separate COPY per member: `uid` is the copy's

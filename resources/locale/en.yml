@@ -16,6 +16,9 @@ ernestdefoe-importer:
     username: Database username
     password: Database password
     prefix: Table prefix
+    assets_base: Old forum's address (optional)
+    files_path: Old forum's folder on this server (optional)
+    files_help: "Profile photos and attachments come across from the old forum's folder when it is on this server (where it was installed, or a copy of it, outside this forum's own folder), or else from its address while it is still online. Without either, attachments are named in their posts instead."
     test: Test connection
     start: Start import
     test_ok: "Connected. Here's what we found:"
@@ -118,6 +121,22 @@ ernestdefoe-importer:
       summary: "{polls} polls with {votes} votes."
       skipped: "{count} polls skipped: their discussion was not imported, or they had fewer than two answers or ranked choices."
       unavailable: "Polls skipped: FoF Polls is not enabled. Enable it and run the import again to bring them across."
+    extras:
+      groups: "Groups: {groups_created} created, {groups_mapped} matched to groups already here, {group_members} memberships."
+      groups_skipped: "{count} groups not brought across as groups ({reasons})."
+      group_reason:
+        banned: "{count} for banned members, who arrive suspended"
+        pending: "{count} for members awaiting confirmation, who arrive unconfirmed"
+        bots: "{count} for bots, which are not imported"
+        automatic: "{count} filled automatically by the old forum (such as trust levels)"
+        ranks: "{count} post-count ranks"
+        permissions: "{count} permission sets, not groups of people"
+      avatars: "{avatars} profile photos."
+      avatars_missing: "{count} profile photos could not be read: set the old forum's folder on this server, or its address, before importing."
+      birthdays: "{birthdays} birthdays."
+      birthdays_skipped: "{count} birthdays skipped: install Birthdays (datlechin/flarum-birthdays) before importing to bring them across."
+      attachments: "{attachments} attachments."
+      attachments_missing: "{count} attachments could not be read and are named in their posts instead: set the old forum's folder on this server, or its address."
     summary: "Imported {topics} discussions, {posts} posts, {users} members."
     summary_with_tags: "Imported {topics} discussions, {posts} posts, {users} members, {categories} tags."
     # The line opening an imported quote; it becomes bold text in the post.
@@ -180,3 +199,6 @@ ernestdefoe-importer:
       prune_tags: Removing empty tags…
       messages: Importing private messages…
       polls: Importing polls…
+      groups: Importing groups…
+      group_members: Adding members to groups…
+      profiles: Importing profile photos and birthdays…

@@ -182,7 +182,15 @@ export default class ImporterPage extends Component {
   start() {
     if (!confirm(this.syncMode ? t('sync.confirm') : t('confirm_start'))) return;
     const config: SourceConfig =
-      this.mode === 'upload' ? { file: this.handle!, prefix: this.config.prefix, private_messages: this.pms ? '1' : '0' } : this.cfg();
+      this.mode === 'upload'
+        ? {
+            file: this.handle!,
+            prefix: this.config.prefix,
+            assets_base: this.config.assets_base,
+            files_path: this.config.files_path,
+            private_messages: this.pms ? '1' : '0',
+          }
+        : this.cfg();
     this.starting = true;
     (this.syncMode ? startSync(config) : startImport(this.source, config))
       .then((s) => {
@@ -328,6 +336,12 @@ export default class ImporterPage extends Component {
                 ]),
                 src.needsPrefix && this.field('prefix', t('prefix'), 'text', '160px'),
               ]),
+
+          m('.ImporterPage-conn.ImporterPage-files', [
+            this.field('assets_base', t('assets_base'), 'url'),
+            this.field('files_path', t('files_path'), 'text'),
+            m('p.helpText.ImporterPage-full', t('files_help')),
+          ]),
 
           this.renderMessages(),
 

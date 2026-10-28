@@ -249,4 +249,38 @@ class SyncTest extends TestCase
         $this->assertSame(['Hi all' => ['Hi all', 'Hey there', 'Me too'], 'Fresh' => ['Brand new']], $this->forum());
         $this->assertSame(1, (int) $this->database()->table('users')->where('email', 'cal@mybb.example')->value('discussion_count'));
     }
+
+    #[Test]
+    public function a_sync_brings_groups_to_every_member_once_and_a_new_post_s_attachments_once()
+    {
+        $this->phpbb();
+        $dir = sys_get_temp_dir().'/importer-sync-files-'.bin2hex(random_bytes(4));
+        mkdir($dir.'/files', 0777, true);
+        file_put_contents($dir.'/files/7_cy', "%PDF-1.4\n% minutes\n");
+        $this->drive(['source' => 'phpbb', 'config' => ['driver' => 'sqlite', 'database' => $this->source, 'prefix' => 'phpbb_', 'files_path' => $dir]]);
+
+        // An import from before groups came across; then the board gains a member and an attachment.
+        $this->phpbbGrows();
+        $this->pdo->exec('CREATE TABLE phpbb_groups (group_id INTEGER PRIMARY KEY, group_type INTEGER, group_name TEXT, group_colour TEXT)');
+        $this->pdo->exec('CREATE TABLE phpbb_user_group (group_id INTEGER, user_id INTEGER, user_pending INTEGER)');
+        $this->pdo->exec('CREATE TABLE phpbb_attachments (attach_id INTEGER PRIMARY KEY, post_msg_id INTEGER, in_message INTEGER, is_orphan INTEGER, physical_filename TEXT, real_filename TEXT, poster_id INTEGER, filetime INTEGER)');
+        $this->pdo->exec("INSERT INTO phpbb_groups VALUES (5, 3, 'ADMINISTRATORS', ''), (7, 0, 'Storm Chasers', '3366FF')");
+        $this->pdo->exec('INSERT INTO phpbb_user_group VALUES (5, 5, 0), (7, 6, 0), (7, 7, 0)');
+        $this->pdo->exec("INSERT INTO phpbb_attachments VALUES (1, 105, 0, 0, '7_cy', 'minutes.pdf', 7, 1)");
+
+        $run = $this->sync();
+        $this->sync();
+
+        $db = $this->database();
+        $ids = $db->table('users')->whereIn('email', ['ada@board.example', 'bob@board.example', 'cy@board.example'])->pluck('id', 'email')->map(fn ($id) => (int) $id)->all();
+        $ids = ['Ada' => $ids['ada@board.example'], 'Bob' => $ids['bob@board.example'], 'Cy' => $ids['cy@board.example']];
+        $chasers = (int) $db->table('groups')->where('name_singular', 'Storm Chasers')->value('id');
+        $this->assertSame(1, $db->table('groups')->where('name_singular', 'Storm Chasers')->count(), json_encode($run));
+        $this->assertSame([[$ids['Ada'], 1], [$ids['Bob'], $chasers], [$ids['Cy'], $chasers]], $db->table('group_user')->whereIn('user_id', array_values($ids))
+            ->orderBy('user_id')->get()->map(fn ($r) => [(int) $r->user_id, (int) $r->group_id])->all(), 'Old members and new, once');
+        $this->assertSame(1, $db->table('importer_files')->count(), 'The attachment is copied once');
+        $answer = (string) $db->table('posts')->where('content', 'like', '%Opening the new topic%')->value('content');
+        $this->assertStringContainsString((string) $db->table('importer_files')->value('url'), $answer);
+        exec('rm -rf '.escapeshellarg($dir));
+    }
 }

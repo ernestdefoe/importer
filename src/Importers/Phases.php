@@ -213,9 +213,12 @@ class Phases
      * @param  \Closure  $map  fn($row): array{tid:int,pid:int,uid:mixed,html:string,at:\Illuminate\Support\Carbon,ok:bool}
      * @param  \Closure|null  $filter  fn(Builder $q): Builder — the source's own visibility rules
      * @param  string|null  $edited  column holding the source's last-edit time (unix seconds), if it has one
+     * @param  array|null  $files  the source's attachments ({@see Attachments}); $map is then
+     *                             called with the batch's {@see Attachments} as well, for
+     *                             the references in its text
      * @return Phase[]
      */
-    public static function posts(string $table, string $tid, string $pid, \Closure $count, \Closure $map, ?\Closure $filter = null, ?string $edited = null): array
+    public static function posts(string $table, string $tid, string $pid, \Closure $count, \Closure $map, ?\Closure $filter = null, ?string $edited = null, ?array $files = null): array
     {
         $query = function (Ctx $ctx) use ($table, $filter) {
             $q = $ctx->src()->table($table);
@@ -225,17 +228,17 @@ class Phases
 
         return [
             new Phase('posts', 'posts', $count, fn ($cursor, $limit, Ctx $ctx) => $ctx->sync
-                ? self::syncPosts($cursor, $limit, $ctx, $query, $pid, $map)
-                : self::postsBatch($cursor, $limit, $ctx, $query, $tid, $pid, $map), true),
+                ? self::syncPosts($cursor, $limit, $ctx, $query, $pid, $map, $files)
+                : self::postsBatch($cursor, $limit, $ctx, $query, $tid, $pid, $map, $files), true),
             new Phase('edits', 'edits', fn () => 0, fn ($cursor, $limit, Ctx $ctx) => $ctx->sync && $edited
                 && $ctx->src()->getSchemaBuilder()->hasColumn($table, $edited)
-                ? self::edits($cursor, $limit, $ctx, $query, $pid, $map, $edited)
+                ? self::edits($cursor, $limit, $ctx, $query, $pid, $map, $edited, $files)
                 : ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []]),
         ];
     }
 
     /** A full import: posts ordered by (topic, id), a running number per discussion carried in the cursor. */
-    private static function postsBatch(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $tid, string $pid, \Closure $map): array
+    private static function postsBatch(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $tid, string $pid, \Closure $map, ?array $files = null): array
     {
         $cur = is_array($cursor) ? $cursor : ['tid' => 0, 'pid' => 0, 'carry' => null];
         $carry = $cur['carry'] ?? null;
@@ -245,10 +248,7 @@ class Phases
                 ->orWhere(fn ($q2) => $q2->where($tid, (int) $cur['tid'])->where($pid, '>', (int) $cur['pid'])))
             ->orderBy($tid)->orderBy($pid)->limit($limit)->get();
 
-        $mapped = [];
-        foreach ($rows as $row) {
-            $mapped[] = $map($row);
-        }
+        [$mapped, $att] = self::mapBatch($rows, $pid, $map, $files, $ctx);
         $topicMap = $ctx->mapGet('topic', array_column($mapped, 'tid'));
         $userMap = $ctx->mapGet('user', array_column($mapped, 'uid'));
         Dst::prepare($ctx, array_column($mapped, 'html'));
@@ -276,6 +276,7 @@ class Phases
             try {
                 $content = Dst::content($m['html']);
                 $ids[$m['pid']] = Dst::postContent($did, $num, $userMap[(string) $m['uid']] ?? null, $content, $m['at']);
+                $att?->link($m['pid'], $ids[$m['pid']]);
                 Dst::ref('post', (string) $m['pid'], $ids[$m['pid']]);
                 $hashes[$m['pid']] = sha1($content);
                 $n++;
@@ -293,7 +294,7 @@ class Phases
         }
         $cur['carry'] = $done ? null : $carry;
 
-        return ['cursor' => $cur, 'processed' => count($mapped), 'done' => $done, 'summary' => ['posts' => $n]];
+        return ['cursor' => $cur, 'processed' => count($mapped), 'done' => $done, 'summary' => $att ? $att->done(['posts' => $n]) : ['posts' => $n]];
     }
 
     /**
@@ -307,20 +308,23 @@ class Phases
      * is adopted into the map instead of inserted. That is also what keeps a
      * catch-up pass over the last few hundred ids from duplicating anything.
      */
-    private static function syncPosts(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $pid, \Closure $map): array
+    private static function syncPosts(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $pid, \Closure $map, ?array $files = null): array
     {
         $after = (int) $cursor;
         $rows = $query($ctx)->where($pid, '>', $after)->orderBy($pid)->limit($limit)->get();
+        foreach ($rows as $row) {
+            $after = max($after, (int) $row->$pid);
+        }
+        // Posts this map has already are left out before their files are looked at.
+        $have = $ctx->mapGet('post', $rows->pluck($pid)->all());
+        [$all, $att] = self::mapBatch($rows->reject(fn ($r) => isset($have[(string) $r->$pid]))->values(), $pid, $map, $files, $ctx, false);
 
         $mapped = [];
-        foreach ($rows as $row) {
-            $m = $map($row);
-            $after = max($after, (int) $m['pid']);
+        foreach ($all as $m) {
             if (! empty($m['ok'])) {
                 $mapped[(string) $m['pid']] = $m;
             }
         }
-        $mapped = array_diff_key($mapped, $ctx->mapGet('post', array_keys($mapped)));
         $topicMap = $ctx->mapGet('topic', array_column($mapped, 'tid'));
         $userMap = $ctx->mapGet('user', array_column($mapped, 'uid'));
         Dst::prepare($ctx, array_column($mapped, 'html'));
@@ -352,14 +356,20 @@ class Phases
                 $at = $m['did'].'|'.$m['stamp'];
                 if (! empty($here[$at])) {
                     $adopt[$key] = array_shift($here[$at]);
-
-                    continue;
+                    unset($todo[$key]);
                 }
+            }
+            // Files only for the posts written now, not for those adopted from an older import.
+            foreach ($att ? $att->finish(array_column($todo, 'html', 'pid')) : [] as $key => $html) {
+                $todo[$key]['html'] = $html;
+            }
+            foreach ($todo as $key => $m) {
                 $content = Dst::content($m['html']);
                 $num = (int) ($next[$m['did']] ?? 0) + 1;
 
                 try {
                     $ids[$key] = Dst::postContent($m['did'], $num, $userMap[(string) $m['uid']] ?? null, $content, $m['at']);
+                    $att?->link($key, $ids[$key]);
                     Dst::ref('post', (string) $key, $ids[$key]);
                 } catch (\Throwable) {
                     continue; // as a full import does: one bad row is not the whole sync
@@ -376,7 +386,7 @@ class Phases
             Dst::finalizeDiscussion((int) $did);
         }
 
-        return ['cursor' => $after, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['posts' => $n]];
+        return ['cursor' => $after, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => $att ? $att->done(['posts' => $n]) : ['posts' => $n]];
     }
 
     /**
@@ -387,14 +397,15 @@ class Phases
      * that kept no hash, never have been edited on this forum). Anything else
      * was edited on Flarum, and that edit wins — it is counted, never lost.
      */
-    private static function edits(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $pid, \Closure $map, string $edited): array
+    private static function edits(mixed $cursor, int $limit, Ctx $ctx, \Closure $query, string $pid, \Closure $map, string $edited, ?array $files = null): array
     {
         $rows = $query($ctx)->where($edited, '>', (int) ($ctx->sync['since'] ?? 0))->where($pid, '>', (int) $cursor)
             ->orderBy($pid)->limit($limit)->get();
+        [$all, $att] = self::mapBatch($rows, $pid, $map, $files, $ctx);
 
         $mapped = [];
-        foreach ($rows as $row) {
-            $m = $map($row);
+        foreach ($all as $i => $m) {
+            $row = $rows[$i];
             $cursor = max((int) $cursor, (int) $m['pid']);
             if (! empty($m['ok'])) {
                 $mapped[(string) $m['pid']] = $m + ['editedAt' => Src::ts($row->$edited)];
@@ -421,11 +432,37 @@ class Phases
                 continue;
             }
             $db->table('posts')->where('id', $target)->update(['content' => $content, 'edited_at' => $mapped[$key]['editedAt'], 'edited_user_id' => $post->user_id]);
+            $att?->link($key, $target, true);
             Dst::mentions('posts', [$target => $content], true);
             $db->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'post')->where('source_id', (string) $key)->update(['hash' => sha1($content)]);
             $n++;
         }
 
-        return ['cursor' => $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['edited' => $n, 'kept' => $kept]];
+        return ['cursor' => $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => $att ? $att->done(['edited' => $n, 'kept' => $kept]) : ['edited' => $n, 'kept' => $kept]];
+    }
+
+    /**
+     * Map a batch of source posts, with its attachments when the source has
+     * them: looked up once for the batch, placed where the text refers to
+     * them, the rest listed under the post ({@see Attachments}).
+     *
+     * @return array{0:list<array>,1:?Attachments}
+     */
+    private static function mapBatch(\Illuminate\Support\Collection $rows, string $pid, \Closure $map, ?array $files, Ctx $ctx, bool $finish = true): array
+    {
+        $att = $files ? Attachments::batch($files, $ctx, $rows->pluck($pid)->all()) : null;
+        $mapped = [];
+        foreach ($rows as $row) {
+            $mapped[] = $att ? $map($row, $att) : $map($row);
+        }
+        if ($att && $finish) {
+            $htmls = $att->finish(array_column(array_filter($mapped, fn ($m) => ! empty($m['ok'])), 'html', 'pid'));
+            foreach ($mapped as &$m) {
+                $m['html'] = $htmls[$m['pid']] ?? $m['html'];
+            }
+            unset($m);
+        }
+
+        return [$mapped, $att];
     }
 }

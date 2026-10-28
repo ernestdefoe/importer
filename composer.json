@@ -69,7 +69,9 @@
     "flarum/nicknames": "^2.0",
     "flarum/suspend": "^2.0",
     "flarum/lock": "^2.0",
-    "flarum/sticky": "^2.0"
+    "flarum/sticky": "^2.0",
+    "datlechin/flarum-birthdays": "^3.0",
+    "fof/upload": "^2.0"
   },
   "scripts": {
     "test": [

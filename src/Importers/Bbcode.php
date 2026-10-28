@@ -85,14 +85,14 @@ class Bbcode
      * the text is still escaped — so nothing the member typed can be mistaken
      * for it — and the text is then decoded exactly once.
      */
-    public static function phpbb(?string $text, string $uid = ''): string
+    public static function phpbb(?string $text, string $uid = '', ?\Closure $attachment = null): string
     {
         $text = (string) $text;
         if (preg_match('#^\s*<([rt])[\s>].*</\1>\s*$#s', $text)) {
-            return self::toHtml(html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_XML1, 'UTF-8'), ['size' => 'percent']);
+            return self::toHtml(html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_XML1, 'UTF-8'), array_filter(['size' => 'percent', 'attachment' => $attachment]));
         }
 
-        return self::toHtml(self::phpbbLegacy($text, $uid), ['escaped' => true, 'size' => 'percent']);
+        return self::toHtml(self::phpbbLegacy($text, $uid), array_filter(['escaped' => true, 'size' => 'percent', 'attachment' => $attachment]));
     }
 
     /** phpBB 3.0 markup → BBCode, leaving the escaped text escaped. */
@@ -659,6 +659,9 @@ class Bbcode
         }
         if (preg_match('/\bid\s*=\s*"?(\d+)/i', $rawArg, $m)) {
             $srcId ??= $m[1]; // SMF [attach id=12]
+        }
+        if ($srcId === null && preg_match('/^=\s*(\d+)\s*$/', $rawArg, $m)) {
+            $srcId = 'i'.$m[1]; // phpBB [attachment=0]: the post's attachments, newest first
         }
 
         $resolver = $this->opts['attachment'] ?? null;

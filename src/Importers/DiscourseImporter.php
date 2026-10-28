@@ -204,8 +204,89 @@ class DiscourseImporter
                     'html' => Src::sanitizeHtml($post->cooked ?? ''), 'at' => Src::ts($post->created_at ?? null), 'ok' => true,
                 ],
                 fn ($q) => self::posts($q),
+                files: self::attachments(),
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Groups: `groups` and `group_users`. The automatic ones are Discourse's
+     * own: 0 everyone, 1 admins, 2 moderators, 3 staff (both of those), 10–14
+     * the trust levels, which Discourse fills by itself.
+     */
+    public static function groups(array $cfg): array
+    {
+        return [
+            'needs' => ['groups', 'group_users'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table('groups')->orderBy('id')->get()->map(fn ($g) => [
+                'id' => (string) $g->id, 'name' => trim((string) ($g->full_name ?? '')) ?: (string) $g->name, 'color' => $g->flair_bg_color ?? null,
+                'role' => match ((int) $g->id) {
+                    0 => 'member', 1 => 'admin', 2 => 'mod',
+                    default => ! empty($g->automatic) ? 'automatic' : null,
+                },
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::pivot($ctx->src()->table('users'), 'id', $after, $limit,
+                fn (array $ids) => $ctx->src()->table('group_users')->whereIn('user_id', $ids)->whereNotIn('group_id', [0, 3, 10, 11, 12, 13, 14])->get()->map(fn ($r) => [$r->user_id, $r->group_id])),
+        ];
+    }
+
+    /**
+     * Profile photos: `uploaded_avatar_id` → `uploads.url`. Birthdays:
+     * `users.date_of_birth` (or the birthday plugin's custom field), always
+     * in 1904 — Discourse keeps no year.
+     */
+    public static function profiles(array $cfg): array
+    {
+        return [
+            'count' => fn () => (int) Src::connect(self::cfg($cfg))->table('users')->where('id', '>', 0)->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) {
+                $conn = $ctx->src();
+                $sb = $conn->getSchemaBuilder();
+                $page = Profiles::page($conn->table('users'), 'id', $after, $limit, fn ($u) => ['avatar_id' => $u->uploaded_avatar_id ?? null, 'dob' => $u->date_of_birth ?? null]);
+                $uploads = ($ids = array_filter(array_column($page['profiles'], 'avatar_id'))) ? $conn->table('uploads')->whereIn('id', $ids)->pluck('url', 'id')->all() : [];
+                $dobs = $sb->hasTable('user_custom_fields') && $page['profiles']
+                    ? $conn->table('user_custom_fields')->whereIn('user_id', array_column($page['profiles'], 'uid'))->where('name', 'date_of_birth')->pluck('value', 'user_id')->all() : [];
+                foreach ($page['profiles'] as &$p) {
+                    $url = (string) ($uploads[(int) $p['avatar_id']] ?? '');
+                    $p['avatar'] = $url === '' ? null : ['url' => $url] + (preg_match('#/(uploads/.+)$#', (string) parse_url($url, PHP_URL_PATH), $m) ? ['root' => 'public', 'path' => $m[1]] : []);
+                    $b = Profiles::date((string) ($p['dob'] ?: ($dobs[$p['uid']] ?? '')));
+                    $p['birthday'] = $b ? [null, $b[1], $b[2]] : null;
+                }
+                unset($p);
+
+                return $page;
+            },
+        ];
+    }
+
+    /**
+     * Uploads a post holds (`upload_references`, or `post_uploads` before
+     * it): the cooked text links each by address, or by its short form
+     * (upload://<base62 sha1>, /uploads/short-url/…), and every form is
+     * matched. Files under public/uploads/ in the Discourse folder.
+     */
+    public static function attachments(): array
+    {
+        return ['fetch' => function (array $ids, Ctx $ctx) {
+            $conn = $ctx->src();
+            $sb = $conn->getSchemaBuilder();
+            $q = match (true) {
+                $sb->hasTable('upload_references') => $conn->table('upload_references as r')->where('r.target_type', 'Post')->whereIn('r.target_id', $ids)->select('r.target_id as post_id'),
+                $sb->hasTable('post_uploads') => $conn->table('post_uploads as r')->whereIn('r.post_id', $ids)->select('r.post_id'),
+                default => null,
+            };
+            $out = [];
+            foreach ($q ? $q->join('uploads as u', 'u.id', '=', 'r.upload_id')->addSelect('u.id', 'u.url', 'u.original_filename', 'u.sha1', 'u.extension', 'u.user_id')->orderBy('u.id')->get() : [] as $u) {
+                $short = Attachments::base62((string) $u->sha1).($u->extension ? '.'.$u->extension : '');
+                $path = ltrim((string) parse_url((string) $u->url, PHP_URL_PATH), '/');
+                $out[$u->post_id][] = [
+                    'id' => (string) $u->id, 'name' => (string) $u->original_filename, 'uid' => $u->user_id, 'url' => (string) $u->url,
+                    'append' => false, 'keys' => [(string) $u->url, $path, 'upload://'.$short, 'uploads/short-url/'.$short],
+                ] + (str_starts_with($path, 'uploads/') ? ['root' => 'public', 'path' => $path] : []);
+            }
+
+            return $out;
+        }, 'inline' => '#/uploads/#', 'disk' => ['#^.*?/uploads/#', 'public/uploads']];
     }
     /**
      * The topics that are discussions. 🚨 Each category's "About the X

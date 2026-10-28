@@ -301,38 +301,132 @@ class Vbulletin5Importer
         return Bbcode::toHtml($raw, array_filter(['attachment' => $attachmentResolver, 'html' => $html]));
     }
 
-    /**
-     * Builds a resolver for [ATTACH]/[ATTACH=JSON] BBCode references: given a
-     * vBulletin attachment node id, rehosts the file's bytes (from the
-     * `filedata` BLOB, since vBulletin keeps attachment content in the
-     * database — unlike its avatars, which are commonly file-based) onto
-     * Flarum's own public asset disk and returns its new URL. Results are
-     * cached per source id for the lifetime of one batch since the same
-     * attachment can be referenced from more than one post (quotes).
-     */
-    private static function attachmentResolver(ConnectionInterface $conn, string $p): \Closure
+    /** One of the board's settings (`setting`), or ''. */
+    public static function setting(ConnectionInterface $conn, string $p, string $name): string
     {
-        $cache = [];
+        static $cache = [];
 
-        return function (string $srcId) use ($conn, $p, &$cache): ?array {
-            if (array_key_exists($srcId, $cache)) {
-                return $cache[$srcId];
-            }
-            if (! ctype_digit($srcId)) {
-                return $cache[$srcId] = null;
-            }
-            $row = $conn->table($p.'attach')->where('nodeid', (int) $srcId)->first(['filedataid', 'filename']);
-            if (! $row) {
-                return $cache[$srcId] = null;
-            }
-            $file = $conn->table($p.'filedata')->where('filedataid', $row->filedataid)->first(['filedata', 'extension']);
-            if (! $file || ! $file->filedata) {
-                return $cache[$srcId] = null;
-            }
-            $stored = Dst::storeAsset((string) $file->filedata, (string) ($row->filename ?: ('attachment.'.$file->extension)));
+        return $cache[$p.$name] ??= (string) ($conn->getSchemaBuilder()->hasTable($p.'setting')
+            ? $conn->table($p.'setting')->where('varname', $name)->value('value') : '');
+    }
 
-            return $cache[$srcId] = $stored ? $stored + ['filename' => (string) $row->filename] : null;
-        };
+    /**
+     * Groups (vBulletin 3 to 6): `usergroup`, a member's primary group in
+     * `user.usergroupid` and the rest in `membergroupids`. The system groups
+     * have the same ids everywhere: 1 guests, 2 registered, 3 awaiting email
+     * confirmation, 4 awaiting moderation, 5 super moderators, 6
+     * administrators, 7 moderators, 8 banned. vBulletin 5's channel and
+     * social-group roles (`systemgroupid` 9 and up) are permission sets.
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+        $roles = [1 => 'guest', 2 => 'member', 3 => 'pending', 4 => 'pending', 5 => 'mod', 6 => 'admin', 7 => 'mod', 8 => 'banned'];
+
+        return [
+            'needs' => [$p.'usergroup'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table($p.'usergroup')->orderBy('usergroupid')->get()->map(fn ($g) => [
+                'id' => (string) $g->usergroupid, 'name' => (string) $g->title,
+                'color' => preg_match('/color\s*[:=]\s*["\']?\s*(#[0-9a-f]{3,6})/i', (string) ($g->opentag ?? ''), $m) ? $m[1] : null,
+                'role' => $roles[(int) $g->usergroupid] ?? ((int) ($g->systemgroupid ?? 0) >= 9 ? 'permissions' : null),
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::byMember($ctx, $after, $limit, fn (Ctx $c) => $c->src()->table($p.'user'), 'userid',
+                fn ($u) => [$u->usergroupid, ...Groups::ids((string) ($u->membergroupids ?? ''))]),
+        ];
+    }
+
+    /**
+     * Profile photos and birthdays (vBulletin 3 to 6). An uploaded picture is
+     * in `customavatar` — the bytes themselves, or with avatars kept as files,
+     * customavatars/avatar<id>_<revision>.gif (`--avatar-path` names that
+     * folder when it is elsewhere). A gallery picture is `avatar.avatarpath`.
+     * `user.birthday` is "mm-dd-yyyy", the year 0000 when not given.
+     */
+    public static function profiles(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $cfg) {
+                $conn = $ctx->src();
+                $sb = $conn->getSchemaBuilder();
+                $q = $conn->table($p.'user as u')->select('u.*');
+                if ($custom = $sb->hasTable($p.'customavatar')) {
+                    $q->leftJoin($p.'customavatar as ca', 'ca.userid', '=', 'u.userid')->addSelect('ca.filename as ca_filename', $conn->raw('CASE WHEN ca.userid IS NULL THEN 0 ELSE 1 END AS ca_has'));
+                }
+                if ($gallery = $sb->hasTable($p.'avatar')) {
+                    $q->leftJoin($p.'avatar as av', 'av.avatarid', '=', 'u.avatarid')->addSelect('av.avatarpath');
+                }
+                $folder = ($cfg['avatar_path'] ?? '') !== '' ? ['dir' => (string) $cfg['avatar_path']] : Files::folder(self::setting($conn, $p, 'avatarpath'), 'customavatars');
+
+                return Profiles::page($q, 'u.userid', $after, $limit, function ($u) use ($conn, $p, $custom, $gallery, $folder) {
+                    $avatar = null;
+                    if ($custom && (int) ($u->ca_has ?? 0)) {
+                        $avatar = $folder + [
+                            // The bytes, when the board keeps avatars in the database: read only for this member.
+                            'bytes' => fn () => (string) $conn->table($p.'customavatar')->where('userid', $u->userid)->value('filedata'),
+                            'path' => array_filter([basename((string) ($u->ca_filename ?? '')), 'avatar'.$u->userid.'_'.(int) ($u->avatarrevision ?? 0).'.gif']),
+                        ];
+                    } elseif ($gallery && ($path = trim((string) ($u->avatarpath ?? ''))) !== '') {
+                        $avatar = ['path' => $path, 'url' => $path];
+                    }
+
+                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'mdy')];
+                });
+            },
+        ];
+    }
+
+    /** Where a vBulletin board keeps attachment files: by member id, a folder per digit. */
+    public static function attachFolder(ConnectionInterface $conn, string $p): array
+    {
+        return Files::folder(self::setting($conn, $p, 'attachpath'), 'attachments');
+    }
+
+    public static function digits(mixed $userId): string
+    {
+        return implode('/', str_split((string) (int) $userId));
+    }
+
+    /**
+     * Attachments (vBulletin 5/6): Attach nodes under the post, `attach`
+     * naming the `filedata` whose bytes are in the database, or with files
+     * kept on disk, <attachpath>/<member digits>/<filedata id>.attach. A post
+     * places one with [ATTACH]<node id>[/ATTACH].
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = trim((string) ($cfg['prefix'] ?? ''));
+
+        $att = fn (ConnectionInterface $conn, object $a, array $folder) => $folder + [
+            'id' => (string) $a->nodeid, 'name' => (string) ($a->filename ?: 'attachment.'.$a->extension), 'uid' => $a->userid,
+            'bytes' => fn () => (string) $conn->table($p.'filedata')->where('filedataid', $a->filedataid)->value('filedata'),
+            'path' => self::digits($a->userid).'/'.(int) $a->filedataid.'.attach',
+            'url' => 'filedata/fetch?id='.$a->nodeid,
+        ];
+        $query = fn (ConnectionInterface $conn) => $conn->table($p.'attach as a')->leftJoin($p.'node as n', 'n.nodeid', '=', 'a.nodeid')
+            ->leftJoin($p.'filedata as f', 'f.filedataid', '=', 'a.filedataid')
+            ->select('a.nodeid', 'n.parentid', 'n.userid', 'a.filedataid', 'a.filename', 'f.extension');
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p, $att, $query) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable($p.'attach')) {
+                return [];
+            }
+            $folder = self::attachFolder($conn, $p);
+            $out = [];
+            foreach ($query($conn)->whereIn('n.parentid', $ids)->orderBy('a.nodeid')->get() as $a) {
+                $out[$a->parentid][] = $att($conn, $a, $folder);
+            }
+
+            return $out;
+        }, 'lookup' => function (string $ref, Ctx $ctx) use ($p, $att, $query) {
+            $conn = $ctx->src();
+            $a = ctype_digit($ref) && $conn->getSchemaBuilder()->hasTable($p.'attach') ? $query($conn)->where('a.nodeid', (int) $ref)->first() : null;
+
+            return $a ? $att($conn, $a, self::attachFolder($conn, $p)) : null;
+        }];
     }
 
     public static function test(array $cfg): array
@@ -546,46 +640,6 @@ class Vbulletin5Importer
                 }
             ),
 
-            // Custom (uploaded) avatars. vBulletin 5 stores the image bytes
-            // either as a BLOB in `customavatar.filedata`, or — if the admin
-            // configured file-based storage (the common case) — only the
-            // filename there, with the actual bytes on disk. When the blob
-            // is empty and --avatar-path/`avatar_path` config points at that
-            // directory, we read the file `customavatar.filename` names.
-            // vBulletin "preset gallery" avatars (mo_vb3_avatar) aren't user
-            // uploads and have no per-user image data, so they're skipped.
-            new Phase(
-                'avatars',
-                'avatars',
-                fn () => 0,
-                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
-                    $conn = $ctx->src();
-                    if (! $conn->getSchemaBuilder()->hasTable($p.'customavatar')) {
-                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
-                    }
-                    $avatarDir = rtrim((string) ($cfg['avatar_path'] ?? ''), '/');
-                    $rows = $conn->table($p.'customavatar')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get(['userid', 'filedata', 'filename']);
-                    $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
-                    $n = $skip = 0;
-                    foreach ($rows as $row) {
-                        $cursor = $row->userid;
-                        $uid = $userMap[(string) $row->userid] ?? null;
-                        $bytes = (string) ($row->filedata ?? '');
-                        if ($bytes === '' && $avatarDir !== '' && ($row->filename ?? '')) {
-                            $path = $avatarDir.'/'.basename((string) $row->filename);
-                            $bytes = is_file($path) ? (@file_get_contents($path) ?: '') : '';
-                        }
-                        if ($uid && Dst::avatarBytes((int) $uid, $bytes)) {
-                            $n++;
-                        } else {
-                            $skip++;
-                        }
-                    }
-
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['avatars' => $n, 'skipped' => $skip]];
-                }
-            ),
-
             // Thread starters: Text (or Poll, Gallery, …) nodes whose parent is a
             // Channel. The node's own text row is the discussion's first post (#1).
             new Phase(
@@ -617,11 +671,12 @@ class Vbulletin5Importer
                         ->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('parentid')->all()) : [];
-                    $attachmentResolver = self::attachmentResolver($conn, $p);
+                    $files = Attachments::batch(self::attachments($cfg), $ctx, $rows->pluck('nodeid')->all());
                     $bodies = [];
                     foreach ($rows as $node) {
-                        $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
+                        $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $files->resolver($node->nodeid)) ?: '<p></p>';
                     }
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     $map = $posts = [];
                     $n = 0;
@@ -638,6 +693,7 @@ class Vbulletin5Importer
                         }
                         // The starter's own nodeid is what an old /node/123 or ?p= link names.
                         $posts[$node->nodeid] = Dst::post($did, 1, $uid, $bodies[$node->nodeid], $created);
+                        $files->link($node->nodeid, $posts[$node->nodeid]);
                         Dst::ref('post', (string) $node->nodeid, $posts[$node->nodeid]);
                         // Finalize immediately: topics with zero replies are never
                         // visited again by the posts phase, so without this their
@@ -649,7 +705,7 @@ class Vbulletin5Importer
                     $ctx->mapPut('topic', $map);
                     $ctx->mapPut('post', $posts);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['topics' => $n, 'posts' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => $files->done(['topics' => $n, 'posts' => $n])];
                 }
             ),
 
@@ -662,7 +718,7 @@ class Vbulletin5Importer
                 'posts',
                 'posts',
                 fn () => 0,
-                function ($cursor, $limit, Ctx $ctx) use ($p) {
+                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
                     $conn = $ctx->src();
                     [$channelTypeIds, $textTypeIds] = self::typeIds($conn, $p);
                     if (! $textTypeIds) {
@@ -690,13 +746,14 @@ class Vbulletin5Importer
 
                     $topicMap = $ctx->mapGet('topic', $rows->pluck($tid)->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('userid')->all());
-                    $attachmentResolver = self::attachmentResolver($conn, $p);
+                    $files = Attachments::batch(self::attachments($cfg), $ctx, $rows->filter(fn ($r) => isset($topicMap[(string) $r->$tid]))->pluck('nodeid')->all());
                     $bodies = [];
                     foreach ($rows as $node) {
                         if (isset($topicMap[(string) $node->$tid])) {
-                            $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $attachmentResolver) ?: '<p></p>';
+                            $bodies[$node->nodeid] = self::body($node->rawtext ?? '', $node->htmlstate ?? '', $files->resolver($node->nodeid)) ?: '<p></p>';
                         }
                     }
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     // Where each discussion's numbering stands, in one query for the
                     // batch (the starter is #1).
@@ -721,6 +778,7 @@ class Vbulletin5Importer
                         $created = Src::ts($node->publishdate ?? $node->created ?? null);
                         try {
                             $posts[$node->nodeid] = Dst::post($did, ++$carry['num'], $userMap[(string) $node->userid] ?? null, $bodies[$node->nodeid], $created);
+                            $files->link($node->nodeid, $posts[$node->nodeid]);
                             Dst::ref('post', (string) $node->nodeid, $posts[$node->nodeid]);
                             $n++;
                         } catch (\Throwable) {
@@ -735,7 +793,7 @@ class Vbulletin5Importer
                     }
                     $cur['carry'] = $done ? null : $carry;
 
-                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['posts' => $n]];
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $files->done(['posts' => $n])];
                 }
             ),
         ], Phases::tail(), ! empty($cfg['prune_empty_tags']) ? Phases::pruneEmptyTags() : []);

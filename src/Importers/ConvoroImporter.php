@@ -350,8 +350,64 @@ class ConvoroImporter
                  * compares the column with unix seconds, and Convoro's is a
                  * datetime, which then reads as "edited since" on every sync.
                  */
+                null,
+                self::attachments(),
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Groups: `groups` (`is_admin`, `is_moderator`, `is_guest` and
+     * `is_default`, the Members group, say which are Convoro's own) and
+     * `group_members`. Convoro keeps no birthdays, and its profile photos
+     * come across with the members.
+     */
+    public static function groups(array $cfg): array
+    {
+        return [
+            'needs' => ['groups', 'group_members'],
+            'groups' => function (Ctx $ctx) {
+                $conn = $ctx->src();
+
+                return $conn->table('groups')->orderBy('id')->get()->map(fn ($g) => [
+                    'id' => (string) $g->id, 'name' => (string) $g->name, 'color' => $g->color ?? null,
+                    'role' => match (true) {
+                        ! empty($g->is_admin) => 'admin', ! empty($g->is_moderator) => 'mod',
+                        ! empty($g->is_guest) => 'guest', ! empty($g->is_default) => 'member', default => null,
+                    },
+                ])->all();
+            },
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::pivot(self::liveUsers($ctx->src()), 'id', $after, $limit,
+                fn (array $ids) => $ctx->src()->table('group_members')->whereIn('user_id', $ids)->get()->map(fn ($r) => [$r->user_id, $r->group_id])),
+        ];
+    }
+
+    /**
+     * Attachments: `attachments` of the post (`owner_type` post and
+     * `owner_id`, or `post_id` before attachments could belong to anything),
+     * the file at content/attachments/<path>, served at /attachment/<token>.
+     */
+    public static function attachments(): array
+    {
+        return ['fetch' => function (array $ids, Ctx $ctx) {
+            $conn = $ctx->src();
+            $sb = $conn->getSchemaBuilder();
+            if (! $sb->hasTable('attachments')) {
+                return [];
+            }
+            $owner = $sb->hasColumn('attachments', 'owner_type');
+            $col = $owner ? 'owner_id' : 'post_id';
+            $out = [];
+            foreach ($conn->table('attachments')->whereIn($col, $ids)->when($owner, fn ($q) => $q->where('owner_type', 'post'))->orderBy('id')->get() as $a) {
+                $out[$a->$col][] = [
+                    'id' => (string) $a->id, 'name' => (string) $a->original_name, 'uid' => $a->user_id ?? null,
+                    'root' => 'content/attachments', 'path' => (string) $a->path, 'url' => 'attachment/'.$a->token,
+                    'keys' => ['attachment/'.$a->token],
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/attachment/#'];
     }
     /**
      * Banned there, suspended here: Convoro 2 `is_banned` until

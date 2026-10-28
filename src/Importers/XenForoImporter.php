@@ -245,15 +245,94 @@ class XenForoImporter
                 'thread_id',
                 'post_id',
                 fn () => (int) Src::connect($cfg)->table('xf_post')->count(),
-                fn ($post) => [
+                fn ($post, ?Attachments $files = null) => [
                     'tid' => (int) $post->thread_id, 'pid' => (int) $post->post_id, 'uid' => $post->user_id,
-                    'html' => Bbcode::toHtml($post->message ?? ''), 'at' => Src::ts($post->post_date ?? null),
+                    'html' => Bbcode::toHtml($post->message ?? '', array_filter(['attachment' => $files?->resolver($post->post_id)])), 'at' => Src::ts($post->post_date ?? null),
                     'ok' => ($post->message_state ?? 'visible') === 'visible',
                 ],
                 null,
                 'last_edit_date',
+                self::attachments(),
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Groups: `xf_user_group`, with a member's primary group on `xf_user`
+     * and the rest in `secondary_group_ids`. 1 Unregistered / Unconfirmed,
+     * 2 Registered, 3 Administrative and 4 Moderating are XenForo's own;
+     * an administrator flagged `is_admin` outside group 3 is still one.
+     */
+    public static function groups(array $cfg): array
+    {
+        $roles = [1 => 'guest', 2 => 'member', 3 => 'admin', 4 => 'mod'];
+
+        return [
+            'needs' => ['xf_user_group'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table('xf_user_group')->orderBy('user_group_id')->get()->map(fn ($g) => [
+                'id' => (string) $g->user_group_id, 'name' => (string) $g->title,
+                'color' => preg_match('/(?:^|;)\s*color\s*:\s*(#[0-9a-f]{3,6})/i', (string) ($g->username_css ?? ''), $m) ? $m[1] : null,
+                'role' => $roles[(int) $g->user_group_id] ?? null,
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::byMember($ctx, $after, $limit, fn (Ctx $c) => $c->src()->table('xf_user'), 'user_id',
+                fn ($u) => [$u->user_group_id, ...Groups::ids((string) ($u->secondary_group_ids ?? '')), ...(! empty($u->is_admin) ? ['@admin'] : [])]),
+        ];
+    }
+
+    /**
+     * Profile photos: uploaded ones are data/avatars/l/<id ÷ 1000>/<id>.jpg
+     * once `avatar_date` is set; a Gravatar is the address in `gravatar`.
+     * Birthdays are on `xf_user_profile` (`dob_year` 0 when not given).
+     */
+    public static function profiles(array $cfg): array
+    {
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table('xf_user')->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) {
+                $conn = $ctx->src();
+                $q = $conn->table('xf_user as u');
+                $dob = $conn->getSchemaBuilder()->hasColumn('xf_user_profile', 'dob_day');
+                if ($dob) {
+                    $q->leftJoin('xf_user_profile as pr', 'pr.user_id', '=', 'u.user_id')->select('u.*', 'pr.dob_day', 'pr.dob_month', 'pr.dob_year');
+                }
+
+                return Profiles::page($q, 'u.user_id', $after, $limit, function ($u) {
+                    $file = 'l/'.intdiv((int) $u->user_id, 1000).'/'.$u->user_id.'.jpg';
+                    $avatar = (int) ($u->avatar_date ?? 0) > 0 ? ['root' => 'data/avatars', 'path' => $file, 'url' => 'data/avatars/'.$file]
+                        : (trim((string) ($u->gravatar ?? '')) !== '' ? Profiles::gravatar((string) $u->gravatar) : null);
+
+                    return ['avatar' => $avatar, 'birthday' => (int) ($u->dob_day ?? 0) ? [(int) ($u->dob_year ?? 0) ?: null, (int) $u->dob_month, (int) $u->dob_day] : null];
+                });
+            },
+        ];
+    }
+
+    /**
+     * Attachments: `xf_attachment` (content_type post) over
+     * `xf_attachment_data`, the file in
+     * internal_data/attachments/<data id ÷ 1000>/<data id>-<hash>.data. A post
+     * places one with [ATTACH]<attachment id>[/ATTACH].
+     */
+    public static function attachments(): array
+    {
+        return ['fetch' => function (array $ids, Ctx $ctx) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable('xf_attachment_data')) {
+                return [];
+            }
+            $out = [];
+            foreach ($conn->table('xf_attachment as a')->join('xf_attachment_data as d', 'd.data_id', '=', 'a.data_id')
+                ->where('a.content_type', 'post')->whereIn('a.content_id', $ids)->orderBy('a.attachment_id')
+                ->get(['a.attachment_id', 'a.content_id', 'd.data_id', 'd.user_id', 'd.filename', 'd.file_hash']) as $a) {
+                $out[$a->content_id][] = [
+                    'id' => (string) $a->attachment_id, 'name' => (string) $a->filename, 'uid' => $a->user_id,
+                    'root' => 'internal_data/attachments', 'path' => intdiv((int) $a->data_id, 1000).'/'.$a->data_id.'-'.$a->file_hash.'.data',
+                    'url' => 'index.php?attachments/'.$a->attachment_id.'/',
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/(?:data/attachments|attachments)/#'];
     }
     /**
      * The threads that are discussions. 🚨 A thread moved with "leave a

@@ -224,16 +224,113 @@ class PhpbbImporter
                 'topic_id',
                 'post_id',
                 fn () => (int) Src::connect($cfg)->table($p.'posts')->count(),
-                fn ($post) => [
+                fn ($post, ?Attachments $files = null) => [
                     'tid' => (int) $post->topic_id, 'pid' => (int) $post->post_id, 'uid' => $post->poster_id,
-                    'html' => Bbcode::phpbb($post->post_text ?? '', (string) ($post->bbcode_uid ?? '')),
+                    'html' => Bbcode::phpbb($post->post_text ?? '', (string) ($post->bbcode_uid ?? ''), $files?->resolver($post->post_id)),
                     'at' => Src::ts($post->post_time ?? null),
                     'ok' => (int) ($post->post_visibility ?? $post->post_approved ?? 1) === 1,
                 ],
                 null,
                 'post_edit_time',
+                self::attachments($cfg),
             ),
         ], Phases::tail());
+    }
+
+    /** One of the board's settings (`config`), or $default. */
+    private static function setting(ConnectionInterface $conn, string $p, string $name, string $default = ''): string
+    {
+        static $cache = [];
+
+        return $cache[$p.$name] ??= (string) (($conn->getSchemaBuilder()->hasTable($p.'config') ? $conn->table($p.'config')->where('config_name', $name)->value('config_value') : null) ?? $default);
+    }
+
+    /**
+     * Groups: `groups` (group_type 3 = phpBB's own, by name) and `user_group`
+     * (a pending request to join is not membership).
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $special = ['ADMINISTRATORS' => 'admin', 'GLOBAL_MODERATORS' => 'mod', 'REGISTERED' => 'member', 'REGISTERED_COPPA' => 'member', 'NEWLY_REGISTERED' => 'member', 'GUESTS' => 'guest', 'BOTS' => 'bots'];
+
+        return [
+            'needs' => [$p.'groups', $p.'user_group'],
+            'groups' => fn (Ctx $ctx) => $ctx->src()->table($p.'groups')->orderBy('group_id')->get()->map(fn ($g) => [
+                'id' => (string) $g->group_id,
+                'name' => self::decode((string) $g->group_name),
+                'color' => $g->group_colour ?? null,
+                'role' => (int) ($g->group_type ?? 0) === 3 ? ($special[(string) $g->group_name] ?? null) : null,
+            ])->all(),
+            'members' => fn ($after, int $limit, Ctx $ctx) => Groups::pivot($ctx->src()->table($p.'users'), 'user_id', $after, $limit,
+                fn (array $ids) => $ctx->src()->table($p.'user_group')->whereIn('user_id', $ids)->where('user_pending', 0)->get()->map(fn ($r) => [$r->user_id, $r->group_id])),
+        ];
+    }
+
+    /**
+     * Profile photos (`user_avatar_type`: upload, remote, gallery, gravatar —
+     * 3.1+ names its drivers, 3.0 numbers them 1–3) and birthdays
+     * (`user_birthday` "dd-mm-yyyy", the year 0 when not given).
+     */
+    public static function profiles(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'users')->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p) {
+                $conn = $ctx->src();
+                $salt = self::setting($conn, $p, 'avatar_salt');
+                $uploads = trim(self::setting($conn, $p, 'avatar_path', 'images/avatars/upload'), '/');
+                $gallery = trim(self::setting($conn, $p, 'avatar_gallery_path', 'images/avatars/gallery'), '/');
+
+                return Profiles::page($conn->table($p.'users'), 'user_id', $after, $limit, function ($u) use ($salt, $uploads, $gallery) {
+                    $file = (string) ($u->user_avatar ?? '');
+                    $type = (string) ($u->user_avatar_type ?? '');
+                    $avatar = $file === '' ? null : match ($type) {
+                        // Stored as <salt>_<user id>.<ext>; served by download/file.php, as the folder itself is closed.
+                        'avatar.driver.upload', '1' => ['root' => $uploads, 'path' => $salt.'_'.$u->user_id.'.'.pathinfo(explode('_', $file, 2)[1] ?? $file, PATHINFO_EXTENSION), 'url' => 'download/file.php?avatar='.rawurlencode($file)],
+                        'avatar.driver.remote', '2' => ['url' => $file],
+                        'avatar.driver.local', '3' => ['root' => $gallery, 'path' => $file, 'url' => $gallery.'/'.$file],
+                        'avatar.driver.gravatar' => Profiles::gravatar($file),
+                        default => null,
+                    };
+
+                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->user_birthday ?? ''), 'dmy')];
+                });
+            },
+        ];
+    }
+
+    /**
+     * Attachments (`attachments`, in_message 0): the files are in `files/`
+     * under a random physical name, and served by download/file.php. A post
+     * places one with [attachment=n], n counting from its newest attachment,
+     * as phpBB numbers them while the post is written.
+     */
+    public static function attachments(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return ['fetch' => function (array $ids, Ctx $ctx) use ($p) {
+            $conn = $ctx->src();
+            if (! $conn->getSchemaBuilder()->hasTable($p.'attachments')) {
+                return [];
+            }
+            $dir = trim(self::setting($conn, $p, 'upload_path', 'files'), '/');
+            $out = [];
+            foreach ($conn->table($p.'attachments')->whereIn('post_msg_id', $ids)->where('in_message', 0)->where('is_orphan', 0)
+                ->orderByDesc('filetime')->orderByDesc('attach_id')->get() as $a) {
+                $i = count($out[$a->post_msg_id] ?? []);
+                $out[$a->post_msg_id][] = [
+                    'id' => (string) $a->attach_id, 'name' => self::decode((string) $a->real_filename), 'uid' => $a->poster_id ?? null,
+                    'root' => $dir, 'path' => basename((string) $a->physical_filename), 'url' => 'download/file.php?id='.$a->attach_id,
+                    'keys' => ['i'.$i],
+                ];
+            }
+
+            return $out;
+        }, 'inline' => '#/download/file\.php$#'];
     }
     /**
      * Private messages: `privmsgs` (one row per message, threaded by

@@ -83,6 +83,99 @@ class NodebbImporter
         return $out;
     }
 
+    /**
+     * Uploads are addresses in the posts (/assets/uploads/files/…), kept in
+     * the NodeBB folder's public/uploads/: copied where each post shows them.
+     */
+    public static function attachments(): array
+    {
+        return ['inline' => '#/assets/uploads/#', 'disk' => ['#^.*?/assets/uploads/#', 'public/uploads']];
+    }
+
+    /**
+     * Groups: every name in `groups:createtime`, its `group:<name>` hash and
+     * `group:<name>:members` set. administrators and Global Moderators are
+     * NodeBB's staff, registered-users / verified-users its members,
+     * unverified-users those still to confirm, banned-users the banned;
+     * cid:<n>:privileges:… groups are a category's permissions.
+     */
+    public static function groups(array $cfg): array
+    {
+        $names = function (\Redis $r): array {
+            $all = $r->zRange('groups:createtime', 0, -1) ?: [];
+            sort($all);
+
+            return $all;
+        };
+        $roles = ['administrators' => 'admin', 'global moderators' => 'mod', 'registered-users' => 'member', 'verified-users' => 'member',
+            'unverified-users' => 'pending', 'banned-users' => 'banned', 'guests' => 'guest', 'spiders' => 'bots'];
+
+        return [
+            'groups' => function (Ctx $ctx) use ($cfg, $names, $roles) {
+                $r = self::redis($cfg);
+                $out = [];
+                foreach (self::hashes($r, self::keys('group:', $names($r))) as $name => $g) {
+                    $out[] = [
+                        'id' => self::groupId((string) $name), 'name' => (string) ($g['name'] ?? $name), 'color' => $g['labelColor'] ?? null,
+                        'role' => $roles[strtolower((string) $name)] ?? (preg_match('/^cid:\d+:privileges:/', (string) $name) ? 'permissions' : null),
+                    ];
+                }
+
+                return $out;
+            },
+            // A page of each group's members in turn: the cursor is [group, offset].
+            'members' => function ($after, int $limit, Ctx $ctx) use ($cfg, $names) {
+                $r = self::redis($cfg);
+                $all = $names($r);
+                [$g, $off] = is_array($after) ? $after + [0, 0] : [0, 0];
+                $pairs = [];
+                while (isset($all[$g]) && count($pairs) < $limit) {
+                    $uids = $r->zRange('group:'.$all[$g].':members', $off, $off + $limit - count($pairs) - 1) ?: [];
+                    foreach ($uids as $uid) {
+                        $pairs[] = [$uid, self::groupId((string) $all[$g])];
+                    }
+                    $off += count($uids);
+                    if (count($pairs) < $limit) {
+                        [$g, $off] = [$g + 1, 0];
+                    }
+                }
+
+                return ['cursor' => [$g, $off], 'rows' => count($pairs), 'done' => ! isset($all[$g]), 'pairs' => $pairs];
+            },
+        ];
+    }
+
+    /** A group's name is its id, hashed when it is longer than the id map holds. */
+    private static function groupId(string $name): string
+    {
+        return strlen($name) <= 64 ? $name : 'h:'.sha1($name);
+    }
+
+    /**
+     * Profile photos: `uploadedpicture` (or `picture`), an address under
+     * /assets/uploads/profile/ or elsewhere. Birthdays: `birthday`
+     * "mm/dd/yyyy".
+     */
+    public static function profiles(array $cfg): array
+    {
+        return [
+            'count' => fn () => (int) self::redis($cfg)->zCard('users:joindate'),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($cfg) {
+                $r = self::redis($cfg);
+                $uids = $r->zRange('users:joindate', $after, $after + $limit - 1) ?: [];
+                $out = [];
+                foreach (self::hashes($r, self::keys('user:', $uids)) as $uid => $u) {
+                    $pic = trim((string) (($u['uploadedpicture'] ?? '') ?: ($u['picture'] ?? '')));
+                    $path = (string) parse_url($pic, PHP_URL_PATH);
+                    $avatar = $pic === '' ? null : ['url' => $pic] + (preg_match('#/assets/uploads/(.+)$#', $path, $m) ? ['root' => 'public/uploads', 'path' => rawurldecode($m[1])] : []);
+                    $out[] = ['uid' => $uid, 'avatar' => $avatar, 'birthday' => Profiles::date((string) ($u['birthday'] ?? ''), 'mdy')];
+                }
+
+                return ['cursor' => $after + count($uids), 'rows' => count($uids), 'done' => count($uids) < $limit, 'profiles' => $out];
+            },
+        ];
+    }
+
     /** NodeBB timestamps are epoch milliseconds. */
     private static function ts(mixed $ms): Carbon
     {
@@ -231,6 +324,8 @@ class NodebbImporter
                     }
                     $userMap = $ctx->mapGet('user', $uids);
                     $tagMap = $hasTags ? $ctx->mapGet('tag', array_keys($cids)) : [];
+                    $files = Attachments::batch(self::attachments(), $ctx, []);
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     $topicMap = $mainMap = $postMap = [];
                     $n = 0;
@@ -251,6 +346,7 @@ class NodebbImporter
                         if (isset($mains[(string) $tid])) {
                             $post = $mains[(string) $tid];
                             $postMap[$mainPid] = Dst::post($did, 1, $userMap[(string) ($post['uid'] ?? '')] ?? $uid, $bodies[(string) $tid], self::ts($post['timestamp'] ?? ($t['timestamp'] ?? null)));
+                            $files->link($tid, $postMap[$mainPid]);
                             Dst::ref('post', (string) $mainPid, $postMap[$mainPid]);
                             $mainMap[$mainPid] = $did;
                         } else {
@@ -263,7 +359,7 @@ class NodebbImporter
                     $ctx->mapPut('main', $mainMap);
                     $ctx->mapPut('post', $postMap); // /post/{pid} redirects to it
 
-                    return ['cursor' => $off + count($tids), 'processed' => count($tids), 'done' => count($tids) < $limit, 'summary' => ['topics' => $n, 'posts' => $n]];
+                    return ['cursor' => $off + count($tids), 'processed' => count($tids), 'done' => count($tids) < $limit, 'summary' => $files->done(['topics' => $n, 'posts' => $n])];
                 }
             ),
 
@@ -293,6 +389,8 @@ class NodebbImporter
                             $bodies[$pid] = Src::markdown($hashes[(string) $pid]['content'] ?? '', ['mentions' => true]) ?: '<p></p>';
                         }
                     }
+                    $files = Attachments::batch(self::attachments(), $ctx, []);
+                    $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
                     $touched = [];
                     $n = 0;
@@ -316,6 +414,7 @@ class NodebbImporter
 
                         try {
                             $ids[$pid] = Dst::post($did, ++$counts[$did], $userMap[(string) ($post['uid'] ?? '')] ?? null, $bodies[$pid], self::ts($post['timestamp'] ?? null));
+                            $files->link($pid, $ids[$pid]);
                             Dst::ref('post', (string) $pid, $ids[$pid]);
                             $n++;
                             $touched[$did] = true;
@@ -328,7 +427,7 @@ class NodebbImporter
                         Dst::finalizeDiscussion((int) $did);
                     }
 
-                    return ['cursor' => $off + count($pids), 'processed' => count($pids), 'done' => count($pids) < $limit, 'summary' => ['posts' => $n]];
+                    return ['cursor' => $off + count($pids), 'processed' => count($pids), 'done' => count($pids) < $limit, 'summary' => $files->done(['posts' => $n])];
                 }
             ),
         ], Phases::tail());

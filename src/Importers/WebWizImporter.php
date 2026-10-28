@@ -293,8 +293,78 @@ class WebWizImporter
                     'ok' => true,
                 ],
                 fn (Builder $q) => self::shown($q, $c['thread_hide']),
+                null,
+                // Uploads are addresses in the posts, under the forum's uploads/ folder.
+                ['inline' => '#/uploads/#', 'disk' => ['#^.*?/uploads/#', 'uploads']],
             ),
         ], Phases::tail());
+    }
+
+    /**
+     * Groups: `tblGroup`, a member's in `tblAuthor.Group_ID`. 1 is the admin
+     * group and 2 the guests'; a group that is not a special rank is a step
+     * on the post-count ladder Web Wiz moves members up by itself.
+     */
+    public static function groups(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'needs' => [$p.'Group'],
+            'groups' => function (Ctx $ctx) use ($p) {
+                $conn = $ctx->src();
+                $id = self::col($conn, $p.'Group', ['Group_ID']);
+                $name = self::col($conn, $p.'Group', ['Name', 'Group_name']);
+                $special = self::col($conn, $p.'Group', ['Special_rank']);
+                if (! $id || ! $name) {
+                    return [];
+                }
+
+                return $conn->table($p.'Group')->orderBy($id)->get()->map(fn ($g) => [
+                    'id' => (string) $g->$id, 'name' => (string) $g->$name,
+                    'role' => match (true) {
+                        (int) $g->$id === 1 => 'admin',
+                        (int) $g->$id === 2 => 'guest',
+                        $special !== null && ! (int) $g->$special => 'ranks',
+                        (bool) preg_match('/moderator/i', (string) $g->$name) => 'mod',
+                        default => null,
+                    },
+                ])->all();
+            },
+            'members' => function ($after, int $limit, Ctx $ctx) use ($p) {
+                $conn = $ctx->src();
+                $c = self::schema($ctx->cfg)['cols'];
+                $group = self::col($conn, $p.'Author', ['Group_ID']);
+
+                return $group ? Groups::byMember($ctx, $after, $limit, fn (Ctx $x) => $x->src()->table($p.'Author'), $c['author_id'], fn ($u) => [$u->$group])
+                    : ['cursor' => $after, 'rows' => 0, 'done' => true, 'pairs' => []];
+            },
+        ];
+    }
+
+    /** Profile photos: `Avatar`, an address or a path in the forum's folder. Birthdays: `DOB`. */
+    public static function profiles(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+
+        return [
+            'count' => fn () => (int) Src::connect($cfg)->table($p.'Author')->count(),
+            'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p) {
+                $conn = $ctx->src();
+                $c = self::schema($ctx->cfg)['cols'];
+                $avatar = self::col($conn, $p.'Author', ['Avatar']);
+                $dob = self::col($conn, $p.'Author', ['DOB', 'Date_of_birth']);
+
+                return Profiles::page($conn->table($p.'Author'), $c['author_id'], $after, $limit, function ($u) use ($avatar, $dob) {
+                    $a = $avatar ? trim((string) ($u->$avatar ?? '')) : '';
+
+                    return [
+                        'avatar' => $a === '' ? null : (preg_match('#^(https?:)?//#i', $a) ? ['url' => $a] : ['path' => ltrim($a, './'), 'url' => ltrim($a, './')]),
+                        'birthday' => $dob && ! empty($u->$dob) ? Profiles::date(substr((string) $u->$dob, 0, 10)) : null,
+                    ];
+                });
+            },
+        ];
     }
 
     /**

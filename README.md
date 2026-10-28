@@ -55,7 +55,7 @@ Categories are imported as **tags** (requires `flarum/tags`); if tags aren't ins
 - **Timeout-proof** — the run is a resumable state machine; each request processes one small batch and returns, so memory stays flat and nothing runs long enough to time out. Works with or without a queue worker.
 - **Resumable** — progress, cursors and the source→Flarum id-maps live in the database, so a run survives a closed tab, a reload, or a dropped connection.
 - **Faithful content** — every post is read from its board's own format and written for your forum's editor, then stored through Flarum's formatter, exactly as a post written on Flarum would be.
-- **Relations preserved** — members, tags, discussions, first/last-post pointers, comment counts and participant counts are all rebuilt.
+- **Relations preserved** — members, groups, tags, discussions, first/last-post pointers, comment counts and participant counts are all rebuilt.
 
 ## Formatting, whichever editor you use
 
@@ -124,6 +124,38 @@ Members sign in with the password they had on the old board. A hash Flarum can c
 
 🔒 An old hash on its own never signs anybody in. vBulletin 5's tokens, for instance, are bcrypt of the md5 of the password, so only the password itself is accepted, never its md5. Thanks to [Rob2dev](https://github.com/Rob2dev) for mapping vBulletin 5's password schemes on a real board ([#4](https://github.com/ernestdefoe/importer/pull/4)).
 
+## Groups, profile photos, birthdays and attachments
+
+| Platform | Groups | Profile photos | Birthdays | Attachments |
+|----------|--------|----------------|-----------|-------------|
+| phpBB 3.x | `groups` + `user_group` | uploaded (`images/avatars/upload`), remote, gallery, Gravatar | `user_birthday` | `attachments` (`files/`), placed where `[attachment=n]` was |
+| XenForo 1.x / 2.x | `xf_user_group`, primary + secondary groups | uploaded (`data/avatars`), Gravatar | `xf_user_profile` | `xf_attachment` (`internal_data/attachments`), placed where `[ATTACH]` was |
+| vBulletin 3 / 4 | `usergroup`, primary + `membergroupids` | `customavatar` (database or `customavatars/`), gallery | `user.birthday` | `attachment` / `filedata` (database or the attachments folder), placed where `[ATTACH]` was |
+| vBulletin 5 / 6 | as vBulletin 3 / 4 (channel roles are permission sets, not groups) | as vBulletin 3 / 4 | `user.birthday` | Attach nodes + `filedata`, placed where `[ATTACH]` was |
+| MyBB 1.8 | `usergroups`, primary + `additionalgroups` | uploaded (`uploads/avatars`), remote, Gravatar | `users.birthday` | `attachments` (`uploads/`), placed where `[attachment=n]` was |
+| SMF 2.0 / 2.1 | `membergroups`, primary + `additional_groups` (post-count ranks are counted, not copied) | uploaded, gallery, remote | `members.birthdate` | `attachments` (the attachments folders), placed where `[attach id=n]` was |
+| Vanilla | `Role` + `UserRole` | `User.Photo` (`uploads/userpics`) | `User.DateOfBirth` | `Media` (`uploads/`), and uploaded images in the posts |
+| NodeBB | `group:*` sets | uploaded (`public/uploads/profile`) or remote | `birthday` | uploads linked in the posts (`public/uploads/files`) |
+| Invision Community | `core_groups`, primary + `mgroup_others` | `pp_main_photo` (`uploads/`), Gravatar | `bday_*` | `core_attachments` (`uploads/`), placed where the post showed them |
+| Discourse | `groups` + `group_users` (trust levels and staff are automatic, counted, not copied) | uploaded avatar (`public/uploads`) | `date_of_birth` (no year) | uploads in the post (`public/uploads`), short `upload://` links included |
+| Web Wiz Forums | `tblGroup` (ladder groups are counted, not copied) | `Avatar` | `DOB` | uploads linked in the posts (`uploads/`) |
+| Convoro | `groups` + `group_members` | with the member, as before | — (Convoro keeps none) | `attachments` (`content/attachments`), placed where the post showed them |
+
+**Groups.** The old forum's administrators join Flarum's **Admin** group and its global moderators **Mod**; its registered-members and guest groups are Flarum's own Members and Guests. Every other group becomes a Flarum group of the same name and colour, with its members (a group with the same name already here is used instead). A new group has **no permissions** until you give it some in Admin → Permissions. Nothing is dropped silently: groups that are not groups of people on Flarum — banned members (they arrive suspended), members awaiting confirmation (they arrive unconfirmed), bots, automatic groups, post-count ranks and permission sets — are counted in the summary, with the reason. An account whose email nobody has confirmed is never made an Admin or Mod.
+
+**Profile photos** are copied, never linked, and only onto a member with no picture yet. **Birthdays** need [Birthdays](https://github.com/datlechin/flarum-birthdays) (`datlechin/flarum-birthdays`) enabled; a birthday with no year keeps its day with the age hidden. Without the extension they are counted in the summary.
+
+**Attachments** are copied onto this forum and shown where the post showed them; the rest are listed under the post, as the old forum listed them. With [FoF Upload](https://github.com/FriendsOfFlarum/upload) enabled each becomes one of its files (in its folder and media manager, tied to the post); otherwise it is a link to the copy. 🚨 A file is never stored in a form that can run: an image keeps the extension its content proves, a known document type keeps its own, and anything else (`.php`, `.html`, `.svg`, …) is stored as `.bin`, a download. A file that cannot be read keeps its name in the post and is counted in the summary. `[img]` images from other sites are left as they are.
+
+**Where the files come from.** Most forums keep uploads on disk. Give the importer the **old forum's folder on this server** (the wizard's *Old forum's folder*, or `--files-path`): where it is installed, or a copy of it, outside this Flarum's own folder. Files are read only from that forum's upload folders, never its settings or scripts. Otherwise give its **address** (*Old forum's address*, `--assets-base`) while it is still online, and files are fetched from it. Files kept in the database (vBulletin) need neither.
+
+```bash
+php flarum importer:run --source=phpbb --database=my_old_forum --username=root --password=secret --prefix=phpbb_ \
+  --files-path=/home/me/public_html/forum --assets-base=https://old.example.com/forum
+```
+
+**Already imported?** Run a sync: the first one brings every member's groups, photos and birthdays across, later ones only new members'. Attachments come with the posts a sync brings; posts imported before this version keep their attachment names.
+
 ## Private messages
 
 Private messages come across too, into Flarum's own **Messages** (`flarum/messages`, bundled with Flarum 2), formatted for your editor exactly as posts are. They are on by default whenever Messages is enabled. Switch **Bring private messages across** off in the wizard, or pass `--no-private-messages` on the command line, to leave them behind. If Messages is not enabled, the import says so in its summary and moves on.
@@ -166,7 +198,7 @@ Or use **Sync new content** in the admin. For Vanilla, NodeBB and vBulletin 5, w
 
 Import once, then keep the old forum running while you set Flarum up, and sync as often as you like before you switch over. A sync copies only what the old forum has gained since the last run:
 
-- **new members, categories, discussions, replies and private messages** — a reply in an old topic lands in the discussion that topic became, numbered after whatever is there now (including replies written on Flarum);
+- **new members (with their groups, photos and birthdays), categories, discussions, replies (with their attachments) and private messages** — a reply in an old topic lands in the discussion that topic became, numbered after whatever is there now (including replies written on Flarum);
 - **edits** made on the old forum, for phpBB, XenForo, MyBB, SMF and Invision (they record an edit time). An edit is only copied over a post nobody has edited on Flarum — if somebody has, the Flarum edit wins and the sync counts it as kept;
 - the **counters** of whatever it touched: discussion reply counts and last posts, member post counts, tag counts. The old-link redirects pick up the new discussions on their own.
 

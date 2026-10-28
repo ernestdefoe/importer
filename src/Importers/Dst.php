@@ -344,8 +344,8 @@ class Dst
     private const SAFE_FILE_EXTS = ['pdf', 'txt', 'csv', 'zip', 'gz', 'tar', '7z', 'rar', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'mp3', 'ogg', 'wav', 'mp4', 'webm', 'mov'];
 
     /**
-     * Rehost a post attachment the old board kept in its database onto the
-     * public `flarum-assets` disk and return its URL.
+     * Rehost a post attachment the old board kept onto the public
+     * `flarum-assets` disk and return its URL.
      *
      * 🚨 That disk is served straight from the web root, so the extension is
      * never taken on trust from the old board: an image keeps the extension
@@ -353,9 +353,14 @@ class Dst
      * else (.php, .html, .svg, …) is stored as .bin so it can only ever be
      * downloaded, never executed or rendered on the forum's origin.
      *
-     * @return array{url:string,isImage:bool}|null
+     * With FoF Upload enabled the file goes where its local adapter keeps
+     * files (assets/files/<date>/…), and `upload` is its `fof_upload_files`
+     * row, owned by $actorId, for the caller to write with the rest of its
+     * batch ({@see Attachments::done()}).
+     *
+     * @return array{url:string,isImage:bool,upload:?array}|null
      */
-    public static function storeAsset(string $bytes, string $filename): ?array
+    public static function storeAsset(string $bytes, string $filename, ?int $actorId = null): ?array
     {
         if ($bytes === '' || self::$dryRun) {
             return null;
@@ -368,16 +373,53 @@ class Dst
             $ext = in_array($ext, self::SAFE_FILE_EXTS, true) ? $ext : 'bin';
         }
         $safeName = trim(Str::limit((string) preg_replace('/[^a-zA-Z0-9_-]+/', '-', pathinfo($filename, PATHINFO_FILENAME)), 60, ''), '-') ?: 'file';
-        $path = 'attachments/'.Str::random(16).'-'.$safeName.'.'.$ext;
+        $fof = self::fofUpload();
+        $file = ($fof ? date('Y-m-d').'/' : '').Str::random(16).'-'.$safeName.'.'.$ext;
+        $path = ($fof ? 'files/' : 'attachments/').$file;
 
         try {
             $disk = resolve(\Illuminate\Contracts\Filesystem\Factory::class)->disk('flarum-assets');
             $disk->put($path, $bytes);
+            $url = $disk->url($path);
+            $upload = null;
+            if ($fof) {
+                $mime = $isImage ? (string) getimagesizefromstring($bytes)['mime'] : ($ext === 'bin' ? 'application/octet-stream'
+                    : ((new \finfo(FILEINFO_MIME_TYPE))->buffer($bytes) ?: 'application/octet-stream'));
+                $upload = [
+                    'actor_id' => $actorId,
+                    'base_name' => Str::limit(pathinfo($filename, PATHINFO_FILENAME).'.'.$ext, 255, ''),
+                    'path' => $file,
+                    'url' => $url,
+                    'type' => $mime,
+                    'size' => strlen($bytes),
+                    'upload_method' => 'local',
+                    'created_at' => Carbon::now(),
+                    'uuid' => (string) Str::uuid(),
+                    'tag' => $isImage ? 'image-preview' : 'file',
+                ];
+            }
 
-            return ['url' => $disk->url($path), 'isImage' => $isImage];
+            return ['url' => $url, 'isImage' => $isImage, 'upload' => $upload];
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /** FoF Upload is enabled, so an attachment becomes one of its files. */
+    private static function fofUpload(): bool
+    {
+        return self::$tables['@fof-upload'] ??= (function () {
+            try {
+                return resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('fof-upload') && self::hasTable('fof_upload_files');
+            } catch (\Throwable) {
+                return false;
+            }
+        })();
+    }
+
+    public static function hasTable(string $table): bool
+    {
+        return self::$tables[$table] ??= self::db()->getSchemaBuilder()->hasTable($table);
     }
 
     /** png / jpg / gif / webp when the bytes really are that image, else null. */

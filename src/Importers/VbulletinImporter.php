@@ -2,6 +2,10 @@
 
 namespace ErnestDefoe\Importer\Importers;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Collection;
+
 /**
  * vBulletin 3.x / 4.x → Flarum.
  *   forum → tags · user → users · thread → discussions · post → posts
@@ -18,6 +22,55 @@ class VbulletinImporter
         $sb = $conn->getSchemaBuilder();
 
         return $sb->hasTable($p.'node') && $sb->hasTable($p.'contenttype') && ! $sb->hasTable($p.'thread');
+    }
+
+    /**
+     * Threads, without moved-thread redirects: 🚨 a thread moved to another
+     * forum leaves a stub behind (`open` = 10, no posts of its own, `pollid`
+     * pointing at the real thread), which became an empty discussion.
+     */
+    private static function threads(ConnectionInterface $conn, string $p): Builder
+    {
+        return $conn->table($p.'thread')->where('open', '!=', 10);
+    }
+
+    /**
+     * Forums neither guests nor members could view ({@see Vbulletin5Importer::restricted()}):
+     * `forumpermission` (forumid, usergroupid, forumpermissions) overrides a
+     * group's default (`usergroup.forumpermissions`) for a forum and every
+     * forum below it without rows of its own. One query each, for the whole tree.
+     *
+     * @param  Collection<int|string,\stdClass>  $forums  keyed by forumid
+     * @return array<int,true>
+     */
+    private static function restrictedForums(ConnectionInterface $conn, string $p, Collection $forums): array
+    {
+        $sb = $conn->getSchemaBuilder();
+        if (! $sb->hasTable($p.'forumpermission')) {
+            return [];
+        }
+        $perm = [];
+        foreach ($conn->table($p.'forumpermission')->whereIn('usergroupid', [1, 2])->get(['forumid', 'usergroupid', 'forumpermissions']) as $r) {
+            $perm[(int) $r->forumid][(int) $r->usergroupid] = (int) $r->forumpermissions;
+        }
+        $defaults = $sb->hasTable($p.'usergroup') && $sb->hasColumn($p.'usergroup', 'forumpermissions')
+            ? $conn->table($p.'usergroup')->whereIn('usergroupid', [1, 2])->pluck('forumpermissions', 'usergroupid')->map(fn ($v) => (int) $v)->all()
+            : [];
+        $out = [];
+        foreach ($forums as $f) {
+            // parentlist is "self,parent,…,-1"; without it, walk parentid.
+            $chain = array_values(array_filter(array_map('intval', explode(',', (string) ($f->parentlist ?? ''))), fn ($id) => $id > 0));
+            if (! $chain) {
+                for ($cur = (int) $f->forumid; $cur > 0 && count($chain) < 50; $cur = (int) ($forums[$cur]->parentid ?? -1)) {
+                    $chain[] = $cur;
+                }
+            }
+            if (Vbulletin5Importer::restricted($chain, $perm, $defaults)) {
+                $out[(int) $f->forumid] = true;
+            }
+        }
+
+        return $out;
     }
 
     public static function test(array $cfg): array
@@ -37,7 +90,7 @@ class VbulletinImporter
         return ['ok' => true, 'counts' => [
             'users' => (int) $conn->table($p.'user')->count(),
             'categories' => (int) $conn->table($p.'forum')->count(),
-            'topics' => (int) $conn->table($p.'thread')->count(),
+            'topics' => (int) self::threads($conn, $p)->count(),
             'posts' => (int) $conn->table($p.'post')->count(),
         ]];
     }
@@ -60,17 +113,51 @@ class VbulletinImporter
                     if (! $hasTags) {
                         return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $ctx->src()->table($p.'forum')->where('forumid', '>', (int) $cursor)->orderBy('forumid')->limit($limit)->get();
+                    /*
+                     * 🚨 Every forum used to become a top-level tag: sub-forums lost
+                     * their parent, and a category (a forum that cannot hold threads)
+                     * became an empty tag of its own. The tree is placed as vBulletin
+                     * 5's is, onto Flarum's two levels. It is small, so it is read
+                     * and written in one step: a parent then always exists before
+                     * its children, whatever their ids. A sync starts past the last
+                     * forum it has and adds only new ones.
+                     */
+                    $conn = $ctx->src();
+                    $all = $conn->table($p.'forum')->orderBy('forumid')->get()->keyBy('forumid');
+                    $nodes = [(object) ['nodeid' => -1, 'parentid' => -2, 'title' => '']]; // a root above the top-level forums
+                    $parents = [];
+                    foreach ($all as $f) {
+                        $parent = (int) ($f->parentid ?? -1);
+                        $parent = isset($all[$parent]) ? $parent : -1;
+                        $parents[$parent] = true;
+                        $nodes[] = (object) ['nodeid' => (int) $f->forumid, 'parentid' => $parent, 'title' => Vbulletin5Importer::plain($f->title)];
+                    }
+                    $placement = Vbulletin5Importer::tagPlacement($nodes);
+                    $restricted = self::restrictedForums($conn, $p, $all);
+                    // A category (options bit 4, "can contain threads", off) with no
+                    // forum under it is an empty tag — unless it held threads before
+                    // it was made a category. One query for those few.
+                    $empty = $all->filter(fn ($f) => (int) $f->forumid > (int) $cursor && ! isset($parents[(int) $f->forumid]) && isset($f->options) && ! ((int) $f->options & 4))->keys()->all();
+                    if ($empty) {
+                        $empty = array_diff($empty, $conn->table($p.'thread')->whereIn('forumid', $empty)->distinct()->pluck('forumid')->all());
+                    }
+                    $todo = $all->filter(fn ($f) => (int) $f->forumid > (int) $cursor && ! in_array($f->forumid, $empty))
+                        ->sortBy(fn ($f) => [($placement[(int) $f->forumid]['parentSrcId'] ?? null) === null ? 0 : 1, (int) $f->forumid]);
+                    $tagIds = $ctx->mapGet('tag', $todo->map(fn ($f) => $placement[(int) $f->forumid]['parentSrcId'] ?? null)->filter()->unique()->all());
                     $map = [];
-                    $n = 0;
-                    foreach ($rows as $f) {
-                        $cursor = $f->forumid;
-                        $map[$f->forumid] = Dst::tag($f->title ?: 'Forum', Src::tagSlug($f->title ?: 'forum', (int) $f->forumid), $f->description ?? null, null, (int) ($f->displayorder ?? 0));
-                        $n++;
+                    foreach ($todo as $f) {
+                        $place = $placement[(int) $f->forumid] ?? ['parentSrcId' => null, 'namePrefix' => ''];
+                        $name = Vbulletin5Importer::plain($f->title) ?: 'Forum';
+                        if ($place['namePrefix'] !== '') {
+                            $name .= ' ('.$place['namePrefix'].')';
+                        }
+                        $parentTag = $place['parentSrcId'] !== null ? ($tagIds[(string) $place['parentSrcId']] ?? null) : null;
+                        $tagIds[(string) $f->forumid] = Dst::tag($name, Src::tagSlug($name, (int) $f->forumid), isset($f->description) ? Vbulletin5Importer::plain($f->description) : null, null, (int) ($f->displayorder ?? 0), $parentTag, isset($restricted[(int) $f->forumid]));
+                        $map[$f->forumid] = $tagIds[(string) $f->forumid];
                     }
                     $ctx->mapPut('tag', $map);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    return ['cursor' => max((int) $cursor, (int) $all->keys()->max()), 'processed' => $all->count(), 'done' => true, 'summary' => ['categories' => count($map)]];
                 }
             ),
 
@@ -80,6 +167,7 @@ class VbulletinImporter
                 fn () => (int) Src::connect($cfg)->table($p.'user')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
                     $rows = $ctx->src()->table($p.'user')->where('userid', '>', (int) $cursor)->orderBy('userid')->limit($limit)->get();
+                    $bans = Vbulletin5Importer::bans($ctx->src(), $p, $rows->pluck('userid')->all());
                     $map = [];
                     $n = $skip = 0;
                     foreach ($rows as $u) {
@@ -91,9 +179,13 @@ class VbulletinImporter
                             continue;
                         }
 
+                        $name = Vbulletin5Importer::plain($u->username ?? '');
+                        [$confirmed, $suspended] = Vbulletin5Importer::standing($u, $bans);
                         try {
                             // md5(md5(password) . salt), checked at the member's first sign-in.
-                            $map[$u->userid] = Dst::user(Src::username($u->username ?? null, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), null, Vbulletin5Importer::legacy($u), display: $u->username ?? null);
+                            $map[$u->userid] = $uid = Dst::user(Src::username($name, (int) $u->userid), $email, null, Src::ts($u->joindate ?? null), null, Vbulletin5Importer::legacy($u), $confirmed, $suspended, $name !== '' ? $name : null);
+                            // 🚨 Administrators and moderators arrived as plain members.
+                            Dst::assignCoreGroup($uid, Vbulletin5Importer::coreGroupFor((int) ($u->usergroupid ?? 0), (string) ($u->membergroupids ?? '')));
                             $n++;
                         } catch (\Throwable) {
                             $skip++;
@@ -108,9 +200,9 @@ class VbulletinImporter
             new Phase(
                 'topics',
                 'topics',
-                fn () => (int) Src::connect($cfg)->table($p.'thread')->count(),
+                fn () => (int) self::threads(Src::connect($cfg), $p)->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $hasTags) {
-                    $rows = $ctx->src()->table($p.'thread')->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
+                    $rows = self::threads($ctx->src(), $p)->where('threadid', '>', (int) $cursor)->orderBy('threadid')->limit($limit)->get();
                     $userMap = $ctx->mapGet('user', $rows->pluck('postuserid')->all());
                     $tagMap = $hasTags ? $ctx->mapGet('tag', $rows->pluck('forumid')->all()) : [];
                     $map = [];
@@ -124,7 +216,8 @@ class VbulletinImporter
                         if ((int) ($t->visible ?? 1) !== 1) {
                             continue;
                         }
-                        $did = Dst::discussion($t->title ?: 'Untitled', $userMap[(string) $t->postuserid] ?? null, Src::ts($t->dateline ?? null), (bool) ($t->sticky ?? false));
+                        // `open` = 0 is a closed thread.
+                        $did = Dst::discussion(Vbulletin5Importer::plain($t->title) ?: 'Untitled', $userMap[(string) $t->postuserid] ?? null, Src::ts($t->dateline ?? null), (bool) ($t->sticky ?? false), (int) ($t->open ?? 1) === 0);
                         $map[$t->threadid] = $did;
                         if ($hasTags && isset($tagMap[(string) $t->forumid])) {
                             Dst::attachTag($did, $tagMap[(string) $t->forumid]);

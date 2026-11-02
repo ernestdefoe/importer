@@ -202,10 +202,18 @@ class Dst
 
         // Flarum usernames are unique, and compared without case — disambiguate on collision.
         $base = Str::limit($username, 30, '');
+        $stem = Str::limit($base, 26, '');
+        // One query for every name this one could clash with: the base and each
+        // `stem_N`. LIKE is only a superset filter here (an unescaped `_` matches
+        // any character); the exact, case-free check happens in PHP below.
+        $taken = array_flip(array_map('mb_strtolower', $db->table('users')
+            ->whereRaw('LOWER(username) = ?', [mb_strtolower($base)])
+            ->orWhereRaw('LOWER(username) LIKE ?', [mb_strtolower($stem).'_%'])
+            ->pluck('username')->all()));
         $name = $base;
         $n = 1;
-        while ($db->table('users')->whereRaw('LOWER(username) = ?', [mb_strtolower($name)])->exists()) {
-            $name = Str::limit($base, 26, '').'_'.(++$n);
+        while (isset($taken[mb_strtolower($name)])) {
+            $name = $stem.'_'.(++$n);
         }
 
         $row = [

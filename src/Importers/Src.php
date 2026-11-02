@@ -84,11 +84,11 @@ class Src
         }
 
         /** @var \Illuminate\Contracts\Config\Repository $config */
-        $config = resolve('config');
+        $config = resolve(\Illuminate\Contracts\Config\Repository::class);
         $config->set('database.connections.'.self::CONN, $conf);
 
         /** @var \Illuminate\Database\DatabaseManager $db */
-        $db = resolve('db');
+        $db = resolve(\Illuminate\Database\DatabaseManager::class);
         $db->purge(self::CONN);
 
         return $db->connection(self::CONN);

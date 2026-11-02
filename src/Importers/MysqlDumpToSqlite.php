@@ -58,7 +58,7 @@ class MysqlDumpToSqlite
         // Go through Flarum's DatabaseManager rather than a bare PDO handle, so
         // the connection is managed (and can be purged/closed) like every other.
         /** @var \Illuminate\Contracts\Config\Repository $config */
-        $config = resolve('config');
+        $config = resolve(\Illuminate\Contracts\Config\Repository::class);
         $config->set('database.connections.'.self::CONN, [
             'driver' => 'sqlite',
             'database' => $sqlitePath,
@@ -66,7 +66,7 @@ class MysqlDumpToSqlite
             'foreign_key_constraints' => false,
         ]);
         /** @var \Illuminate\Database\DatabaseManager $manager */
-        $manager = resolve('db');
+        $manager = resolve(\Illuminate\Database\DatabaseManager::class);
         $manager->purge(self::CONN);
         $conn = $manager->connection(self::CONN);
         $conn->disableQueryLog(); // a big dump would otherwise balloon memory

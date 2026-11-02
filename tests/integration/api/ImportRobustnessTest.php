@@ -113,6 +113,36 @@ class ImportRobustnessTest extends TestCase
     }
 
     #[Test]
+    public function clashing_usernames_take_the_next_free_number_case_free()
+    {
+        $this->extension('ernestdefoe-importer');
+        $this->app();
+        \ErnestDefoe\Importer\Importers\Dst::reset();
+        $at = \Illuminate\Support\Carbon::now();
+        $user = fn (string $name, string $email) => $this->database()->table('users')->where('id', \ErnestDefoe\Importer\Importers\Dst::user($name, $email, null, $at))->value('username');
+
+        // `JOSExP_3` matches the LIKE filter but is not a clash; `Jose_P_2` is (no case).
+        $this->database()->table('users')->insert([
+            ['username' => 'jose_p', 'email' => 'a@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
+            ['username' => 'Jose_P_2', 'email' => 'b@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
+            ['username' => 'JOSExP_3', 'email' => 'c@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
+        ]);
+        $lookups = 0;
+        $this->database()->listen(function ($q) use (&$lookups) {
+            $lookups += (int) str_contains($q->sql, 'LOWER(username)');
+        });
+        $this->assertSame('Jose_p_3', $user('Jose_p', 'd@x.example'));
+        $this->assertSame(1, $lookups, 'One query for the taken names, not one per attempt');
+        $this->assertSame('Jose_p_4', $user('Jose_p', 'e@x.example'), 'Sees the name it just made');
+        $this->assertSame('fresh', $user('fresh', 'f@x.example'), 'No clash, name kept');
+
+        $long = str_repeat('a', 30);
+        $this->assertSame($long, $user($long, 'g@x.example'));
+        $this->assertSame(str_repeat('a', 26).'_2', $user($long, 'h@x.example'), 'A long name is cut to fit the number');
+        $this->assertSame(str_repeat('a', 26).'_3', $user($long, 'i@x.example'));
+    }
+
+    #[Test]
     public function members_get_usernames_flarum_accepts_and_keep_their_names_as_nicknames()
     {
         $this->extension('flarum-tags', 'flarum-nicknames', 'ernestdefoe-importer');

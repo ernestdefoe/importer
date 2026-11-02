@@ -123,9 +123,9 @@ class ImportRobustnessTest extends TestCase
 
         // `JOSExP_3` matches the LIKE filter but is not a clash; `Jose_P_2` is (no case).
         $this->database()->table('users')->insert([
-            ['username' => 'jose_p', 'email' => 'a@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
-            ['username' => 'Jose_P_2', 'email' => 'b@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
-            ['username' => 'JOSExP_3', 'email' => 'c@x.example', 'is_email_confirmed' => 1, 'joined_at' => $at],
+            ['username' => 'jose_p', 'email' => 'a@x.example', 'password' => '', 'is_email_confirmed' => 1, 'joined_at' => $at],
+            ['username' => 'Jose_P_2', 'email' => 'b@x.example', 'password' => '', 'is_email_confirmed' => 1, 'joined_at' => $at],
+            ['username' => 'JOSExP_3', 'email' => 'c@x.example', 'password' => '', 'is_email_confirmed' => 1, 'joined_at' => $at],
         ]);
         $lookups = 0;
         $this->database()->listen(function ($q) use (&$lookups) {

@@ -242,7 +242,7 @@ class VanillaImporter
             // Likes
             new Phase(
                 'likes',
-                'kudos',
+                'likes',
                 fn () => (int) Src::connect($cfg)->table($p.'Kudos')->count(),
                 function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];

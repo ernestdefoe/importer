@@ -88,6 +88,8 @@ ernestdefoe-importer:
       skipped: skipped
       edited: edits copied
       kept: edits kept (changed here)
+	  likes: likes
+	  likes_skipped: likes skipped
       polls: polls
       poll_votes: poll votes
       polls_skipped: polls skipped

@@ -267,6 +267,7 @@ class VanillaImporter
                     $userMap = $ctx->mapGet('user', $rows->pluck('UserID')->all());
                     $postMap = $ctx->mapGet('post', $rows->pluck('CommentID')->all());
                     
+                    $n = $skip = 0;
                     foreach ($rows as $c) {
                         if ($c->DiscussionID) {
                             $cur['did'] = (int) $c->DiscussionID;
@@ -274,24 +275,37 @@ class VanillaImporter
                         if ($c->CommentID) {
                             $cur['cid'] = (int) $c->CommentID;
                         }
-                        if (((int) $c->Action)!=1) continue; //Likes only, not dislikes
+                        if (((int) $c->Action)!=1) {
+                            $skip++;
+                            continue; //Likes only, not dislikes
+                        }
                         $userId = $userMap[(string) $c->UserID] ?? null;
                         if (! $userId) {
+                            $skip++;
                             continue;
                         }
                         $postId = $topicMap[(string) $c->DiscussionID] ?? null;
                         if (! $postId) {
                             $postId = $postMap[(string) $c->CommentID] ?? null;
                         }
+                        else {
+                            $postId = Dst::db()->table('posts')->where('discussion_id', $postId)->where('number',1)->value('id');
+                        }
                         if (! $postId) {
+                            $skip++;
                             continue;
                         }
                         $created = Src::ts($c->DateUpdated ?? null);
 
-                        Dst::post_like($postId, $userId, $created);
+                        try {
+                            Dst::post_like($postId, $userId, $created);
+                            $n++;
+                        } catch (\Throwable) {
+                            $skip++;
+                        }
                     }
                     $done = count($rows) < $limit;                    
-                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done ];
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['likes' => $n, 'likes_skipped' => $skip] ];
                 }
             ),
             ], Phases::tail());

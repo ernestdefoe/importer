@@ -177,6 +177,24 @@ class Dst
         ]);
     }
 
+    /* ── Likes ──────────────────────────────────────────────── */
+    
+    /**
+     */
+    public static function post_like(int $postId, int $userId, Carbon $createdAt): void
+    {
+        $db = self::db();
+        if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
+            return;
+        }
+        
+        $db->table('post_likes')->insert([
+            'post_id' => $postId,
+            'user_id' => $userId,
+            'created_at' => $createdAt,
+        ]);
+    }
+    
     /* ── Users ──────────────────────────────────────────────────────────── */
 
     /**

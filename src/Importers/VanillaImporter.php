@@ -184,8 +184,8 @@ class VanillaImporter
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
                     $rows = $ctx->src()->table($p.'Comment')
-                        ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
-                            ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
+                    ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
+                        ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
@@ -200,7 +200,7 @@ class VanillaImporter
                     // Where each discussion's numbering stands, in one grouped query for the batch.
                     $dids = array_values(array_unique($topicMap));
                     $next = $dids ? Dst::db()->table('posts')->whereIn('discussion_id', $dids)->groupBy('discussion_id')
-                        ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
+                    ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
                     $ids = [];
                     $n = 0;
                     foreach ($rows as $c) {
@@ -217,7 +217,7 @@ class VanillaImporter
                             $carry = ['did' => (int) $did, 'num' => (int) ($next[$did] ?? 0)];
                         }
                         $created = Src::ts($c->DateInserted ?? null);
-
+                        
                         try {
                             $ids[$c->CommentID] = Dst::post($did, ++$carry['num'], $userMap[(string) $c->InsertUserID] ?? null, $bodies['c'.$c->CommentID], $created);
                             $files->link('c'.$c->CommentID, $ids[$c->CommentID]);
@@ -234,11 +234,67 @@ class VanillaImporter
                         Dst::finalizeDiscussion((int) $carry['did']);
                     }
                     $cur['carry'] = $done ? null : $carry;
-
+                    
                     return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $files->done(['posts' => $n])];
                 }
             ),
-        ], Phases::tail());
+            
+            // Likes
+            new Phase(
+                'likes',
+                'kudos',
+                fn () => (int) Src::connect($cfg)->table($p.'Kudos')->count(),
+                function ($cursor, $limit, Ctx $ctx) use ($p, $cfg) {
+                    $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
+                    $request = $ctx->src()->table($p.'Kudos');
+                    if ((int) $cur['did']==0) {
+                        if ((int) $cur['cid']==0) {
+                            //First request, no where clause needed
+                            //This will list entries where DiscussionID is NULL, so Comments first
+                        }
+                        else {
+                            //We are continuing comments, we want entries where Comment ID is greater than previous or begin discussions
+                            $request=$request->whereNotNull('DiscussionID')
+                                ->orWhere(fn ($q2) => $q2->where('CommentID', '>', (int) $cur['cid']));
+                        }
+                    }
+                    else {
+                        //We finished comments and started discussions
+                        $request=$request->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did']));                            
+                    }
+                    $rows=$request->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
+                    $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
+                    $userMap = $ctx->mapGet('user', $rows->pluck('UserID')->all());
+                    $postMap = $ctx->mapGet('post', $rows->pluck('CommentID')->all());
+                    
+                    foreach ($rows as $c) {
+                        if ($c->DiscussionID) {
+                            $cur['did'] = (int) $c->DiscussionID;
+                        }
+                        if ($c->CommentID) {
+                            $cur['cid'] = (int) $c->CommentID;
+                        }
+                        if (((int) $c->Action)!=1) continue; //Likes only, not dislikes
+                        $userId = $userMap[(string) $c->UserID] ?? null;
+                        if (! $userId) {
+                            continue;
+                        }
+                        $postId = $topicMap[(string) $c->DiscussionID] ?? null;
+                        if (! $postId) {
+                            $postId = $postMap[(string) $c->CommentID] ?? null;
+                        }
+                        if (! $postId) {
+                            continue;
+                        }
+                        $created = Src::ts($c->DateUpdated ?? null);
+
+                        Dst::post_like($postId, $userId, $created);
+                    }
+                    $done = count($rows) < $limit;                    
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done ];
+                }
+            ),
+            ], Phases::tail());
     }
 
     /**

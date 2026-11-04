@@ -29,7 +29,7 @@ class SourceReactionsTest extends TestCase
         $this->extension('fof-reactions', 'ernestdefoe-importer');
         $this->prepareDatabase([
             'users' => array_map(fn ($id, $name) => ['id' => $id, 'username' => $name, 'email' => $name.'@forum.example', 'is_email_confirmed' => 1, 'password' => ''], [3, 4, 5], ['ada', 'bob', 'cy']),
-            'discussions' => [['id' => 1, 'title' => 'Weather', 'user_id' => 3, 'first_post_id' => 1, 'comment_count' => 2, 'created_at' => '2024-01-01 00:00:00']],
+            'discussions' => [['id' => 1, 'title' => 'Weather', 'slug' => 'weather', 'user_id' => 3, 'first_post_id' => 1, 'comment_count' => 2, 'created_at' => '2024-01-01 00:00:00']],
             'posts' => [
                 ['id' => 1, 'discussion_id' => 1, 'number' => 1, 'user_id' => 3, 'type' => 'comment', 'content' => '<t>Rain</t>', 'created_at' => '2024-01-01 00:00:00'],
                 ['id' => 2, 'discussion_id' => 1, 'number' => 2, 'user_id' => 4, 'type' => 'comment', 'content' => '<t>Sun</t>', 'created_at' => '2024-01-02 00:00:00'],

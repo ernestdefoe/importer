@@ -168,7 +168,8 @@ class NodebbImporter
                     $pic = trim((string) (($u['uploadedpicture'] ?? '') ?: ($u['picture'] ?? '')));
                     $path = (string) parse_url($pic, PHP_URL_PATH);
                     $avatar = $pic === '' ? null : ['url' => $pic] + (preg_match('#/assets/uploads/(.+)$#', $path, $m) ? ['root' => 'public/uploads', 'path' => rawurldecode($m[1])] : []);
-                    $out[] = ['uid' => $uid, 'avatar' => $avatar, 'birthday' => Profiles::date((string) ($u['birthday'] ?? ''), 'mdy')];
+                    $out[] = ['uid' => $uid, 'avatar' => $avatar, 'birthday' => Profiles::date((string) ($u['birthday'] ?? ''), 'mdy'),
+                        'signature' => trim((string) ($u['signature'] ?? '')) !== '' ? Src::markdown((string) $u['signature']) : null];
                 }
 
                 return ['cursor' => $after + count($uids), 'rows' => count($uids), 'done' => count($uids) < $limit, 'profiles' => $out];

@@ -330,6 +330,7 @@ class SmfImporter
                     'avatar' => ($a = trim((string) ($u->avatar ?? ''))) === '' ? null
                         : (preg_match('#^(https?:)?//#i', $a) ? ['url' => $a] : Files::folder(self::setting($conn, $p, 'avatar_directory'), 'avatars') + ['path' => $a, 'url' => rtrim(self::setting($conn, $p, 'avatar_url'), '/').'/'.$a]),
                     'birthday' => ($b = Profiles::date((string) ($u->birthdate ?? ''))) && ! (($b[0] ?? 0) < 1900 && $b[1] === 1 && $b[2] === 1) ? $b : null,
+                    'signature' => self::body((string) ($u->signature ?? '')),
                 ]);
                 $ids = array_column($page['profiles'], 'uid');
                 if ($ids && $conn->getSchemaBuilder()->hasTable($p.'attachments')) {

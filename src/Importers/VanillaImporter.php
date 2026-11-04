@@ -274,7 +274,7 @@ class VanillaImporter
 
         return [
             'count' => fn () => (int) Src::connect($cfg)->table($p.'User')->count(),
-            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table($p.'User'), 'UserID', $after, $limit, function ($u) {
+            'fetch' => fn (int $after, int $limit, Ctx $ctx) => self::signatures($ctx->src(), $p, Profiles::page($ctx->src()->table($p.'User'), 'UserID', $after, $limit, function ($u) {
                 $photo = trim((string) ($u->Photo ?? ''));
                 $avatar = null;
                 if (preg_match('#^(https?:)?//#i', $photo)) {
@@ -286,8 +286,28 @@ class VanillaImporter
                 $dob = (string) ($u->DateOfBirth ?? '');
 
                 return ['avatar' => $avatar, 'birthday' => str_starts_with($dob, '0000') ? null : Profiles::date($dob)];
-            }),
+            })),
         ];
+    }
+
+    /** The Signatures plugin's: `UserMeta` Plugin.Signatures.Sig, in its own Format. */
+    private static function signatures(\Illuminate\Database\ConnectionInterface $conn, string $p, array $page): array
+    {
+        if (! $page['profiles'] || ! $conn->getSchemaBuilder()->hasTable($p.'UserMeta')) {
+            return $page;
+        }
+        $meta = [];
+        foreach ($conn->table($p.'UserMeta')->whereIn('UserID', array_column($page['profiles'], 'uid'))
+            ->whereIn('Name', ['Plugin.Signatures.Sig', 'Plugin.Signatures.Format'])->get(['UserID', 'Name', 'Value']) as $m) {
+            $meta[$m->UserID][$m->Name] = (string) $m->Value;
+        }
+        foreach ($page['profiles'] as &$prof) {
+            $sig = trim($meta[$prof['uid']]['Plugin.Signatures.Sig'] ?? '');
+            $prof['signature'] = $sig !== '' ? self::body($sig, $meta[$prof['uid']]['Plugin.Signatures.Format'] ?? 'Html') : null;
+        }
+        unset($prof);
+
+        return $page;
     }
 
     /**

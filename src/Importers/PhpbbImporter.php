@@ -270,7 +270,8 @@ class PhpbbImporter
     /**
      * Profile photos (`user_avatar_type`: upload, remote, gallery, gravatar —
      * 3.1+ names its drivers, 3.0 numbers them 1–3) and birthdays
-     * (`user_birthday` "dd-mm-yyyy", the year 0 when not given).
+     * (`user_birthday` "dd-mm-yyyy", the year 0 when not given), and signatures
+     * (`user_sig`, BBCode under `user_sig_bbcode_uid`).
      */
     public static function profiles(array $cfg): array
     {
@@ -296,7 +297,8 @@ class PhpbbImporter
                         default => null,
                     };
 
-                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->user_birthday ?? ''), 'dmy')];
+                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->user_birthday ?? ''), 'dmy'),
+                        'signature' => Bbcode::phpbb((string) ($u->user_sig ?? ''), (string) ($u->user_sig_bbcode_uid ?? ''))];
                 });
             },
         ];
@@ -458,6 +460,95 @@ class PhpbbImporter
 
                 return ['cursor' => $cursor, 'rows' => $n, 'done' => $done, 'polls' => $out];
             },
+        ];
+    }
+
+    /**
+     * Reactions from either phpBB add-on that keeps them on posts:
+     *
+     *  - steve/reactions ("Reactions", Steven Clark): `steve_reactions`, one row
+     *    per member per post (pm_id and chat_msg_id rows are not posts), the kind
+     *    named by its picture, a Twemoji file ("1f44d.svg") unless the admin
+     *    uploaded one of their own; kinds in `steve_reaction_types`.
+     *  - ferdcoz/reactions ("Post Reactions"): `ferdcoz_reactions`, keyed by post
+     *    and member, the kind a key into a catalog of emoji kept in config_text.
+     */
+    public static function reactions(array $cfg): array
+    {
+        $p = self::prefix($cfg);
+        $has = fn ($conn, string $t) => $conn->getSchemaBuilder()->hasTable($p.$t);
+        $count = fn (string $t, \Closure $q) => function () use ($cfg, $has, $t, $q) {
+            $conn = Src::connect($cfg);
+
+            return $has($conn, $t) ? (int) $q($conn) : 0;
+        };
+        $empty = fn (int $after) => ['cursor' => $after, 'rows' => 0, 'done' => true, 'reactions' => []];
+
+        return [
+            'steve' => [
+                'count' => $count('steve_reactions', fn ($conn) => $conn->table($p.'steve_reactions')->where('post_id', '>', 0)->count()),
+                'types' => function ($conn) use ($p, $has) {
+                    $out = [];
+                    foreach ($has($conn, 'steve_reaction_types') ? $conn->table($p.'steve_reaction_types')->get(['reaction_file_name', 'reaction_type_enable']) : [] as $t) {
+                        $out[(string) $t->reaction_file_name] = ['code' => Reactions::code((string) $t->reaction_file_name), 'enabled' => (bool) $t->reaction_type_enable];
+                    }
+
+                    return $out; // a kind since deleted is still named by its file on each reaction
+                },
+                'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has, $empty) {
+                    $conn = $ctx->src();
+                    if (! $has($conn, 'steve_reactions')) {
+                        return $empty($after);
+                    }
+                    $rows = $conn->table($p.'steve_reactions')->where('reaction_id', '>', $after)->orderBy('reaction_id')->limit($limit)
+                        ->get(['reaction_id', 'post_id', 'reaction_user_id', 'reaction_file_name', 'reaction_time']);
+                    $out = [];
+                    foreach ($rows as $r) {
+                        if ((int) $r->post_id > 0) {
+                            $out[] = [$r->post_id, $r->reaction_user_id, (string) $r->reaction_file_name, Polls::at($r->reaction_time)];
+                        }
+                    }
+
+                    return ['cursor' => $rows->isEmpty() ? $after : (int) $rows->last()->reaction_id, 'rows' => count($out), 'done' => count($rows) < $limit, 'reactions' => $out];
+                },
+            ],
+            'ferdcoz' => [
+                // Paged by post (the table has no id of its own), so a sync re-reads the last posts.
+                'slack' => 500,
+                'count' => $count('ferdcoz_reactions', fn ($conn) => $conn->table($p.'ferdcoz_reactions')->distinct()->count('post_id')),
+                'types' => function ($conn) use ($p, $has) {
+                    $catalog = $has($conn, 'config_text')
+                        ? json_decode((string) $conn->table($p.'config_text')->where('config_name', 'ferdcoz_reactions_catalog')->value('config_value'), true)
+                        : null;
+                    if (! is_array($catalog) || ! $catalog) {
+                        // The add-on's five until the admin saves a list of their own.
+                        $on = explode(',', (string) ($conn->table($p.'config')->where('config_name', 'ferdcoz_reactions_enabled')->value('config_value') ?: 'like,dislike,funny,fire,love'));
+                        $catalog = [];
+                        foreach (['like' => '👍', 'dislike' => '👎', 'funny' => '😂', 'fire' => '🔥', 'love' => '❤️'] as $key => $emoji) {
+                            $catalog[$key] = ['emoji' => $emoji, 'enabled' => in_array($key, $on, true)];
+                        }
+                    }
+                    $out = [];
+                    foreach ($catalog as $key => $item) {
+                        $out[(string) $key] = ['code' => Reactions::code((string) ($item['emoji'] ?? '')), 'enabled' => (bool) ($item['enabled'] ?? true)];
+                    }
+
+                    return $out;
+                },
+                'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has, $empty) {
+                    $conn = $ctx->src();
+                    if (! $has($conn, 'ferdcoz_reactions')) {
+                        return $empty($after);
+                    }
+                    $posts = $conn->table($p.'ferdcoz_reactions')->where('post_id', '>', $after)->distinct()->orderBy('post_id')->limit($limit)->pluck('post_id')->all();
+                    $out = [];
+                    foreach ($posts ? $conn->table($p.'ferdcoz_reactions')->whereIn('post_id', $posts)->get(['post_id', 'user_id', 'reaction', 'reaction_time']) : [] as $r) {
+                        $out[] = [$r->post_id, $r->user_id, (string) $r->reaction, Polls::at($r->reaction_time)];
+                    }
+
+                    return ['cursor' => $posts ? (int) end($posts) : $after, 'rows' => count($posts), 'done' => count($posts) < $limit, 'reactions' => $out];
+                },
+            ],
         ];
     }
 

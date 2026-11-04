@@ -358,6 +358,9 @@ class Vbulletin5Importer
                 if ($gallery = $sb->hasTable($p.'avatar')) {
                     $q->leftJoin($p.'avatar as av', 'av.avatarid', '=', 'u.avatarid')->addSelect('av.avatarpath');
                 }
+                if ($sig = $sb->hasTable($p.'usertextfield') && $sb->hasColumn($p.'usertextfield', 'signature')) {
+                    $q->leftJoin($p.'usertextfield as utf', 'utf.userid', '=', 'u.userid')->addSelect('utf.signature as sig');
+                }
                 $folder = ($cfg['avatar_path'] ?? '') !== '' ? ['dir' => (string) $cfg['avatar_path']] : Files::folder(self::setting($conn, $p, 'avatarpath'), 'customavatars');
 
                 return Profiles::page($q, 'u.userid', $after, $limit, function ($u) use ($conn, $p, $custom, $gallery, $folder) {
@@ -372,7 +375,7 @@ class Vbulletin5Importer
                         $avatar = ['path' => $path, 'url' => $path];
                     }
 
-                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'mdy')];
+                    return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'mdy'), 'signature' => Bbcode::toHtml((string) ($u->sig ?? ''))];
                 });
             },
         ];

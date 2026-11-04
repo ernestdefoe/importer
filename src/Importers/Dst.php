@@ -181,18 +181,37 @@ class Dst
     
     /**
      */
-    public static function post_like(int $postId, int $userId, Carbon $createdAt): void
+    public static function post_like(int $postId, int $userId, Carbon $createdAt, int $action): bool
     {
         $db = self::db();
-        if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
-            return;
+        if (self::hasTable('post_reactions'))
+        {
+            if ($db->table('post_reactions')->where('post_id', $postId)->where('user_id', $userId)->where('reaction_id', $action)->exists()) {
+                return false;
+            }
+            
+            $db->table('post_reactions')->insert([
+                'post_id' => $postId,
+                'user_id' => $userId,
+                'reaction_id' => $action,
+                'created_at' => $createdAt,
+                'updated_at' => $createdAt,
+            ]);            
         }
-        
-        $db->table('post_likes')->insert([
-            'post_id' => $postId,
-            'user_id' => $userId,
-            'created_at' => $createdAt,
-        ]);
+        else
+        {
+            if ($action!=1) return false;
+            if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
+                return false;
+            }
+            
+            $db->table('post_likes')->insert([
+                'post_id' => $postId,
+                'user_id' => $userId,
+                'created_at' => $createdAt,
+            ]);
+        }
+        return true;
     }
     
     /* ── Users ──────────────────────────────────────────────────────────── */
@@ -511,7 +530,7 @@ class Dst
     }
 
     /** @param  bool  $hidden  hidden there (unlisted by staff): only moderators see it here */
-    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false, bool $hidden = false): int
+    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false, bool $hidden = false, int $viewCount = 0): int
     {
         $db = self::db();
         $title = Str::limit(trim($title) ?: 'Untitled', 200, '');
@@ -534,7 +553,10 @@ class Dst
         if ($locked && self::hasColumn('discussions', 'is_locked')) {
             $row['is_locked'] = 1;
         }
-
+        if (self::hasColumn('discussions', 'view_count')) {
+            $row['view_count'] = $viewCount;
+        }
+        
         return (int) $db->table('discussions')->insertGetId($row);
     }
 

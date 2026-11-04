@@ -71,10 +71,16 @@ class VanillaImporter
                         }
                         $n++;
                     }
+                    
+                    $done = count($rows) < $limit;
+                    if ($done&&Dst::hasColumn('discussions',  'best_answer_post_id')) {
+                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, 0);
+                    }
+                    
                     $ctx->mapPut('tag', $map);
                     $ctx->mapPut('tag-slug', $slugs);
-
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => $done, 'summary' => ['categories' => $n]];
                 }
             ),
 
@@ -158,7 +164,12 @@ class VanillaImporter
                         $title = trim((string) ($d->Name ?? '')) ?: 'Untitled';
                         $created = Src::ts($d->DateInserted ?? null);
                         $uid = $userMap[(string) $d->InsertUserID] ?? null;
-                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1);
+                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, (int) ($d->CountViews ?? 0));
+                        if (($d->QnA ?? '') !== '') {
+                            if (Dst::hasColumn('discussions',  'best_answer_post_id')) {
+                                Dst::attachTag($did, ($ctx->mapGet('tag-slug', ['qna-question']))['qna-question']);
+                            }                            
+                        }
                         $map[$d->DiscussionID] = $did;
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
@@ -223,6 +234,16 @@ class VanillaImporter
                             $files->link('c'.$c->CommentID, $ids[$c->CommentID]);
                             Dst::ref('post', (string) $c->CommentID, $ids[$c->CommentID]);
                             $n++;
+                            if ($c->QnA == "Accepted" ) {
+                                if (Dst::hasColumn('discussions',  'best_answer_post_id')) {                                    
+                                    Dst::db()->table('discussions')->where('id', $did)->update([
+                                        'best_answer_post_id' => $ids[$c->CommentID],
+                                        'best_answer_user_id' => $userMap[(string) $c->AcceptedUserID],
+                                        'best_answer_set_at' => Src::ts($c->DateAccepted ?? null),
+                                        'best_answer_notified' => 0,
+                                    ]);
+                                }
+                            }
                         } catch (\Throwable) {
                             $carry['num']--;
                         }
@@ -275,10 +296,6 @@ class VanillaImporter
                         if ($c->CommentID) {
                             $cur['cid'] = (int) $c->CommentID;
                         }
-                        if (((int) $c->Action)!=1) {
-                            $skip++;
-                            continue; //Likes only, not dislikes
-                        }
                         $userId = $userMap[(string) $c->UserID] ?? null;
                         if (! $userId) {
                             $skip++;
@@ -298,8 +315,10 @@ class VanillaImporter
                         $created = Src::ts($c->DateUpdated ?? null);
 
                         try {
-                            Dst::post_like($postId, $userId, $created);
-                            $n++;
+                            if (Dst::post_like($postId, $userId, $created, $c->Action))
+                                $n++;
+                            else
+                                $skip++;
                         } catch (\Throwable) {
                             $skip++;
                         }
@@ -500,7 +519,7 @@ class VanillaImporter
             default => ['scheme' => 'unknown', 'hash' => $hash, 'salt' => null],
         };
     }
-
+    
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {

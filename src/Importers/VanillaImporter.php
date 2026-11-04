@@ -164,7 +164,7 @@ class VanillaImporter
                         $title = trim((string) ($d->Name ?? '')) ?: 'Untitled';
                         $created = Src::ts($d->DateInserted ?? null);
                         $uid = $userMap[(string) $d->InsertUserID] ?? null;
-                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, (int) ($d->CountViews ?? 0));
+                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, false, (int) ($d->CountViews ?? 0));
                         if (($d->QnA ?? '') !== '') {
                             if (Dst::hasColumn('discussions',  'best_answer_post_id')) {
                                 Dst::attachTag($did, ($ctx->mapGet('tag-slug', ['qna-question']))['qna-question']);

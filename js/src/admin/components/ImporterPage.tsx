@@ -35,21 +35,28 @@ const COUNTS = [
   'polls',
   'poll_votes',
   'polls_skipped',
+  'reactions',
+  'reactions_skipped',
+  'reactions_pictures',
   'groups_created',
   'groups_mapped',
   'groups_skipped',
   'group_members',
   'avatars',
   'avatars_missing',
+  'avatars_refused',
   'birthdays',
   'birthdays_skipped',
+  'signatures',
+  'signatures_skipped',
   'attachments',
   'attachments_missing',
+  'attachments_refused',
   'empty_removed',
   'pruned_tags',
 ];
 // Flags in the summary rather than counts, and the reasons groups were skipped: explained in the closing line instead.
-const HIDDEN = ['pms_unavailable', 'polls_unavailable'];
+const HIDDEN = ['pms_unavailable', 'polls_unavailable', 'reactions_unavailable'];
 const hidden = (k: string): boolean => HIDDEN.includes(k) || k.startsWith('groups_skipped_');
 const enabled = (id: string): boolean => {
   try {

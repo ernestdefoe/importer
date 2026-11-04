@@ -5,7 +5,7 @@ namespace ErnestDefoe\Importer\Importers;
 use Illuminate\Support\Carbon;
 
 /**
- * Profile photos and birthdays, for every source that keeps them.
+ * Profile photos, birthdays and signatures, for every source that keeps them.
  *
  * Each importer describes its members' profiles with a `profiles()` method
  * returning `['count' => fn (): int, 'fetch' => fn (int $after, int $limit,
@@ -15,6 +15,7 @@ use Illuminate\Support\Carbon;
  *   uid       the source user id
  *   avatar    ?array  where the uploaded or linked picture is ({@see Files::bytes()})
  *   birthday  ?array{0:?int,1:int,2:int}  [year or null, month, day]
+ *   signature ?string HTML (an importer turns its board's BBCode or Markdown into it, as for posts)
  *
  * A picture is copied, never linked ({@see Dst::avatar()}), and only onto a
  * member with none: a resumed step, a sync, or a member who already chose a
@@ -25,6 +26,10 @@ use Illuminate\Support\Carbon;
  * survives, with the age hidden (`show_age`). Without that extension
  * enabled the birthdays are counted in the summary, never guessed into
  * another column.
+ *
+ * A signature goes into fof/signature (`users.signature`), written for what
+ * its formatter reads ({@see Dst::signature()}), onto a member with none.
+ * Without fof/signature they are counted, as birthdays are.
  */
 final class Profiles
 {
@@ -43,28 +48,38 @@ final class Profiles
         $def = fn (): array => $importer::profiles($cfg);
 
         return [new Phase('profiles', 'profiles', fn () => (int) ($def()['count'])(), function ($cursor, $limit, Ctx $ctx) use ($def) {
+            if (! $cursor) {
+                // A fresh pass: a photo the old site refused last time is asked for again.
+                Dst::db()->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'profiles-retry')->delete();
+            }
             $res = ($def()['fetch'])((int) $cursor, min($limit, self::BATCH), $ctx);
             if ($res['done'] && ! $ctx->mapGet('profiles', ['done'])) {
                 $ctx->mapPut('profiles', ['done' => 0]); // a sync then takes only new members ({@see \ErnestDefoe\Importer\Runner::sync()})
             }
 
-            return ['cursor' => $res['cursor'], 'processed' => (int) $res['rows'], 'done' => (bool) $res['done'], 'summary' => self::write($res['profiles'], $ctx)];
+            $summary = self::write($res['profiles'], $ctx);
+            if ((! empty($summary['avatars_refused']) || ! empty($summary['signatures_skipped'])) && ! $ctx->mapGet('profiles-retry', ['1'])) {
+                $ctx->mapPut('profiles-retry', ['1' => 0]); // the next sync walks every member again, filling only what is missing
+            }
+
+            return ['cursor' => $res['cursor'], 'processed' => (int) $res['rows'], 'done' => (bool) $res['done'], 'summary' => $summary];
         })];
     }
 
     /** @return array<string,int> */
     public static function write(array $profiles, Ctx $ctx): array
     {
-        $profiles = array_filter($profiles, fn ($p) => ! empty($p['avatar']) || ! empty($p['birthday']));
+        $profiles = array_filter($profiles, fn ($p) => ! empty($p['avatar']) || ! empty($p['birthday']) || trim((string) ($p['signature'] ?? '')) !== '');
         if (! $profiles) {
             return [];
         }
         $users = $ctx->mapGet('user', array_column($profiles, 'uid'));
         $db = Dst::db();
         $birthdays = self::birthdays();
-        $have = $users ? $db->table('users')->whereIn('id', array_values($users))->get(['id', 'avatar_url', ...($birthdays ? ['birthday'] : [])])->keyBy('id') : collect();
+        $signatures = Dst::signatures();
+        $have = $users ? $db->table('users')->whereIn('id', array_values($users))->get(['id', 'avatar_url', ...($birthdays ? ['birthday'] : []), ...($signatures ? ['signature'] : [])])->keyBy('id') : collect();
         $hideAge = Dst::hasColumn('users', 'show_age');
-        $out = $dates = $noYear = [];
+        $out = $dates = $noYear = $sigs = [];
         $add = function (string $k) use (&$out) {
             $out[$k] = ($out[$k] ?? 0) + 1;
         };
@@ -74,8 +89,17 @@ final class Profiles
                 continue;
             }
             if (! empty($p['avatar']) && ($user->avatar_url ?? '') === '' && ! Dst::$dryRun) { // a dry run downloads nothing
+                SafeFetch::forget();
                 $bytes = Files::bytes($p['avatar'], $ctx->cfg, 3_000_000, 15);
-                $add($bytes !== null && Dst::avatarBytes((int) $user->id, $bytes) ? 'avatars' : 'avatars_missing');
+                $add($bytes !== null && Dst::avatarBytes((int) $user->id, $bytes) ? 'avatars' : (SafeFetch::refused() ? 'avatars_refused' : 'avatars_missing'));
+            }
+            if (($sig = trim((string) ($p['signature'] ?? ''))) !== '') {
+                if (! $signatures) {
+                    $add('signatures_skipped');
+                } elseif (trim((string) ($user->signature ?? '')) === '' && ($xml = Dst::signature($sig))) {
+                    $sigs[(int) $user->id] = $xml;
+                    $add('signatures');
+                }
             }
             if (! empty($p['birthday'])) {
                 [$y, $m, $d] = $p['birthday'] + [null, 0, 0];
@@ -106,6 +130,18 @@ final class Profiles
             if ($noYear && $hideAge) {
                 $db->table('users')->whereIn('id', $noYear)->update(['show_age' => false]);
             }
+        }
+
+        if ($sigs && ! Dst::$dryRun) {
+            // One statement for the batch, every signature a bound value.
+            $grammar = $db->getQueryGrammar();
+            $case = 'CASE '.$grammar->wrap('id').str_repeat(' WHEN ? THEN ?', count($sigs)).' END';
+            $bindings = [];
+            foreach ($sigs as $id => $xml) {
+                array_push($bindings, $id, $xml);
+            }
+            $db->update('UPDATE '.$grammar->wrapTable('users').' SET '.$grammar->wrap('signature').' = '.$case
+                .' WHERE '.$grammar->wrap('id').' IN ('.implode(', ', array_keys($sigs)).')', $bindings);
         }
 
         return $out;

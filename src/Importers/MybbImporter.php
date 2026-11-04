@@ -290,7 +290,7 @@ class MybbImporter
                 $avatar = $file === '' ? null : (preg_match('#^(https?:)?//#i', $file) ? ['url' => $file]
                     : ['path' => preg_replace('#^\./#', '', $file), 'url' => preg_replace('#^\./#', '', $file)]);
 
-                return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'dmy')];
+                return ['avatar' => $avatar, 'birthday' => Profiles::date((string) ($u->birthday ?? ''), 'dmy'), 'signature' => Bbcode::toHtml((string) ($u->signature ?? ''), ['size' => 'pt'])];
             }),
         ];
     }

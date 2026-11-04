@@ -354,13 +354,15 @@ class WebWizImporter
                 $c = self::schema($ctx->cfg)['cols'];
                 $avatar = self::col($conn, $p.'Author', ['Avatar']);
                 $dob = self::col($conn, $p.'Author', ['DOB', 'Date_of_birth']);
+                $sig = self::col($conn, $p.'Author', ['Signature']);
 
-                return Profiles::page($conn->table($p.'Author'), $c['author_id'], $after, $limit, function ($u) use ($avatar, $dob) {
+                return Profiles::page($conn->table($p.'Author'), $c['author_id'], $after, $limit, function ($u) use ($avatar, $dob, $sig) {
                     $a = $avatar ? trim((string) ($u->$avatar ?? '')) : '';
 
                     return [
                         'avatar' => $a === '' ? null : (preg_match('#^(https?:)?//#i', $a) ? ['url' => $a] : ['path' => ltrim($a, './'), 'url' => ltrim($a, './')]),
                         'birthday' => $dob && ! empty($u->$dob) ? Profiles::date(substr((string) $u->$dob, 0, 10)) : null,
+                        'signature' => $sig && trim((string) ($u->$sig ?? '')) !== '' ? self::body((string) $u->$sig) : null,
                     ];
                 });
             },

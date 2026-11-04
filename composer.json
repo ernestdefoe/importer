@@ -71,7 +71,9 @@
     "flarum/lock": "^2.0",
     "flarum/sticky": "^2.0",
     "datlechin/flarum-birthdays": "^3.0",
-    "fof/upload": "^2.0"
+    "fof/upload": "^2.0",
+    "fof/reactions": "^2.0",
+    "fof/signature": "^2.0@beta"
   },
   "scripts": {
     "test": [

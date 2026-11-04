@@ -244,13 +244,21 @@ class DiscourseImporter
                 $sb = $conn->getSchemaBuilder();
                 $page = Profiles::page($conn->table('users'), 'id', $after, $limit, fn ($u) => ['avatar_id' => $u->uploaded_avatar_id ?? null, 'dob' => $u->date_of_birth ?? null]);
                 $uploads = ($ids = array_filter(array_column($page['profiles'], 'avatar_id'))) ? $conn->table('uploads')->whereIn('id', $ids)->pluck('url', 'id')->all() : [];
-                $dobs = $sb->hasTable('user_custom_fields') && $page['profiles']
-                    ? $conn->table('user_custom_fields')->whereIn('user_id', array_column($page['profiles'], 'uid'))->where('name', 'date_of_birth')->pluck('value', 'user_id')->all() : [];
+                $fields = [];
+                foreach ($sb->hasTable('user_custom_fields') && $page['profiles']
+                    ? $conn->table('user_custom_fields')->whereIn('user_id', array_column($page['profiles'], 'uid'))->whereIn('name', ['date_of_birth', 'signature_raw', 'signature_url'])->get(['user_id', 'name', 'value']) : [] as $f) {
+                    $fields[$f->name][$f->user_id] = (string) $f->value;
+                }
+                $dobs = $fields['date_of_birth'] ?? [];
                 foreach ($page['profiles'] as &$p) {
                     $url = (string) ($uploads[(int) $p['avatar_id']] ?? '');
                     $p['avatar'] = $url === '' ? null : ['url' => $url] + (preg_match('#/(uploads/.+)$#', (string) parse_url($url, PHP_URL_PATH), $m) ? ['root' => 'public', 'path' => $m[1]] : []);
                     $b = Profiles::date((string) ($p['dob'] ?: ($dobs[$p['uid']] ?? '')));
                     $p['birthday'] = $b ? [null, $b[1], $b[2]] : null;
+                    // The discourse-signatures plugin: Markdown, or one picture.
+                    $raw = trim($fields['signature_raw'][$p['uid']] ?? '');
+                    $pic = trim($fields['signature_url'][$p['uid']] ?? '');
+                    $p['signature'] = $raw !== '' ? Src::markdown($raw) : (preg_match('#^https?://#i', $pic) ? '<img src="'.htmlspecialchars($pic, ENT_QUOTES).'">' : null);
                 }
                 unset($p);
 

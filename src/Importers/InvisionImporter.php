@@ -431,7 +431,7 @@ class InvisionImporter
     {
         return [
             'count' => fn () => (int) Src::connect($cfg)->table('core_members')->count(),
-            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table('core_members'), 'member_id', $after, $limit, function ($u) {
+            'fetch' => fn (int $after, int $limit, Ctx $ctx) => Profiles::page($ctx->src()->table('core_members'), 'member_id', $after, $limit, function ($u) use ($cfg) {
                 $photo = trim((string) ($u->pp_main_photo ?? ''));
                 $avatar = match (true) {
                     ($u->pp_photo_type ?? '') === 'gravatar' && trim((string) ($u->pp_gravatar ?? '')) !== '' => Profiles::gravatar((string) $u->pp_gravatar),
@@ -440,7 +440,8 @@ class InvisionImporter
                     default => ['root' => 'uploads', 'path' => $photo, 'url' => 'uploads/'.$photo],
                 };
 
-                return ['avatar' => $avatar, 'birthday' => (int) ($u->bday_day ?? 0) ? [(int) ($u->bday_year ?? 0) ?: null, (int) $u->bday_month, (int) $u->bday_day] : null];
+                return ['avatar' => $avatar, 'birthday' => (int) ($u->bday_day ?? 0) ? [(int) ($u->bday_year ?? 0) ?: null, (int) $u->bday_month, (int) $u->bday_day] : null,
+                    'signature' => self::ipsHtml((string) ($u->signature ?? ''), (string) ($cfg['assets_base'] ?? ''))];
             }),
         ];
     }

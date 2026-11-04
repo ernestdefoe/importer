@@ -40,7 +40,7 @@ class SourceProfilesTest extends TestCase
     {
         parent::setUp();
 
-        $this->extension('datlechin-birthdays', 'ernestdefoe-importer');
+        $this->extension('datlechin-birthdays', 'flarum-markdown', 'fof-signature', 'ernestdefoe-importer');
         $this->prepareDatabase([
             'users' => array_map(fn ($id, $name) => ['id' => $id, 'username' => $name, 'email' => $name.'@forum.example', 'is_email_confirmed' => 1, 'password' => ''], [3, 4, 5], ['ada', 'bob', 'cy']),
         ]);
@@ -143,9 +143,10 @@ class SourceProfilesTest extends TestCase
 
     #[Test]
     #[DataProvider('sources')]
-    public function a_source_s_groups_photos_and_birthdays_arrive(string $source, string $prefix)
+    public function a_source_s_groups_photos_birthdays_and_signatures_arrive(string $source, string $prefix)
     {
         $want = $this->{'fixture'.ucfirst($source)}();
+        $signed = $this->signature($source);
         $cfg = ['driver' => 'sqlite', 'database' => $this->file, 'prefix' => $prefix, 'files_path' => $this->dir];
 
         $summary = $this->runPhases($source, $cfg);
@@ -168,6 +169,11 @@ class SourceProfilesTest extends TestCase
         $this->assertSame('1904-02-29', substr((string) $users[4]->birthday, 0, 10), 'A birthday with no year keeps its day');
         $this->assertFalse((bool) $users[4]->show_age, '… and shows no age');
         $this->assertNull($users[5]->birthday);
+        if ($signed) {
+            $sig = (string) $this->database()->table('users')->where('id', 3)->value('signature');
+            $this->assertStringContainsString('<STRONG><s>**</s>Ada<e>**</e></STRONG> loves rain', $sig, 'Ada\'s signature, in the Markdown fof/signature reads: '.$sig);
+            $this->assertSame(1, $summary['signatures'] ?? 0);
+        }
 
         // Again: nothing new, nothing doubled, nobody's picture replaced.
         $before = [$this->memberships(), $this->database()->table('groups')->count(), $users[3]->avatar_url];
@@ -201,9 +207,10 @@ class SourceProfilesTest extends TestCase
     }
 
     #[Test]
-    public function birthdays_are_counted_without_the_birthdays_extension_and_a_path_cannot_leave_the_folder()
+    public function birthdays_and_signatures_are_counted_without_their_extensions_and_a_path_cannot_leave_the_folder()
     {
         $this->fixturePhpbb();
+        $this->signature('phpbb');
         // A member whose stored file name climbs out of the avatar folder.
         $this->sql("UPDATE phpbb_users SET user_avatar = '../../../secret_12.png', user_avatar_type = 'avatar.driver.local' WHERE user_id = 12");
         $this->picture('secret_12.png');
@@ -212,6 +219,8 @@ class SourceProfilesTest extends TestCase
         $summary = $this->runPhases('phpbb', ['driver' => 'sqlite', 'database' => $this->file, 'prefix' => 'phpbb_', 'files_path' => $this->dir]);
 
         $this->assertSame(2, $summary['birthdays_skipped'] ?? 0);
+        $this->assertSame(1, $summary['signatures_skipped'] ?? 0);
+        $this->assertTrue($this->database()->table('importer_map')->where('kind', 'profiles-retry')->exists(), 'A sync brings them once FoF Signature is on');
         $this->assertSame(1, $summary['avatars_missing'] ?? 0, 'The picture outside the gallery folder is not read');
         $this->assertNull($this->database()->table('users')->where('id', 5)->value('avatar_url'));
     }
@@ -233,6 +242,66 @@ class SourceProfilesTest extends TestCase
         $this->assertSame(1, $summary['avatars'] ?? 0, 'The members after it still get theirs');
         $this->assertSame(1, $summary['avatars_missing'] ?? 0);
         $this->assertNull($this->database()->table('users')->where('id', 5)->value('avatar_url'));
+    }
+
+    #[Test]
+    public function a_photo_linked_on_the_old_site_is_read_from_its_folder_and_a_refused_one_is_retried()
+    {
+        $this->fixturePhpbb();
+        // Bob linked a picture on the old site itself ("remote"): it is in the folder here.
+        $this->picture('images/members/bob.png');
+        // Cy's is not, and the old site turns this server away, as Cloudflare does.
+        $router = $this->dir.'-router.php';
+        file_put_contents($router, '<?php http_response_code(403); echo "Just a moment...";');
+        $socket = stream_socket_server('tcp://127.0.0.1:0');
+        $addr = stream_socket_get_name($socket, false);
+        fclose($socket);
+        $server = proc_open([PHP_BINARY, '-S', $addr, $router], [['pipe', 'r'], ['file', '/dev/null', 'w'], ['file', '/dev/null', 'w']], $pipes);
+        for ($i = 0; $i < 50 && ! @fsockopen(...[...explode(':', $addr), null, null, 0.1]); $i++) {
+            usleep(50_000);
+        }
+        $this->sql(
+            "UPDATE phpbb_users SET user_avatar = 'https://{$addr}/forum/images/members/bob.png', user_avatar_type = 'avatar.driver.remote' WHERE user_id = 11",
+            "UPDATE phpbb_users SET user_avatar = 'http://{$addr}/forum/faces/cy.png', user_avatar_type = 'avatar.driver.remote' WHERE user_id = 12",
+        );
+        $this->extensions = ['ernestdefoe-importer'];
+
+        try {
+            $summary = $this->runPhases('phpbb', ['driver' => 'sqlite', 'database' => $this->file, 'prefix' => 'phpbb_', 'files_path' => $this->dir.'/', 'assets_base' => "http://{$addr}/forum"]);
+        } finally {
+            proc_terminate($server);
+            @unlink($router);
+        }
+
+        $this->assertSame(2, $summary['avatars'] ?? 0, 'Ada\'s upload and Bob\'s linked picture: '.json_encode($summary));
+        $this->assertNotEmpty($this->database()->table('users')->where('id', 4)->value('avatar_url'));
+        $this->assertSame(1, $summary['avatars_refused'] ?? 0);
+        $this->assertArrayNotHasKey('avatars_missing', $summary);
+        $this->assertTrue($this->database()->table('importer_map')->where('kind', 'profiles-retry')->exists(), 'The next sync asks again');
+    }
+
+    /**
+     * Ada's signature, "**Ada** loves rain", as each board keeps it (in its own
+     * BBCode, HTML or Markdown). False for a board with no signatures.
+     */
+    private function signature(string $source): bool
+    {
+        $bb = "'[b]Ada[/b] loves rain'";
+        $sql = match ($source) {
+            'phpbb' => ['ALTER TABLE phpbb_users ADD COLUMN user_sig TEXT', 'ALTER TABLE phpbb_users ADD COLUMN user_sig_bbcode_uid TEXT', "UPDATE phpbb_users SET user_sig = '[b:x1]Ada[/b:x1] loves rain', user_sig_bbcode_uid = 'x1' WHERE user_id = 10"],
+            'xenforo' => ['ALTER TABLE xf_user_profile ADD COLUMN signature TEXT', "UPDATE xf_user_profile SET signature = '[B]Ada[/B] loves rain' WHERE user_id = 10"],
+            'vbulletin', 'vbulletin5' => ['CREATE TABLE usertextfield (userid INTEGER PRIMARY KEY, signature TEXT)', "INSERT INTO usertextfield VALUES (10, {$bb})"],
+            'mybb' => ['ALTER TABLE mybb_users ADD COLUMN signature TEXT', "UPDATE mybb_users SET signature = {$bb} WHERE uid = 10"],
+            'smf' => ['ALTER TABLE smf_members ADD COLUMN signature TEXT', "UPDATE smf_members SET signature = {$bb} WHERE id_member = 10"],
+            'vanilla' => ['CREATE TABLE GDN_UserMeta (UserID INTEGER, Name TEXT, Value TEXT)', "INSERT INTO GDN_UserMeta VALUES (10, 'Plugin.Signatures.Sig', '**Ada** loves rain'), (10, 'Plugin.Signatures.Format', 'Markdown')"],
+            'invision' => ['ALTER TABLE core_members ADD COLUMN signature TEXT', "UPDATE core_members SET signature = '<p><strong>Ada</strong> loves rain</p>' WHERE member_id = 10"],
+            'discourse' => ['CREATE TABLE user_custom_fields (user_id INTEGER, name TEXT, value TEXT)', "INSERT INTO user_custom_fields VALUES (10, 'signature_raw', '**Ada** loves rain')"],
+            'webwiz' => ['ALTER TABLE tblAuthor ADD COLUMN Signature TEXT', "UPDATE tblAuthor SET Signature = '<b>Ada</b> loves rain' WHERE Author_ID = 10"],
+            default => [],
+        };
+        $this->sql(...$sql);
+
+        return (bool) $sql;
     }
 
     /* ── One fixture per source ─────────────────────────────────────────── */

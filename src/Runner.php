@@ -5,6 +5,7 @@ namespace ErnestDefoe\Importer;
 use ErnestDefoe\Importer\Importers\Ctx;
 use ErnestDefoe\Importer\Importers\Dst;
 use ErnestDefoe\Importer\Importers\PrivateMessages;
+use ErnestDefoe\Importer\Importers\Reactions;
 use ErnestDefoe\Importer\Importers\Registry;
 use ErnestDefoe\Importer\Importers\Src;
 use ErnestDefoe\Importer\Importers\Upload;
@@ -122,8 +123,9 @@ class Runner
                 'pms' => PrivateMessages::syncFrom((int) $base->id),
                 // Likewise groups, pictures and birthdays: every member once, then new members.
                 'group-members' => self::mapped((int) $base->id, 'group') ? $hw['user'] : 0,
-                'profiles' => self::mapped((int) $base->id, 'profiles') ? $hw['user'] : 0,
-            ],
+                'profiles' => self::mapped((int) $base->id, 'profiles') && ! self::mapped((int) $base->id, 'profiles-retry') ? $hw['user'] : 0,
+                // Reactions: past what the base run read (an import from before them: all, once).
+            ] + Reactions::syncFrom($importer, $cfg, (int) $base->id),
             // Edits since the previous run began, with an hour's slack for clocks.
             'since' => $last ? Carbon::parse($last)->getTimestamp() - 3600 : 0,
             // Everything above this was written by this sync (or by members
@@ -515,8 +517,14 @@ class Runner
             $line .= ' '.Src::t('polls.unavailable');
         }
 
+        foreach (['reactions' => ['count' => $s['reactions'] ?? 0], 'reactions_skipped' => ['count' => $s['reactions_skipped'] ?? 0], 'reactions_pictures' => ['count' => $s['reactions_pictures'] ?? 0], 'reactions_unavailable' => []] as $key => $params) {
+            if (! empty($s[$key])) {
+                $line .= ' '.Src::t('reactions.'.($key === 'reactions' ? 'summary' : substr($key, 10)), $params);
+            }
+        }
+
         // Groups, profiles and attachments: what came across, and what did not and why.
-        foreach (['groups' => ['groups_created', 'groups_mapped', 'group_members'], 'avatars' => ['avatars'], 'birthdays' => ['birthdays'], 'attachments' => ['attachments']] as $key => $need) {
+        foreach (['groups' => ['groups_created', 'groups_mapped', 'group_members'], 'avatars' => ['avatars'], 'birthdays' => ['birthdays'], 'signatures' => ['signatures'], 'attachments' => ['attachments']] as $key => $need) {
             if (array_filter(array_intersect_key($s, array_flip($need)))) {
                 $line .= ' '.Src::t('extras.'.$key, array_intersect_key($s, array_flip($need)) + array_fill_keys($need, 0));
             }
@@ -530,7 +538,7 @@ class Runner
             }
             $line .= ' '.Src::t('extras.groups_skipped', ['count' => $s['groups_skipped'], 'reasons' => implode('; ', $why)]);
         }
-        foreach (['avatars_missing', 'birthdays_skipped', 'attachments_missing'] as $key) {
+        foreach (['avatars_missing', 'avatars_refused', 'birthdays_skipped', 'signatures_skipped', 'attachments_missing', 'attachments_refused'] as $key) {
             if (! empty($s[$key])) {
                 $line .= ' '.Src::t('extras.'.$key, ['count' => $s[$key]]);
             }

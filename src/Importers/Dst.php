@@ -37,6 +37,7 @@ class Dst
     {
         self::$db = null;
         self::$formatter = null;
+        self::$signature = null;
         self::$refs = [];
         self::$base = '';
         self::$pendingMentions = [];
@@ -110,6 +111,45 @@ class Dst
         $text = $root ? Writer::write($root, Target::current(), self::$refs, self::topicUrl(...)) : '';
 
         return $text !== '' ? $text : "\u{200B}"; // zero-width space so the post isn't empty
+    }
+
+    /** @var array{0:Formatter,1:Target}|false|null fof/signature's formatter and what it reads, once looked up */
+    private static array|false|null $signature = null;
+
+    /**
+     * A signature as fof/signature stores it: written for what ITS formatter
+     * reads (Markdown and BBCode only when those are enabled, never embeds),
+     * then parsed by it. Null without fof/signature, or for one with no text.
+     */
+    public static function signature(string $html): ?string
+    {
+        if (self::$signature === null) {
+            try {
+                $f = resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('fof-signature') && self::hasColumn('users', 'signature')
+                    ? resolve('FoF\\Signature\\Formatter\\SignatureFormatter') : null;
+                self::$signature = $f instanceof Formatter ? [$f, Target::probe($f)] : false;
+            } catch (\Throwable) {
+                self::$signature = false;
+            }
+        }
+        if (! self::$signature) {
+            return null;
+        }
+        [$formatter, $target] = self::$signature;
+        $root = Html::cleanRoot($html, ['base' => self::$base]);
+        $text = trim($root ? Writer::write($root, $target, [], self::topicUrl(...)) : '');
+
+        try {
+            return $text === '' ? '' : $formatter->parse($text, null);
+        } catch (\Throwable) {
+            return $formatter->parse(trim(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8')), null);
+        }
+    }
+
+    /** fof/signature is enabled here: where a signature can go. */
+    public static function signatures(): bool
+    {
+        return self::signature('') !== null;
     }
 
     private static function topicUrl(int $did): string

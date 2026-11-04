@@ -25,8 +25,22 @@ final class SafeFetch
 {
     private const MAX_REDIRECTS = 3;
 
+    private static bool $refused = false;
+
+    /** Whether the last get() was turned away by the site (a firewall such as Cloudflare), not missing. */
+    public static function refused(): bool
+    {
+        return self::$refused;
+    }
+
+    public static function forget(): void
+    {
+        self::$refused = false;
+    }
+
     public static function get(string $url, int $maxBytes, int $timeout, string $trustedHost = ''): ?string
     {
+        self::$refused = false;
         try {
             return self::fetch(new Client(), $url, $maxBytes, $timeout, $trustedHost);
         } catch (\Exception) {
@@ -67,6 +81,8 @@ final class SafeFetch
             }
 
             if ($status !== 200) {
+                self::$refused = in_array($status, [401, 403, 429, 503], true);
+
                 return null;
             }
 

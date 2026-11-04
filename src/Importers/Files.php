@@ -56,8 +56,31 @@ final class Files
             }
             $url = $base.'/'.ltrim($url, './');
         }
+        if (($local = self::onDisk($url, $base, (string) ($cfg['files_path'] ?? ''), $max)) !== null) {
+            return $local;
+        }
 
         return SafeFetch::get($url, $max, $timeout, (string) parse_url($base, PHP_URL_HOST));
+    }
+
+    /**
+     * A picture on the old board's own site, read from its folder on this
+     * server instead of over the web: a firewall in front of the old site
+     * (Cloudflare) often refuses a server's downloads, and the copy is here.
+     * Images only, so an address can never reach a script or a settings file.
+     */
+    private static function onDisk(string $url, string $base, string $root, int $max): ?string
+    {
+        $bare = fn (string $u) => (string) preg_replace('#^https?://#i', '', $u); // http or https, the same site
+        if (trim($root) === '' || $base === '' || ! str_starts_with(strtolower($bare($url)), strtolower($bare($base)).'/')) {
+            return null;
+        }
+        $rel = rawurldecode((string) parse_url('http://x'.substr($bare($url), strlen($bare($base))), PHP_URL_PATH));
+        if (parse_url($url, PHP_URL_QUERY) !== null || ! preg_match('/\.(?:png|jpe?g|gif|webp)$/i', $rel)) {
+            return null;
+        }
+
+        return self::read($root, $rel, $max);
     }
 
     /**

@@ -317,10 +317,12 @@ final class Attachments
             return null; // a dry run writes no files
         }
         $name = trim((string) ($att['name'] ?? '')) ?: 'file';
+        SafeFetch::forget();
         $bytes = Files::bytes($att, $this->ctx->cfg, self::MAX_BYTES, 30);
         $copy = $bytes !== null ? Dst::storeAsset($bytes, $name, $this->users[(string) ($att['uid'] ?? '')] ?? null) : null;
         if (! $copy) {
-            $this->summary['attachments_missing'] = ($this->summary['attachments_missing'] ?? 0) + 1;
+            $why = SafeFetch::refused() ? 'attachments_refused' : 'attachments_missing';
+            $this->summary[$why] = ($this->summary[$why] ?? 0) + 1;
             $this->stored[$id] = false;
 
             return null;

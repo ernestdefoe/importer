@@ -292,8 +292,9 @@ class XenForoImporter
                 $conn = $ctx->src();
                 $q = $conn->table('xf_user as u');
                 $dob = $conn->getSchemaBuilder()->hasColumn('xf_user_profile', 'dob_day');
-                if ($dob) {
-                    $q->leftJoin('xf_user_profile as pr', 'pr.user_id', '=', 'u.user_id')->select('u.*', 'pr.dob_day', 'pr.dob_month', 'pr.dob_year');
+                $sig = $conn->getSchemaBuilder()->hasColumn('xf_user_profile', 'signature');
+                if ($dob || $sig) {
+                    $q->leftJoin('xf_user_profile as pr', 'pr.user_id', '=', 'u.user_id')->select('u.*', ...($dob ? ['pr.dob_day', 'pr.dob_month', 'pr.dob_year'] : []), ...($sig ? ['pr.signature'] : []));
                 }
 
                 return Profiles::page($q, 'u.user_id', $after, $limit, function ($u) {
@@ -301,7 +302,8 @@ class XenForoImporter
                     $avatar = (int) ($u->avatar_date ?? 0) > 0 ? ['root' => 'data/avatars', 'path' => $file, 'url' => 'data/avatars/'.$file]
                         : (trim((string) ($u->gravatar ?? '')) !== '' ? Profiles::gravatar((string) $u->gravatar) : null);
 
-                    return ['avatar' => $avatar, 'birthday' => (int) ($u->dob_day ?? 0) ? [(int) ($u->dob_year ?? 0) ?: null, (int) $u->dob_month, (int) $u->dob_day] : null];
+                    return ['avatar' => $avatar, 'birthday' => (int) ($u->dob_day ?? 0) ? [(int) ($u->dob_year ?? 0) ?: null, (int) $u->dob_month, (int) $u->dob_day] : null,
+                        'signature' => Bbcode::toHtml((string) ($u->signature ?? ''))];
                 });
             },
         ];

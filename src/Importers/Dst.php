@@ -224,9 +224,12 @@ class Dst
     public static function post_like(int $postId, int $userId, Carbon $createdAt, int $action): bool
     {
         $db = self::db();
+        $done = false;
+        
         if (self::hasTable('post_reactions'))
         {
             if ($db->table('post_reactions')->where('post_id', $postId)->where('user_id', $userId)->where('reaction_id', $action)->exists()) {
+                // Reaction already imported, skip
                 return false;
             }
             
@@ -236,22 +239,31 @@ class Dst
                 'reaction_id' => $action,
                 'created_at' => $createdAt,
                 'updated_at' => $createdAt,
-            ]);            
-        }
-        else
-        {
-            if ($action!=1) return false;
-            if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
-                return false;
-            }
+            ]);
             
+            $done=true;
+        }
+        
+        if (self::hasTable('post_likes')) {
+            if ($action!=1) {
+                // Only likes are importable
+                return $done;
+            }
+        
+            if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
+                return $done;
+            }
+                
             $db->table('post_likes')->insert([
                 'post_id' => $postId,
                 'user_id' => $userId,
                 'created_at' => $createdAt,
             ]);
+            
+            $done=true;
         }
-        return true;
+        
+        return $done;
     }
     
     /* ── Users ──────────────────────────────────────────────────────────── */

@@ -116,10 +116,10 @@ Members sign in with the password they had on the old board. A hash Flarum can c
 | MyBB | salted md5, or bcrypt |
 | SMF | 2.0 sha1 and 2.1 bcrypt |
 | Invision | IPS 4 bcrypt and IP.Board 3 salted md5 |
-| Discourse | discourse-signatures plugin | PBKDF2, at whatever strength each account was saved with |
-| Vanilla | Signatures plugin (`UserMeta`) | bcrypt, phpass and Django-style hashes |
-| NodeBB | `signature` | bcrypt, including NodeBB's sha512-wrapped hashes |
-| Convoro | — (Convoro keeps none) | bcrypt |
+| Discourse | PBKDF2, at whatever strength each account was saved with |
+| Vanilla | bcrypt, phpass and Django-style hashes |
+| NodeBB | bcrypt, including NodeBB's sha512-wrapped hashes |
+| Convoro | bcrypt |
 | Web Wiz | not kept: members use **Forgot password** |
 
 🔒 An old hash on its own never signs anybody in. vBulletin 5's tokens, for instance, are bcrypt of the md5 of the password, so only the password itself is accepted, never its md5. Thanks to [Rob2dev](https://github.com/Rob2dev) for mapping vBulletin 5's password schemes on a real board ([#4](https://github.com/ernestdefoe/importer/pull/4)).

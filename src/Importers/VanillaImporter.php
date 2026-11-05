@@ -74,7 +74,7 @@ class VanillaImporter
                     
                     $done = count($rows) < $limit;
                     if ($done&&Dst::hasColumn('discussions',  'best_answer_post_id')) {
-                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, 0);
+                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, 0, primary: false);
                     }
                     
                     $ctx->mapPut('tag', $map);

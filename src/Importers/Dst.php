@@ -194,7 +194,7 @@ class Dst
      *                            read it (a staff forum): only admins see the
      *                            tag until its permissions are set up
      */
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null, bool $restricted = false): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null, bool $restricted = false, bool $primary = true): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
@@ -210,7 +210,7 @@ class Dst
             'color' => Src::color($color),
             'position' => $position,
             'parent_id' => $parentId,
-            'is_primary' => true,
+            'is_primary' => $primary,
             'is_restricted' => $restricted ? 1 : 0,
             'is_hidden' => 0,
             'discussion_count' => 0,

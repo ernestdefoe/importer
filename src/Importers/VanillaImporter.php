@@ -71,10 +71,16 @@ class VanillaImporter
                         }
                         $n++;
                     }
+
+                    $done = count($rows) < $limit;
+                    if ($done && Dst::hasColumn('discussions',  'best_answer_post_id')) {
+                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, 0, primary: false);
+                    }
+
                     $ctx->mapPut('tag', $map);
                     $ctx->mapPut('tag-slug', $slugs);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => $done, 'summary' => ['categories' => $n]];
                 }
             ),
 
@@ -158,7 +164,12 @@ class VanillaImporter
                         $title = trim((string) ($d->Name ?? '')) ?: 'Untitled';
                         $created = Src::ts($d->DateInserted ?? null);
                         $uid = $userMap[(string) $d->InsertUserID] ?? null;
-                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1);
+                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, false, (int) ($d->CountViews ?? 0));
+                        if (($d->QnA ?? '') !== '') {
+                            if (Dst::hasColumn('discussions', 'best_answer_post_id')) {
+                                Dst::attachTag($did, $ctx->mapGet('tag-slug', ['qna-question'])['qna-question']);
+                            }                            
+                        }
                         $map[$d->DiscussionID] = $did;
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
@@ -184,8 +195,8 @@ class VanillaImporter
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
                     $rows = $ctx->src()->table($p.'Comment')
-                        ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
-                            ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
+                    ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
+                        ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
                     $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
@@ -200,7 +211,7 @@ class VanillaImporter
                     // Where each discussion's numbering stands, in one grouped query for the batch.
                     $dids = array_values(array_unique($topicMap));
                     $next = $dids ? Dst::db()->table('posts')->whereIn('discussion_id', $dids)->groupBy('discussion_id')
-                        ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
+                    ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
                     $ids = [];
                     $n = 0;
                     foreach ($rows as $c) {
@@ -223,6 +234,16 @@ class VanillaImporter
                             $files->link('c'.$c->CommentID, $ids[$c->CommentID]);
                             Dst::ref('post', (string) $c->CommentID, $ids[$c->CommentID]);
                             $n++;
+                            if ($c->QnA == 'Accepted' ) {
+                                if (Dst::hasColumn('discussions', 'best_answer_post_id')) {                                    
+                                    Dst::db()->table('discussions')->where('id', $did)->update([
+                                        'best_answer_post_id' => $ids[$c->CommentID],
+                                        'best_answer_user_id' => $userMap[(string) $c->AcceptedUserID],
+                                        'best_answer_set_at' => Src::ts($c->DateAccepted ?? null),
+                                        'best_answer_notified' => 0,
+                                    ]);
+                                }
+                            }
                         } catch (\Throwable) {
                             $carry['num']--;
                         }
@@ -236,6 +257,73 @@ class VanillaImporter
                     $cur['carry'] = $done ? null : $carry;
 
                     return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $files->done(['posts' => $n])];
+                }
+            ),
+
+            // Likes
+            new Phase(
+                'likes',
+                'likes',
+                fn () => (int) Src::connect($cfg)->table($p.'Kudos')->count(),
+                function ($cursor, $limit, Ctx $ctx) use ($p) {
+                    $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
+                    $request = $ctx->src()->table($p.'Kudos');
+                    if ((int) $cur['did'] == 0) {
+                        if ((int) $cur['cid'] == 0) {
+                            //First request, no where clause needed
+                            //This will list entries where DiscussionID is NULL, so Comments first
+                        } else {
+                            //We are continuing comments, we want entries where Comment ID is greater than previous or begin discussions
+                            $request = $request->whereNotNull('DiscussionID')
+                                ->orWhere(fn ($q2) => $q2->where('CommentID', '>', (int) $cur['cid']));
+                        }
+                    } else {
+                        //We finished comments and started discussions
+                        $request = $request->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did']));                            
+                    }
+                    $rows = $request->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
+                    $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
+                    $userMap = $ctx->mapGet('user', $rows->pluck('UserID')->all());
+                    $postMap = $ctx->mapGet('post', $rows->pluck('CommentID')->all());
+
+                    $n = $skip = 0;
+                    foreach ($rows as $c) {
+                        if ($c->DiscussionID) {
+                            $cur['did'] = (int) $c->DiscussionID;
+                        }
+                        if ($c->CommentID) {
+                            $cur['cid'] = (int) $c->CommentID;
+                        }
+                        $userId = $userMap[(string) $c->UserID] ?? null;
+                        if (! $userId) {
+                            $skip++;
+                            continue;
+                        }
+                        $postId = $topicMap[(string) $c->DiscussionID] ?? null;
+                        if (! $postId) {
+                            $postId = $postMap[(string) $c->CommentID] ?? null;
+                        } else {
+                            $postId = Dst::db()->table('posts')->where('discussion_id', $postId)->where('number', 1)->value('id');
+                        }
+                        if (! $postId) {
+                            $skip++;
+                            continue;
+                        }
+                        $created = Src::ts($c->DateUpdated ?? null);
+
+                        try {
+                            if (Dst::post_like($postId, $userId, $created, $c->Action)) {
+                                $n++;
+                            } else {
+                                $skip++;
+                            }
+                        } catch (\Throwable) {
+                            $skip++;
+                        }
+                    }
+                    $done = count($rows) < $limit;
+
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['likes' => $n, 'likes_skipped' => $skip] ];
                 }
             ),
         ], Phases::tail());
@@ -450,7 +538,7 @@ class VanillaImporter
             default => ['scheme' => 'unknown', 'hash' => $hash, 'salt' => null],
         };
     }
-
+    
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {

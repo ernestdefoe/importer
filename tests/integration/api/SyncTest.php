@@ -283,4 +283,30 @@ class SyncTest extends TestCase
         $this->assertStringContainsString((string) $db->table('importer_files')->value('url'), $answer);
         exec('rm -rf '.escapeshellarg($dir));
     }
+
+    #[Test]
+    public function a_sync_after_an_import_from_before_signatures_and_reactions_brings_them_to_existing_members()
+    {
+        $this->extension('flarum-tags', 'flarum-markdown', 'fof-signature', 'fof-reactions', 'ernestdefoe-importer');
+        $this->phpbb();
+        $this->drive(['source' => 'phpbb', 'config' => ['driver' => 'sqlite', 'database' => $this->source, 'prefix' => 'phpbb_']]);
+        // As 0.7 left it: every member's profile done, before signatures or reactions came across.
+        $this->database()->table('importer_map')->where('kind', 'profiles-v2')->update(['kind' => 'profiles']);
+        $this->database()->table('importer_map')->where('kind', 'like', 'reaction%')->delete();
+
+        $this->pdo->exec('ALTER TABLE phpbb_users ADD COLUMN user_sig TEXT');
+        $this->pdo->exec('ALTER TABLE phpbb_users ADD COLUMN user_sig_bbcode_uid TEXT');
+        $this->pdo->exec("UPDATE phpbb_users SET user_sig = '[b:u1]Ada[/b:u1] loves rain', user_sig_bbcode_uid = 'u1' WHERE user_id = 5");
+        $this->pdo->exec('CREATE TABLE phpbb_post_reactions (reaction_id INTEGER PRIMARY KEY, post_id INTEGER, topic_id INTEGER, user_id INTEGER, reaction_emoji TEXT, reaction_time INTEGER)');
+        $this->pdo->exec("INSERT INTO phpbb_post_reactions VALUES (1, 101, 10, 5, '👍', 1600001500)");
+
+        $run = $this->sync();
+        $this->sync();
+
+        $db = $this->database();
+        $ada = (int) $db->table('users')->where('email', 'ada@board.example')->value('id');
+        $this->assertStringContainsString('<STRONG><s>**</s>Ada<e>**</e></STRONG> loves rain', (string) $db->table('users')->where('id', $ada)->value('signature'), json_encode($run));
+        $this->assertSame(1, $db->table('post_reactions')->where('user_id', $ada)->count(), 'Ada\'s reaction, once');
+        $this->assertTrue($db->table('importer_map')->where('kind', 'profiles-v2')->exists(), 'The next sync takes only new members again');
+    }
 }

@@ -164,8 +164,9 @@ A phpBB board's post reactions come across into [FoF Reactions](https://github.c
 |---|---|
 | Reactions (`steve/reactions`, Steven Clark) | `steve_reactions`, kinds in `steve_reaction_types` (Twemoji pictures) |
 | Post Reactions (`ferdcoz/reactions`) | `ferdcoz_reactions`, kinds in its emoji catalog |
+| Reactions (`bastien59960/reactions`, Bastien59960) | `post_reactions`, the emoji itself (any number per member per post: the newest is kept) |
 
-Each kind becomes the forum's reaction for that emoji, or a new one (enabled if it was enabled on the old board). FoF Reactions keeps one reaction per member per post, as both add-ons do. A kind the old board's admin made from a picture of their own is no emoji, so FoF Reactions cannot show it: those reactions are counted in the summary, not copied. Already imported? Run a sync: the first brings every reaction across, later ones only new ones.
+Each kind becomes the forum's reaction for that emoji, or a new one: enabled if the old board listed it as enabled, otherwise switched off, so it shows on the posts that have it without crowding the reaction picker. FoF Reactions keeps one reaction per member per post, as both add-ons do. A kind the old board's admin made from a picture of their own is no emoji, so FoF Reactions cannot show it: those reactions are counted in the summary, not copied. Already imported? Run a sync: the first brings every reaction across, later ones only new ones.
 
 ## Private messages
 

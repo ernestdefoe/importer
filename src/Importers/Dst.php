@@ -219,20 +219,17 @@ class Dst
 
     /* ── Likes ──────────────────────────────────────────────── */
     
-    /**
-     */
     public static function post_like(int $postId, int $userId, Carbon $createdAt, int $action): bool
     {
         $db = self::db();
         $done = false;
         
-        if (self::hasTable('post_reactions'))
-        {
+        if (self::hasTable('post_reactions')) {            
             if ($db->table('post_reactions')->where('post_id', $postId)->where('user_id', $userId)->where('reaction_id', $action)->exists()) {
                 // Reaction already imported, skip
                 return false;
             }
-            
+
             $db->table('post_reactions')->insert([
                 'post_id' => $postId,
                 'user_id' => $userId,
@@ -240,12 +237,12 @@ class Dst
                 'created_at' => $createdAt,
                 'updated_at' => $createdAt,
             ]);
-            
-            $done=true;
+
+            $done = true;
         }
         
         if (self::hasTable('post_likes')) {
-            if ($action!=1) {
+            if ($action != 1) {
                 // Only likes are importable
                 return $done;
             }
@@ -253,7 +250,7 @@ class Dst
             if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
                 return $done;
             }
-                
+
             $db->table('post_likes')->insert([
                 'post_id' => $postId,
                 'user_id' => $userId,
@@ -262,10 +259,10 @@ class Dst
             
             $done=true;
         }
-        
+
         return $done;
     }
-    
+
     /* ── Users ──────────────────────────────────────────────────────────── */
 
     /**
@@ -608,7 +605,7 @@ class Dst
         if (self::hasColumn('discussions', 'view_count')) {
             $row['view_count'] = $viewCount;
         }
-        
+
         return (int) $db->table('discussions')->insertGetId($row);
     }
 

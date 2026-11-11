@@ -623,7 +623,9 @@ class VanillaImporter
                 'best_answer_notified' => true, // the old board told them long ago
             ], fn ($v) => $v !== null));
             if ($count && $author) {
-                $db->table('users')->where('id', $author)->increment('best_answer_count');
+                // NULL until FoF Best Answer first counts a member: NULL + 1 would stay NULL.
+                $col = $db->getQueryGrammar()->wrap('best_answer_count');
+                $db->table('users')->where('id', $author)->update(['best_answer_count' => $db->raw('COALESCE('.$col.', 0) + 1')]);
             }
         }
     }

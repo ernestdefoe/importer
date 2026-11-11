@@ -73,7 +73,10 @@
     "datlechin/flarum-birthdays": "^3.0",
     "fof/upload": "^2.0",
     "fof/reactions": "^2.0",
-    "fof/signature": "^2.0@beta"
+    "fof/signature": "^2.0@beta",
+    "flarum/likes": "^2.0",
+    "fof/best-answer": "^2.0",
+    "fof/discussion-views": "^2.0"
   },
   "scripts": {
     "test": [

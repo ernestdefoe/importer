@@ -118,7 +118,9 @@ jobs:
       #   - on the post's own forum, the real post mention;
       #   - on the other, a mention of the same person's account there, from
       #     the shared map (ernestdefoe/.github people.json, keyed by the
-      #     post's author), else their name and a link to the post.
+      #     post's author), else their name; either way followed by a link to
+      #     the report ("on the support site" / "on Discuss"), so readers
+      #     see where reports are made.
       - name: Thank reporters on each forum
         id: thanks
         env:
@@ -185,11 +187,9 @@ jobs:
                   cache[(home, pid)] = (info, p)
               info, p = cache[(home, pid)]
               acct = (p or {}).get(target)
-              if acct:
-                  return f'@"{acct["username"]}"#{acct["id"]}'
-              if info:
-                  return f'{name} ([{FORUMS[home][1]}]({info["url"]}))'
-              return name
+              who = f'@"{acct["username"]}"#{acct["id"]}' if acct else name
+              # The link stays even with a mention: it shows where the report was made.
+              return f'{who} ([{FORUMS[home][1]}]({info["url"]}))' if info else who
 
           MENTION = re.compile(r'@"([^"\n]+)"#([pe])(\d+)')
           body = os.environ.get("POST_BODY", "")

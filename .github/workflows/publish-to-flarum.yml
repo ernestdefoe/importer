@@ -109,6 +109,98 @@ jobs:
             printf '%s\n' "$delim"
           } >> "$GITHUB_OUTPUT"
 
+      # 🚨 A post mention, @"Name"#p123, only means anything on the forum the
+      # post is on: copied to the other forum it is raw text, or a mention of
+      # whatever unrelated post has that id there (Secret Santa 1.0.2 thanked a
+      # deleted Discuss post). So release notes say which forum a thanked post
+      # lives on, "#p123" for discuss.flarum.org and "#e123" for the support
+      # site, and each forum gets its own copy of the notes:
+      #   - on the post's own forum, the real post mention;
+      #   - on the other, a mention of the same person's account there, from
+      #     the shared map (ernestdefoe/.github people.json, keyed by the
+      #     post's author), else their name and a link to the post.
+      - name: Thank reporters on each forum
+        id: thanks
+        env:
+          POST_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 10 -o /tmp/people.json https://raw.githubusercontent.com/ernestdefoe/.github/main/people.json \
+            || { echo "::warning::people.json could not be fetched; thanks fall back to a name and a link."; echo '{"people":[]}' > /tmp/people.json; }
+          python3 - <<'PY'
+          import json, os, re, secrets, urllib.request
+
+          FORUMS = {
+              "discuss": ("https://discuss.flarum.org", "on Discuss"),
+              "edonline": ("https://ernestdefoe.online", "on the support site"),
+          }
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"Accept": "application/vnd.api+json", "User-Agent": "publish-to-flarum"})
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  return json.load(r)
+
+          def post_info(forum, pid):
+              try:
+                  doc = get(f"{FORUMS[forum][0]}/api/posts/{pid}?include=user,discussion")
+              except Exception as e:
+                  print(f"::warning title=Thanks line::{forum} post {pid} could not be read ({e}); it is thanked by name only.")
+                  return None
+              inc = {(i["type"], i["id"]): i["attributes"] for i in doc.get("included", [])}
+              rel = doc["data"].get("relationships", {})
+              uid = ((rel.get("user") or {}).get("data") or {}).get("id")
+              did = ((rel.get("discussion") or {}).get("data") or {}).get("id")
+              return {
+                  "user_id": int(uid) if uid else None,
+                  "username": inc.get(("users", uid), {}).get("username"),
+                  "url": f"{FORUMS[forum][0]}/d/{inc.get(('discussions', did), {}).get('slug') or did}/{doc['data']['attributes']['number']}",
+              }
+
+          with open(os.environ.get("PEOPLE_FILE", "/tmp/people.json")) as f:
+              people = json.load(f).get("people", [])
+
+          def person(forum, info, name):
+              # The post's author is the reliable key; the name in the notes is the fallback.
+              for p in people:
+                  acct = p.get(forum) or {}
+                  if info and info["user_id"] and acct.get("id") == info["user_id"]:
+                      return p
+              for p in people:
+                  if any((p.get(f) or {}).get("username", "").lower() == name.lower() for f in FORUMS):
+                      return p
+              return None
+
+          cache = {}
+          def mention(m, target):
+              name, kind, pid = m.group(1), m.group(2), m.group(3)
+              home = "discuss" if kind == "p" else "edonline"
+              if target == home:
+                  return f'@"{name}"#p{pid}'
+              if (home, pid) not in cache:
+                  info = post_info(home, pid)
+                  p = person(home, info, name)
+                  names = {(a or {}).get("username", "").lower() for a in (p or {}).values()}
+                  if info and info["username"] and name.lower() not in names | {info["username"].lower()}:
+                      print(f'::warning title=Thanks line::{home} post {pid} is by {info["username"]}, not {name}. Is the id from the other forum?')
+                  cache[(home, pid)] = (info, p)
+              info, p = cache[(home, pid)]
+              acct = (p or {}).get(target)
+              if acct:
+                  return f'@"{acct["username"]}"#{acct["id"]}'
+              if info:
+                  return f'{name} ([{FORUMS[home][1]}]({info["url"]}))'
+              return name
+
+          MENTION = re.compile(r'@"([^"\n]+)"#([pe])(\d+)')
+          body = os.environ.get("POST_BODY", "")
+          out = {t: MENTION.sub(lambda m: mention(m, t), body) for t in ("edonline", "discuss")}
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for key, t in (("support", "edonline"), ("discuss", "discuss")):
+                  d = "EOF_" + secrets.token_hex(8)
+                  f.write(f"{key}<<{d}\n{out[t]}\n{d}\n")
+          PY
+
       - name: Post reply to support discussion
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,7 +208,7 @@ jobs:
           FLARUM_DISCUSSION_ID: ${{ vars.FLARUM_DISCUSSION_ID }}
           FLARUM_API_KEY: ${{ secrets.FLARUM_API_KEY }}
           REPO_NAME: ${{ github.event.repository.name }}
-          POST_BODY: ${{ steps.changelog.outputs.body }}
+          POST_BODY: ${{ steps.thanks.outputs.support }}
         run: |
           set -euo pipefail
 
@@ -147,7 +239,7 @@ jobs:
             next if $f;
             $_ = join "", map {
               /^`/ ? $_ : do {
-                s{\bd/(\d+)(?:/| #)(\d+)|(?<![\w/&\[#])#(\d+)\b(?!/p)}{
+                s{\bd/(\d+)(?:/| #)(\d+)|(?<![\w/&\[#"])#(\d+)\b(?!/p)}{
                   defined $1
                     ? ($1 >= 10000 ? "[d/$1 #$2](https://discuss.flarum.org/d/$1/$2)" : "#$1/p$2")
                     : ($p ? "" : "[#$3](https://github.com/$r/issues/$3)")
@@ -324,7 +416,7 @@ jobs:
           DISCUSS_DISCUSSION_ID: ${{ vars.DISCUSS_DISCUSSION_ID }}
           DISCUSS_FLARUM_TOKEN: ${{ secrets.DISCUSS_FLARUM_TOKEN }}
           DISCUSS_URL: https://discuss.flarum.org
-          POST_BODY: ${{ steps.changelog.outputs.body }}
+          POST_BODY: ${{ steps.thanks.outputs.discuss }}
         run: |
           set -euo pipefail
 

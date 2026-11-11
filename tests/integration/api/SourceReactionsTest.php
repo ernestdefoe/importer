@@ -157,6 +157,28 @@ class SourceReactionsTest extends TestCase
     }
 
     #[Test]
+    public function bastien_reactions_keep_each_member_s_newest_emoji()
+    {
+        $this->sql(
+            'CREATE TABLE phpbb_post_reactions (reaction_id INTEGER PRIMARY KEY, post_id INTEGER, topic_id INTEGER, user_id INTEGER, reaction_emoji TEXT, reaction_time INTEGER, reaction_notified INTEGER)',
+            "INSERT INTO phpbb_post_reactions VALUES
+                (1, 100, 1, 10, '👍', 1700000000, 1),
+                (2, 100, 1, 10, '🦄', 1700000900, 1),
+                (3, 100, 1, 11, '&#x1F525;', 1700000100, 1),
+                (4, 101, 1, 12, '❤️', 1700000200, 1)",
+        );
+
+        [$summary, $runId] = $this->runPhases();
+
+        // Ada reacted twice to one post: FoF Reactions keeps one, her newest.
+        $this->assertSame(['1 3 unicorn_face', '1 4 fire', '2 5 heart'], $this->reactions(), json_encode($summary));
+        $this->assertSame(3, $summary['reactions'] ?? 0);
+        $this->assertSame(1, $summary['reactions_skipped'] ?? 0);
+        $this->assertFalse((bool) $this->database()->table('reactions')->where('identifier', 'unicorn_face')->value('enabled'), 'A new kind arrives switched off: it shows on posts, not in the picker');
+        $this->assertSame(4, Reactions::syncFrom(Registry::get('phpbb'), [], $runId)['reactions-bastien']);
+    }
+
+    #[Test]
     public function a_board_without_fof_reactions_is_told_once()
     {
         $this->extensions = ['ernestdefoe-importer'];
@@ -174,6 +196,7 @@ class SourceReactionsTest extends TestCase
         $this->assertSame('1f44d', Reactions::code('👍'));
         $this->assertSame('2764-fe0f', Reactions::code('❤️'));
         $this->assertSame('1f469-200d-1f4bb', Reactions::code('1f469-200d-1f4bb.svg'));
+        $this->assertSame('1f44d', Reactions::code('&#x1F44D;'), 'A board without utf8mb4 keeps it as an entity');
         $this->assertNull(Reactions::code('our-cat.gif'));
         $this->assertSame('heart', Reactions::shortname('2764-fe0f'));
         $this->assertSame('thumbsup', Reactions::shortname('1f44d-1f3fd'), 'A skin tone falls back to the emoji');

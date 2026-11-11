@@ -116,10 +116,10 @@ Members sign in with the password they had on the old board. A hash Flarum can c
 | MyBB | salted md5, or bcrypt |
 | SMF | 2.0 sha1 and 2.1 bcrypt |
 | Invision | IPS 4 bcrypt and IP.Board 3 salted md5 |
-| Discourse | discourse-signatures plugin | PBKDF2, at whatever strength each account was saved with |
-| Vanilla | Signatures plugin (`UserMeta`) | bcrypt, phpass and Django-style hashes |
-| NodeBB | `signature` | bcrypt, including NodeBB's sha512-wrapped hashes |
-| Convoro | — (Convoro keeps none) | bcrypt |
+| Discourse | PBKDF2, at whatever strength each account was saved with |
+| Vanilla | bcrypt, phpass and Django-style hashes |
+| NodeBB | bcrypt, including NodeBB's sha512-wrapped hashes |
+| Convoro | bcrypt |
 | Web Wiz | not kept: members use **Forgot password** |
 
 🔒 An old hash on its own never signs anybody in. vBulletin 5's tokens, for instance, are bcrypt of the md5 of the password, so only the password itself is accepted, never its md5. Thanks to [Rob2dev](https://github.com/Rob2dev) for mapping vBulletin 5's password schemes on a real board ([#4](https://github.com/ernestdefoe/importer/pull/4)).
@@ -164,8 +164,9 @@ A phpBB board's post reactions come across into [FoF Reactions](https://github.c
 |---|---|
 | Reactions (`steve/reactions`, Steven Clark) | `steve_reactions`, kinds in `steve_reaction_types` (Twemoji pictures) |
 | Post Reactions (`ferdcoz/reactions`) | `ferdcoz_reactions`, kinds in its emoji catalog |
+| Reactions (`bastien59960/reactions`, Bastien59960) | `post_reactions`, the emoji itself (any number per member per post: the newest is kept) |
 
-Each kind becomes the forum's reaction for that emoji, or a new one (enabled if it was enabled on the old board). FoF Reactions keeps one reaction per member per post, as both add-ons do. A kind the old board's admin made from a picture of their own is no emoji, so FoF Reactions cannot show it: those reactions are counted in the summary, not copied. Already imported? Run a sync: the first brings every reaction across, later ones only new ones.
+Each kind becomes the forum's reaction for that emoji, or a new one: enabled if the old board listed it as enabled, otherwise switched off, so it shows on the posts that have it without crowding the reaction picker. FoF Reactions keeps one reaction per member per post, as both add-ons do. A kind the old board's admin made from a picture of their own is no emoji, so FoF Reactions cannot show it: those reactions are counted in the summary, not copied. Already imported? Run a sync: the first brings every reaction across, later ones only new ones.
 
 ## Private messages
 

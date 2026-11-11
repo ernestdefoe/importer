@@ -472,6 +472,9 @@ class PhpbbImporter
      *    uploaded one of their own; kinds in `steve_reaction_types`.
      *  - ferdcoz/reactions ("Post Reactions"): `ferdcoz_reactions`, keyed by post
      *    and member, the kind a key into a catalog of emoji kept in config_text.
+     *  - bastien59960/reactions ("Reactions", Bastien59960): `post_reactions`, the
+     *    emoji itself in `reaction_emoji`, any number per member per post (FoF
+     *    Reactions keeps one: the newest).
      */
     public static function reactions(array $cfg): array
     {
@@ -506,6 +509,26 @@ class PhpbbImporter
                     foreach ($rows as $r) {
                         if ((int) $r->post_id > 0) {
                             $out[] = [$r->post_id, $r->reaction_user_id, (string) $r->reaction_file_name, Polls::at($r->reaction_time)];
+                        }
+                    }
+
+                    return ['cursor' => $rows->isEmpty() ? $after : (int) $rows->last()->reaction_id, 'rows' => count($out), 'done' => count($rows) < $limit, 'reactions' => $out];
+                },
+            ],
+            'bastien' => [
+                'count' => $count('post_reactions', fn ($conn) => $conn->table($p.'post_reactions')->where('post_id', '>', 0)->count()),
+                'types' => fn ($conn) => [], // any emoji at all: each is its own kind
+                'fetch' => function (int $after, int $limit, Ctx $ctx) use ($p, $has, $empty) {
+                    $conn = $ctx->src();
+                    if (! $has($conn, 'post_reactions')) {
+                        return $empty($after);
+                    }
+                    $rows = $conn->table($p.'post_reactions')->where('reaction_id', '>', $after)->orderBy('reaction_id')->limit($limit)
+                        ->get(['reaction_id', 'post_id', 'user_id', 'reaction_emoji', 'reaction_time']);
+                    $out = [];
+                    foreach ($rows as $r) {
+                        if ((int) $r->post_id > 0) {
+                            $out[] = [$r->post_id, $r->user_id, (string) $r->reaction_emoji, Polls::at($r->reaction_time)];
                         }
                     }
 

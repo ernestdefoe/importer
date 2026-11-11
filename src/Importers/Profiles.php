@@ -53,8 +53,10 @@ final class Profiles
                 Dst::db()->table('importer_map')->where('run_id', $ctx->runId)->where('kind', 'profiles-retry')->delete();
             }
             $res = ($def()['fetch'])((int) $cursor, min($limit, self::BATCH), $ctx);
-            if ($res['done'] && ! $ctx->mapGet('profiles', ['done'])) {
-                $ctx->mapPut('profiles', ['done' => 0]); // a sync then takes only new members ({@see \ErnestDefoe\Importer\Runner::sync()})
+            if ($res['done'] && ! $ctx->mapGet('profiles-v2', ['done'])) {
+                // A sync then takes only new members ({@see \ErnestDefoe\Importer\Runner::sync()}). "v2": this pass
+                // read signatures too; one made before them (marked "profiles") is walked once more.
+                $ctx->mapPut('profiles-v2', ['done' => 0]);
             }
 
             $summary = self::write($res['profiles'], $ctx);

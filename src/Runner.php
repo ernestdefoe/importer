@@ -123,7 +123,8 @@ class Runner
                 'pms' => PrivateMessages::syncFrom((int) $base->id),
                 // Likewise groups, pictures and birthdays: every member once, then new members.
                 'group-members' => self::mapped((int) $base->id, 'group') ? $hw['user'] : 0,
-                'profiles' => self::mapped((int) $base->id, 'profiles') && ! self::mapped((int) $base->id, 'profiles-retry') ? $hw['user'] : 0,
+                // An import from before signatures came across ("profiles", not "profiles-v2"): every member once more.
+                'profiles' => self::mapped((int) $base->id, 'profiles-v2') && ! self::mapped((int) $base->id, 'profiles-retry') ? $hw['user'] : 0,
                 // Reactions: past what the base run read (an import from before them: all, once).
             ] + Reactions::syncFrom($importer, $cfg, (int) $base->id),
             // Edits since the previous run began, with an hour's slack for clocks.

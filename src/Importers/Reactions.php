@@ -185,8 +185,9 @@ class Reactions
 
                 continue;
             }
-            // A kind since deleted on the old board: still read off its file name, if that is what it is.
-            $code = $types[$type]['code'] ?? (preg_match('/\.(?:svg|png|gif|webp)$/i', (string) $type) ? self::code((string) $type) : null);
+            // A kind the add-on does not list (deleted since, or a board that keeps the emoji itself):
+            // read off its Twemoji file name or the emoji character, never an ASCII key like "face".
+            $code = $types[$type]['code'] ?? (preg_match('/\.(?:svg|png|gif|webp)$|[^\x00-\x7F]|^&#/i', (string) $type) ? self::code((string) $type) : null);
             $name = $code !== null ? self::shortname($code) : null;
             if ($name === null) {
                 continue; // a picture, or an emoji fof/reactions cannot show
@@ -230,7 +231,7 @@ class Reactions
      */
     public static function code(string $emojiOrFile): ?string
     {
-        $s = trim($emojiOrFile);
+        $s = trim(html_entity_decode($emojiOrFile, ENT_QUOTES | ENT_HTML5, 'UTF-8')); // "&#x1F44D;" on a board without utf8mb4
         if (preg_match('/^([0-9a-f]{2,6}(?:-[0-9a-f]{2,6})*)(?:\.(?:svg|png|gif|webp))?$/i', $s, $m)) {
             return strtolower($m[1]);
         }

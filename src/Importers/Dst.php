@@ -194,7 +194,7 @@ class Dst
      *                            read it (a staff forum): only admins see the
      *                            tag until its permissions are set up
      */
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null, bool $restricted = false): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, ?int $position, ?int $parentId = null, bool $restricted = false, bool $primary = true): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
@@ -210,11 +210,21 @@ class Dst
             'color' => Src::color($color),
             'position' => $position,
             'parent_id' => $parentId,
-            'is_primary' => true,
+            'is_primary' => $primary,
             'is_restricted' => $restricted ? 1 : 0,
             'is_hidden' => 0,
             'discussion_count' => 0,
         ]);
+    }
+
+    /** Likes (flarum/likes) is enabled: where a board's likes can go. */
+    public static function likes(): bool
+    {
+        try {
+            return resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('flarum-likes') && self::hasTable('post_likes');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /* ── Users ──────────────────────────────────────────────────────────── */
@@ -533,7 +543,7 @@ class Dst
     }
 
     /** @param  bool  $hidden  hidden there (unlisted by staff): only moderators see it here */
-    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false, bool $hidden = false): int
+    public static function discussion(string $title, ?int $userId, Carbon $createdAt, bool $sticky = false, bool $locked = false, bool $hidden = false, int $viewCount = 0): int
     {
         $db = self::db();
         $title = Str::limit(trim($title) ?: 'Untitled', 200, '');
@@ -555,6 +565,9 @@ class Dst
         }
         if ($locked && self::hasColumn('discussions', 'is_locked')) {
             $row['is_locked'] = 1;
+        }
+        if (self::hasColumn('discussions', 'view_count')) {
+            $row['view_count'] = $viewCount;
         }
 
         return (int) $db->table('discussions')->insertGetId($row);

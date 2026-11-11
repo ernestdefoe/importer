@@ -518,6 +518,11 @@ class Runner
             $line .= ' '.Src::t('polls.unavailable');
         }
 
+        foreach (['likes' => ['count' => $s['likes'] ?? 0], 'likes_skipped' => ['count' => $s['likes_skipped'] ?? 0], 'likes_unavailable' => []] as $key => $params) {
+            if (! empty($s[$key])) {
+                $line .= ' '.Src::t('likes.'.($key === 'likes' ? 'summary' : substr($key, 6)), $params);
+            }
+        }
         foreach (['reactions' => ['count' => $s['reactions'] ?? 0], 'reactions_skipped' => ['count' => $s['reactions_skipped'] ?? 0], 'reactions_pictures' => ['count' => $s['reactions_pictures'] ?? 0], 'reactions_unavailable' => []] as $key => $params) {
             if (! empty($s[$key])) {
                 $line .= ' '.Src::t('reactions.'.($key === 'reactions' ? 'summary' : substr($key, 10)), $params);

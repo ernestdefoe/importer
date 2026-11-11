@@ -71,10 +71,20 @@ class VanillaImporter
                         }
                         $n++;
                     }
+
+                    $done = count($rows) < $limit;
+                    if ($done && self::bestAnswer() && $ctx->src()->getSchemaBuilder()->hasColumn($p.'Discussion', 'QnA')) {
+                        // The QnA plugin's questions: a secondary tag where FoF Best Answer is switched on.
+                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, null, primary: false);
+                        if (Dst::hasColumn('tags', 'is_qna')) {
+                            Dst::db()->table('tags')->where('id', $slugs['qna-question'])->update(['is_qna' => true]);
+                        }
+                    }
+
                     $ctx->mapPut('tag', $map);
                     $ctx->mapPut('tag-slug', $slugs);
 
-                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => count($rows) < $limit, 'summary' => ['categories' => $n]];
+                    return ['cursor' => (int) $cursor, 'processed' => count($rows), 'done' => $done, 'summary' => ['categories' => $n]];
                 }
             ),
 
@@ -151,6 +161,8 @@ class VanillaImporter
                     }
                     $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
+                    // The Question tag, if the categories phase made one (a resumed import may not have).
+                    $qna = self::bestAnswer() ? ($ctx->mapGet('tag-slug', ['qna-question'])['qna-question'] ?? null) : null;
                     $map = [];
                     $n = 0;
                     foreach ($rows as $d) {
@@ -158,7 +170,10 @@ class VanillaImporter
                         $title = trim((string) ($d->Name ?? '')) ?: 'Untitled';
                         $created = Src::ts($d->DateInserted ?? null);
                         $uid = $userMap[(string) $d->InsertUserID] ?? null;
-                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1);
+                        $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, false, (int) ($d->CountViews ?? 0));
+                        if ($qna && trim((string) ($d->QnA ?? '')) !== '') {
+                            Dst::attachTag($did, $qna);
+                        }
                         $map[$d->DiscussionID] = $did;
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
                             Dst::attachTag($did, $tagMap[(string) $d->CategoryID]);
@@ -188,7 +203,7 @@ class VanillaImporter
                             ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
-                    $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
+                    $userMap = $ctx->mapGet('user', [...$rows->pluck('InsertUserID')->all(), ...$rows->pluck('AcceptedUserID')->filter()->all()]);
                     $live = $rows->filter(fn ($c) => isset($topicMap[(string) $c->DiscussionID]));
                     $files = Attachments::batch(self::attachments($cfg), $ctx, $live->map(fn ($c) => 'c'.$c->CommentID)->all());
                     $bodies = [];
@@ -201,7 +216,8 @@ class VanillaImporter
                     $dids = array_values(array_unique($topicMap));
                     $next = $dids ? Dst::db()->table('posts')->whereIn('discussion_id', $dids)->groupBy('discussion_id')
                         ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
-                    $ids = [];
+                    $bestAnswer = self::bestAnswer();
+                    $ids = $accepted = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cur['did'] = (int) $c->DiscussionID;
@@ -225,8 +241,16 @@ class VanillaImporter
                             $n++;
                         } catch (\Throwable) {
                             $carry['num']--;
+
+                            continue;
+                        }
+                        // The QnA plugin's accepted answer, once the post it marks exists.
+                        if ($bestAnswer && ($c->QnA ?? '') === 'Accepted') {
+                            $accepted[(int) $did] = [$ids[$c->CommentID], $userMap[(string) ($c->AcceptedUserID ?? '')] ?? null,
+                                ($c->DateAccepted ?? null) ? Src::ts($c->DateAccepted) : $created, $userMap[(string) $c->InsertUserID] ?? null];
                         }
                     }
+                    self::bestAnswers($accepted);
                     // /discussion/comment/{CommentID} redirects to its post.
                     $ctx->mapPut('post', $ids);
                     $done = count($rows) < $limit;
@@ -236,6 +260,36 @@ class VanillaImporter
                     $cur['carry'] = $done ? null : $carry;
 
                     return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $files->done(['posts' => $n])];
+                }
+            ),
+
+            // The Kudos plugin's likes and dislikes → FoF Reactions (👍 / 👎) and Likes (likes only).
+            new Phase(
+                'likes',
+                'likes',
+                function () use ($cfg, $p) {
+                    $conn = Src::connect($cfg);
+
+                    return $conn->getSchemaBuilder()->hasTable($p.'Kudos') ? (int) $conn->table($p.'Kudos')->count() : 0;
+                },
+                function ($cursor, $limit, Ctx $ctx) use ($p) {
+                    $conn = $ctx->src();
+                    $cur = is_array($cursor) ? $cursor : ['part' => 'd', 'id' => 0, 'uid' => 0];
+                    if (! $conn->getSchemaBuilder()->hasTable($p.'Kudos')) {
+                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
+                    }
+                    [$rows, $firsts, $partDone] = self::kudos($conn, $p, $cur, $limit, $ctx);
+                    if ($last = end($rows)) {
+                        $cur['id'] = $last['id'];
+                        $cur['uid'] = $last['uid'];
+                    }
+                    $summary = $rows ? Dst::db()->transaction(fn () => self::writeKudos($rows, $firsts, $ctx)) : [];
+                    $done = $partDone && $cur['part'] === 'c';
+                    if ($partDone && ! $done) {
+                        $cur = ['part' => 'c', 'id' => 0, 'uid' => 0]; // a discussion's kudos are read; now its comments'
+                    }
+
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $summary];
                 }
             ),
         ], Phases::tail());
@@ -451,6 +505,131 @@ class VanillaImporter
         };
     }
 
+    /** The Kudos plugin's actions: 1 is a like, 2 a dislike (-1 on some boards). */
+    private const KUDOS = [
+        '1' => ['code' => '1f44d', 'enabled' => true],
+        '2' => ['code' => '1f44e', 'enabled' => true],
+        '-1' => ['code' => '1f44e', 'enabled' => true],
+    ];
+
+    /**
+     * One page of the Kudos plugin's rows: its discussions' first, then its
+     * comments', each in (id, UserID) order. The table has no key of its own,
+     * so the cursor is that pair, and a page that ends inside one post's kudos
+     * picks up at the next member.
+     *
+     * @return array{0:list<array{id:int,uid:int,row:array}>,1:array<string,int>,2:bool}  the rows, a discussion's first post by "d<id>", whether this part is read
+     */
+    private static function kudos(ConnectionInterface $conn, string $p, array $cur, int $limit, Ctx $ctx): array
+    {
+        $col = $cur['part'] === 'd' ? 'DiscussionID' : 'CommentID';
+        $q = $conn->table($p.'Kudos')->where($col, '>', 0)
+            ->where(fn ($w) => $w->where($col, '>', (int) $cur['id'])->orWhere(fn ($w2) => $w2->where($col, (int) $cur['id'])->where('UserID', '>', (int) $cur['uid'])));
+        if ($cur['part'] === 'd') {
+            $q->where(fn ($w) => $w->whereNull('CommentID')->orWhere('CommentID', '<=', 0));
+        }
+        $got = $q->orderBy($col)->orderBy('UserID')->limit($limit)->get([$col, 'UserID', 'Action', 'DateUpdated']);
+        $firsts = [];
+        if ($cur['part'] === 'd' && $got->isNotEmpty()) {
+            $topics = $ctx->mapGet('topic', $got->pluck('DiscussionID')->all());
+            $first = $topics ? Dst::db()->table('discussions')->whereIn('id', array_values($topics))->pluck('first_post_id', 'id')->all() : [];
+            foreach ($topics as $src => $did) {
+                if (! empty($first[$did])) {
+                    $firsts['d'.$src] = (int) $first[$did];
+                }
+            }
+        }
+        $rows = [];
+        foreach ($got as $k) {
+            $id = (int) $k->$col;
+            $rows[] = ['id' => $id, 'uid' => (int) $k->UserID, 'row' => [($cur['part'] === 'd' ? 'd' : '').$id, $k->UserID, (string) (int) $k->Action, ($k->DateUpdated ?? null) ? Src::ts($k->DateUpdated) : null]];
+        }
+
+        return [$rows, $firsts, $got->count() < $limit];
+    }
+
+    /**
+     * Kudos into whichever of FoF Reactions and Likes is enabled (both, if
+     * both are). Likes keeps likes only; a dislike has nowhere to go there.
+     *
+     * @return array<string,int>
+     */
+    private static function writeKudos(array $rows, array $firsts, Ctx $ctx): array
+    {
+        $rows = array_column($rows, 'row');
+        $summary = [];
+        $reactions = Reactions::enabled();
+        if ($reactions) {
+            $summary = Reactions::write('kudos', self::KUDOS, $rows, $ctx, $firsts);
+        }
+        $likes = Dst::likes();
+        if ($likes) {
+            $want = array_values(array_filter($rows, fn ($r) => $r[2] === '1'));
+            $maps = $ctx->mapMany(['post' => array_column($want, 0), 'user' => array_column($want, 1)]);
+            $insert = [];
+            $skipped = 0;
+            foreach ($want as [$post, $uid, , $at]) {
+                $postId = $maps['post'][(string) $post] ?? $firsts[(string) $post] ?? null;
+                $userId = $maps['user'][(string) $uid] ?? null;
+                if (! $postId || ! $userId) {
+                    $skipped++;
+                } else {
+                    $insert[$postId.'|'.$userId] = ['post_id' => (int) $postId, 'user_id' => (int) $userId, 'created_at' => $at ?? Carbon::now()];
+                }
+            }
+            if ($insert) {
+                // Already here: an earlier run, or the member liked it on this forum since.
+                foreach (Dst::db()->table('post_likes')->whereIn('post_id', array_unique(array_column($insert, 'post_id')))->get(['post_id', 'user_id']) as $l) {
+                    unset($insert[$l->post_id.'|'.$l->user_id]);
+                }
+                foreach (array_chunk(array_values($insert), 500) as $chunk) {
+                    Dst::db()->table('post_likes')->insert($chunk);
+                }
+            }
+            $summary += array_filter(['likes' => count($insert), 'likes_skipped' => $skipped]);
+        }
+        if (! $reactions && ! $likes) {
+            $summary['likes_unavailable'] = 1;
+        }
+
+        return $summary;
+    }
+
+    /** FoF Best Answer is enabled: where the QnA plugin's accepted answers can go. */
+    private static function bestAnswer(): bool
+    {
+        try {
+            return resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('fof-best-answer') && Dst::hasColumn('discussions', 'best_answer_post_id');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Mark each discussion's accepted answer, as FoF Best Answer does: the
+     * post, who accepted it and when, and one more best answer for its author.
+     *
+     * @param  array<int,array{0:int,1:?int,2:Carbon,3:?int}>  $accepted  discussion => [post, accepted by, when, author]
+     */
+    private static function bestAnswers(array $accepted): void
+    {
+        $db = Dst::db();
+        $count = Dst::hasColumn('users', 'best_answer_count');
+        foreach ($accepted as $did => [$postId, $by, $at, $author]) {
+            $db->table('discussions')->where('id', $did)->update(array_filter([
+                'best_answer_post_id' => $postId,
+                'best_answer_user_id' => $by,
+                'best_answer_set_at' => Dst::hasColumn('discussions', 'best_answer_set_at') ? $at : null,
+                'best_answer_notified' => true, // the old board told them long ago
+            ], fn ($v) => $v !== null));
+            if ($count && $author) {
+                // NULL until FoF Best Answer first counts a member: NULL + 1 would stay NULL.
+                $col = $db->getQueryGrammar()->wrap('best_answer_count');
+                $db->table('users')->where('id', $author)->update(['best_answer_count' => $db->raw('COALESCE('.$col.', 0) + 1')]);
+            }
+        }
+    }
+
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {
@@ -460,6 +639,8 @@ class VanillaImporter
         }
         switch (strtolower(trim((string) $format))) {
             case 'html':
+                // Vanilla shows a line break typed in an Html post as one (Garden.Format.ReplaceNewlines, on by default).
+                return Html::textMentions(self::htmlBreaks($body));
             case 'wysiwyg':
                 // Vanilla's Quotes plugin keeps the author in rel=: <blockquote class="Quote" rel="Kryptos">.
                 return Html::textMentions($body);
@@ -480,6 +661,33 @@ class VanillaImporter
             default: // 'text', 'textex' and anything unknown
                 return Html::textMentions(self::textToHtml($body));
         }
+    }
+
+    /**
+     * An Html-format body as Vanilla shows it: each line break a <br>, except
+     * next to a block tag (as Vanilla's own fixNl2Br leaves them) and inside
+     * <pre> or <code>. Wysiwyg bodies are left alone: their editor writes the
+     * breaks it means, and Vanilla does not add any.
+     */
+    private static function htmlBreaks(string $html): string
+    {
+        $html = trim(str_replace(["\r\n", "\r"], "\n", $html), "\n");
+        if (! str_contains($html, "\n")) {
+            return $html;
+        }
+        // <pre> is a block and keeps its own lines; <code> is inline and keeps them too.
+        $kept = [];
+        $html = preg_replace_callback('#<(pre|code)\b.*?</\1\s*>#is', function ($m) use (&$kept) {
+            $kept[] = $m[0];
+
+            return (strtolower($m[1]) === 'pre' ? "\x00" : "\x01").(count($kept) - 1)."\x01";
+        }, $html) ?? $html;
+        // The block tags Vanilla's fixNl2Br takes a break away from.
+        $block = '(?:table|thead|tfoot|caption|col|colgroup|tbody|tr|td|th|div|dl|dd|dt|ul|ol|li|pre|select|option|form|map|area|blockquote|address|math|style|p|h[1-6]|hr|fieldset|legend|section|article|aside|hgroup|header|footer|nav|figure|figcaption|details|menu|summary)\b';
+        $html = preg_replace(['#[ \t]*\n\s*(?=</?'.$block.'|\x00)#i', '#(</?'.$block.'[^>]*>|\x00\d+\x01)[ \t]*\n\s*#i'], ['', '$1'], $html) ?? $html;
+        $html = str_replace("\n", "<br>\n", $html);
+
+        return preg_replace_callback('#[\x00\x01](\d+)\x01#', fn ($m) => $kept[(int) $m[1]], $html) ?? $html;
     }
 
     private static function textToHtml(string $text): string

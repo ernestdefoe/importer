@@ -105,13 +105,15 @@ class Reactions
      * One batch. 🚨 Runs in the step's transaction with its map rows, so a
      * retried step finds what it wrote and writes nothing twice.
      *
-     * @param  array<string, array{code:?string, enabled:bool}>  $types
+     * @param  array<array-key, array{code:?string, enabled:bool}>  $types  by the source's own key (a numeric one is an int, as PHP keeps it)
+     * @param  array<string,int>  $posts  posts the map does not hold, by the source key the rows use (a discussion's first post)
      * @return array<string,int>
      */
-    public static function write(string $set, array $types, array $rows, Ctx $ctx): array
+    public static function write(string $set, array $types, array $rows, Ctx $ctx, array $posts = []): array
     {
         $kinds = self::kinds($set, $types, array_unique(array_column($rows, 2)), $ctx);
         $maps = $ctx->mapMany(['post' => array_column($rows, 0), 'user' => array_column($rows, 1)]);
+        $maps['post'] += $posts;
 
         // The newest reaction of each member on each post: fof/reactions keeps one.
         $want = [];
@@ -170,7 +172,7 @@ class Reactions
      * The forum's reaction for each source kind in the batch, made where the
      * forum has none for that emoji. Mapped, so every batch agrees.
      *
-     * @param  array<string, array{code:?string, enabled:bool}>  $types
+     * @param  array<array-key, array{code:?string, enabled:bool}>  $types  by the source's own key (a numeric one is an int, as PHP keeps it)
      * @return array<string,int>  source kind => reactions.id (kinds with no emoji left out)
      */
     private static function kinds(string $set, array $types, array $used, Ctx $ctx): array

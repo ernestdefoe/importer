@@ -106,12 +106,14 @@ class Reactions
      * retried step finds what it wrote and writes nothing twice.
      *
      * @param  array<string, array{code:?string, enabled:bool}>  $types
+     * @param  array<string,int>  $posts  posts the map does not hold, by the source key the rows use (a discussion's first post)
      * @return array<string,int>
      */
-    public static function write(string $set, array $types, array $rows, Ctx $ctx): array
+    public static function write(string $set, array $types, array $rows, Ctx $ctx, array $posts = []): array
     {
         $kinds = self::kinds($set, $types, array_unique(array_column($rows, 2)), $ctx);
         $maps = $ctx->mapMany(['post' => array_column($rows, 0), 'user' => array_column($rows, 1)]);
+        $maps['post'] += $posts;
 
         // The newest reaction of each member on each post: fof/reactions keeps one.
         $want = [];

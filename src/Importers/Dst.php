@@ -194,7 +194,7 @@ class Dst
      *                            read it (a staff forum): only admins see the
      *                            tag until its permissions are set up
      */
-    public static function tag(string $name, string $slug, ?string $desc, ?string $color, int $position, ?int $parentId = null, bool $restricted = false, bool $primary = true): int
+    public static function tag(string $name, string $slug, ?string $desc, ?string $color, ?int $position, ?int $parentId = null, bool $restricted = false, bool $primary = true): int
     {
         $db = self::db();
         if ($id = $db->table('tags')->where('slug', $slug)->value('id')) {
@@ -217,50 +217,14 @@ class Dst
         ]);
     }
 
-    /* ── Likes ──────────────────────────────────────────────── */
-    
-    public static function post_like(int $postId, int $userId, Carbon $createdAt, int $action): bool
+    /** Likes (flarum/likes) is enabled: where a board's likes can go. */
+    public static function likes(): bool
     {
-        $db = self::db();
-        $done = false;
-        
-        if (self::hasTable('post_reactions')) {            
-            if ($db->table('post_reactions')->where('post_id', $postId)->where('user_id', $userId)->where('reaction_id', $action)->exists()) {
-                // Reaction already imported, skip
-                return false;
-            }
-
-            $db->table('post_reactions')->insert([
-                'post_id' => $postId,
-                'user_id' => $userId,
-                'reaction_id' => $action,
-                'created_at' => $createdAt,
-                'updated_at' => $createdAt,
-            ]);
-
-            $done = true;
+        try {
+            return resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('flarum-likes') && self::hasTable('post_likes');
+        } catch (\Throwable) {
+            return false;
         }
-        
-        if (self::hasTable('post_likes')) {
-            if ($action != 1) {
-                // Only likes are importable
-                return $done;
-            }
-        
-            if ($db->table('post_likes')->where('post_id', $postId)->where('user_id', $userId)->exists()) {
-                return $done;
-            }
-
-            $db->table('post_likes')->insert([
-                'post_id' => $postId,
-                'user_id' => $userId,
-                'created_at' => $createdAt,
-            ]);
-            
-            $done=true;
-        }
-
-        return $done;
     }
 
     /* ── Users ──────────────────────────────────────────────────────────── */

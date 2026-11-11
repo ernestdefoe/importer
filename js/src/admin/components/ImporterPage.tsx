@@ -35,6 +35,8 @@ const COUNTS = [
   'polls',
   'poll_votes',
   'polls_skipped',
+  'likes',
+  'likes_skipped',
   'reactions',
   'reactions_skipped',
   'reactions_pictures',
@@ -56,7 +58,7 @@ const COUNTS = [
   'pruned_tags',
 ];
 // Flags in the summary rather than counts, and the reasons groups were skipped: explained in the closing line instead.
-const HIDDEN = ['pms_unavailable', 'polls_unavailable', 'reactions_unavailable'];
+const HIDDEN = ['pms_unavailable', 'polls_unavailable', 'reactions_unavailable', 'likes_unavailable'];
 const hidden = (k: string): boolean => HIDDEN.includes(k) || k.startsWith('groups_skipped_');
 const enabled = (id: string): boolean => {
   try {

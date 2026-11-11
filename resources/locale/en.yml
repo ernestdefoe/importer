@@ -139,6 +139,10 @@ ernestdefoe-importer:
       summary: "{polls} polls with {votes} votes."
       skipped: "{count} polls skipped: their discussion was not imported, or they had fewer than two answers or ranked choices."
       unavailable: "Polls skipped: FoF Polls is not enabled. Enable it and run the import again to bring them across."
+    likes:
+      summary: "{count} likes."
+      skipped: "{count} likes skipped: their post or member was not imported."
+      unavailable: "Likes skipped: enable FoF Reactions or Likes and run the import again to bring the Kudos plugin's likes across."
     reactions:
       summary: "{count} reactions."
       skipped: "{count} reactions skipped: their post or member was not imported, or the member reacted more than once to one post (the newest is kept)."

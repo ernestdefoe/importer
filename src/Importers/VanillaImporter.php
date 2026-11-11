@@ -73,8 +73,12 @@ class VanillaImporter
                     }
 
                     $done = count($rows) < $limit;
-                    if ($done && Dst::hasColumn('discussions',  'best_answer_post_id')) {
-                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, 0, primary: false);
+                    if ($done && self::bestAnswer() && $ctx->src()->getSchemaBuilder()->hasColumn($p.'Discussion', 'QnA')) {
+                        // The QnA plugin's questions: a secondary tag where FoF Best Answer is switched on.
+                        $slugs['qna-question'] = Dst::tag('Question', 'qna-question', null, null, null, primary: false);
+                        if (Dst::hasColumn('tags', 'is_qna')) {
+                            Dst::db()->table('tags')->where('id', $slugs['qna-question'])->update(['is_qna' => true]);
+                        }
                     }
 
                     $ctx->mapPut('tag', $map);
@@ -157,6 +161,8 @@ class VanillaImporter
                     }
                     $bodies = $files->finish($bodies);
                     Dst::prepare($ctx, $bodies);
+                    // The Question tag, if the categories phase made one (a resumed import may not have).
+                    $qna = self::bestAnswer() ? ($ctx->mapGet('tag-slug', ['qna-question'])['qna-question'] ?? null) : null;
                     $map = [];
                     $n = 0;
                     foreach ($rows as $d) {
@@ -165,10 +171,8 @@ class VanillaImporter
                         $created = Src::ts($d->DateInserted ?? null);
                         $uid = $userMap[(string) $d->InsertUserID] ?? null;
                         $did = Dst::discussion($title, $uid, $created, (int) ($d->Announce ?? 0) > 0, (int) ($d->Closed ?? 0) === 1, false, (int) ($d->CountViews ?? 0));
-                        if (($d->QnA ?? '') !== '') {
-                            if (Dst::hasColumn('discussions', 'best_answer_post_id')) {
-                                Dst::attachTag($did, $ctx->mapGet('tag-slug', ['qna-question'])['qna-question']);
-                            }                            
+                        if ($qna && trim((string) ($d->QnA ?? '')) !== '') {
+                            Dst::attachTag($did, $qna);
                         }
                         $map[$d->DiscussionID] = $did;
                         if ($hasTags && isset($tagMap[(string) $d->CategoryID])) {
@@ -195,11 +199,11 @@ class VanillaImporter
                     $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
                     $carry = $cur['carry'] ?? null;
                     $rows = $ctx->src()->table($p.'Comment')
-                    ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
-                        ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
+                        ->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did'])
+                            ->orWhere(fn ($q2) => $q2->where('DiscussionID', (int) $cur['did'])->where('CommentID', '>', (int) $cur['cid'])))
                         ->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
                     $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
-                    $userMap = $ctx->mapGet('user', $rows->pluck('InsertUserID')->all());
+                    $userMap = $ctx->mapGet('user', [...$rows->pluck('InsertUserID')->all(), ...$rows->pluck('AcceptedUserID')->filter()->all()]);
                     $live = $rows->filter(fn ($c) => isset($topicMap[(string) $c->DiscussionID]));
                     $files = Attachments::batch(self::attachments($cfg), $ctx, $live->map(fn ($c) => 'c'.$c->CommentID)->all());
                     $bodies = [];
@@ -211,8 +215,9 @@ class VanillaImporter
                     // Where each discussion's numbering stands, in one grouped query for the batch.
                     $dids = array_values(array_unique($topicMap));
                     $next = $dids ? Dst::db()->table('posts')->whereIn('discussion_id', $dids)->groupBy('discussion_id')
-                    ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
-                    $ids = [];
+                        ->selectRaw('discussion_id, MAX(number) n')->pluck('n', 'discussion_id')->all() : [];
+                    $bestAnswer = self::bestAnswer();
+                    $ids = $accepted = [];
                     $n = 0;
                     foreach ($rows as $c) {
                         $cur['did'] = (int) $c->DiscussionID;
@@ -234,20 +239,18 @@ class VanillaImporter
                             $files->link('c'.$c->CommentID, $ids[$c->CommentID]);
                             Dst::ref('post', (string) $c->CommentID, $ids[$c->CommentID]);
                             $n++;
-                            if ($c->QnA == 'Accepted' ) {
-                                if (Dst::hasColumn('discussions', 'best_answer_post_id')) {                                    
-                                    Dst::db()->table('discussions')->where('id', $did)->update([
-                                        'best_answer_post_id' => $ids[$c->CommentID],
-                                        'best_answer_user_id' => $userMap[(string) $c->AcceptedUserID],
-                                        'best_answer_set_at' => Src::ts($c->DateAccepted ?? null),
-                                        'best_answer_notified' => 0,
-                                    ]);
-                                }
-                            }
                         } catch (\Throwable) {
                             $carry['num']--;
+
+                            continue;
+                        }
+                        // The QnA plugin's accepted answer, once the post it marks exists.
+                        if ($bestAnswer && ($c->QnA ?? '') === 'Accepted') {
+                            $accepted[(int) $did] = [$ids[$c->CommentID], $userMap[(string) ($c->AcceptedUserID ?? '')] ?? null,
+                                ($c->DateAccepted ?? null) ? Src::ts($c->DateAccepted) : $created, $userMap[(string) $c->InsertUserID] ?? null];
                         }
                     }
+                    self::bestAnswers($accepted);
                     // /discussion/comment/{CommentID} redirects to its post.
                     $ctx->mapPut('post', $ids);
                     $done = count($rows) < $limit;
@@ -260,70 +263,33 @@ class VanillaImporter
                 }
             ),
 
-            // Likes
+            // The Kudos plugin's likes and dislikes → FoF Reactions (👍 / 👎) and Likes (likes only).
             new Phase(
                 'likes',
                 'likes',
-                fn () => (int) Src::connect($cfg)->table($p.'Kudos')->count(),
+                function () use ($cfg, $p) {
+                    $conn = Src::connect($cfg);
+
+                    return $conn->getSchemaBuilder()->hasTable($p.'Kudos') ? (int) $conn->table($p.'Kudos')->count() : 0;
+                },
                 function ($cursor, $limit, Ctx $ctx) use ($p) {
-                    $cur = is_array($cursor) ? $cursor : ['did' => 0, 'cid' => 0, 'carry' => null];
-                    $request = $ctx->src()->table($p.'Kudos');
-                    if ((int) $cur['did'] == 0) {
-                        if ((int) $cur['cid'] == 0) {
-                            //First request, no where clause needed
-                            //This will list entries where DiscussionID is NULL, so Comments first
-                        } else {
-                            //We are continuing comments, we want entries where Comment ID is greater than previous or begin discussions
-                            $request = $request->whereNotNull('DiscussionID')
-                                ->orWhere(fn ($q2) => $q2->where('CommentID', '>', (int) $cur['cid']));
-                        }
-                    } else {
-                        //We finished comments and started discussions
-                        $request = $request->where(fn ($q) => $q->where('DiscussionID', '>', (int) $cur['did']));                            
+                    $conn = $ctx->src();
+                    $cur = is_array($cursor) ? $cursor : ['part' => 'd', 'id' => 0, 'uid' => 0];
+                    if (! $conn->getSchemaBuilder()->hasTable($p.'Kudos')) {
+                        return ['cursor' => null, 'processed' => 0, 'done' => true, 'summary' => []];
                     }
-                    $rows = $request->orderBy('DiscussionID')->orderBy('CommentID')->limit($limit)->get();
-                    $topicMap = $ctx->mapGet('topic', $rows->pluck('DiscussionID')->all());
-                    $userMap = $ctx->mapGet('user', $rows->pluck('UserID')->all());
-                    $postMap = $ctx->mapGet('post', $rows->pluck('CommentID')->all());
-
-                    $n = $skip = 0;
-                    foreach ($rows as $c) {
-                        if ($c->DiscussionID) {
-                            $cur['did'] = (int) $c->DiscussionID;
-                        }
-                        if ($c->CommentID) {
-                            $cur['cid'] = (int) $c->CommentID;
-                        }
-                        $userId = $userMap[(string) $c->UserID] ?? null;
-                        if (! $userId) {
-                            $skip++;
-                            continue;
-                        }
-                        $postId = $topicMap[(string) $c->DiscussionID] ?? null;
-                        if (! $postId) {
-                            $postId = $postMap[(string) $c->CommentID] ?? null;
-                        } else {
-                            $postId = Dst::db()->table('posts')->where('discussion_id', $postId)->where('number', 1)->value('id');
-                        }
-                        if (! $postId) {
-                            $skip++;
-                            continue;
-                        }
-                        $created = Src::ts($c->DateUpdated ?? null);
-
-                        try {
-                            if (Dst::post_like($postId, $userId, $created, $c->Action)) {
-                                $n++;
-                            } else {
-                                $skip++;
-                            }
-                        } catch (\Throwable) {
-                            $skip++;
-                        }
+                    [$rows, $firsts, $partDone] = self::kudos($conn, $p, $cur, $limit, $ctx);
+                    if ($last = end($rows)) {
+                        $cur['id'] = $last['id'];
+                        $cur['uid'] = $last['uid'];
                     }
-                    $done = count($rows) < $limit;
+                    $summary = $rows ? Dst::db()->transaction(fn () => self::writeKudos($rows, $firsts, $ctx)) : [];
+                    $done = $partDone && $cur['part'] === 'c';
+                    if ($partDone && ! $done) {
+                        $cur = ['part' => 'c', 'id' => 0, 'uid' => 0]; // a discussion's kudos are read; now its comments'
+                    }
 
-                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => ['likes' => $n, 'likes_skipped' => $skip] ];
+                    return ['cursor' => $cur, 'processed' => count($rows), 'done' => $done, 'summary' => $summary];
                 }
             ),
         ], Phases::tail());
@@ -538,7 +504,130 @@ class VanillaImporter
             default => ['scheme' => 'unknown', 'hash' => $hash, 'salt' => null],
         };
     }
-    
+
+    /** The Kudos plugin's actions: 1 is a like, 2 a dislike (-1 on some boards). */
+    private const KUDOS = [
+        '1' => ['code' => '1f44d', 'enabled' => true],
+        '2' => ['code' => '1f44e', 'enabled' => true],
+        '-1' => ['code' => '1f44e', 'enabled' => true],
+    ];
+
+    /**
+     * One page of the Kudos plugin's rows: its discussions' first, then its
+     * comments', each in (id, UserID) order. The table has no key of its own,
+     * so the cursor is that pair, and a page that ends inside one post's kudos
+     * picks up at the next member.
+     *
+     * @return array{0:list<array{id:int,uid:int,row:array}>,1:array<string,int>,2:bool}  the rows, a discussion's first post by "d<id>", whether this part is read
+     */
+    private static function kudos(ConnectionInterface $conn, string $p, array $cur, int $limit, Ctx $ctx): array
+    {
+        $col = $cur['part'] === 'd' ? 'DiscussionID' : 'CommentID';
+        $q = $conn->table($p.'Kudos')->where($col, '>', 0)
+            ->where(fn ($w) => $w->where($col, '>', (int) $cur['id'])->orWhere(fn ($w2) => $w2->where($col, (int) $cur['id'])->where('UserID', '>', (int) $cur['uid'])));
+        if ($cur['part'] === 'd') {
+            $q->where(fn ($w) => $w->whereNull('CommentID')->orWhere('CommentID', '<=', 0));
+        }
+        $got = $q->orderBy($col)->orderBy('UserID')->limit($limit)->get([$col, 'UserID', 'Action', 'DateUpdated']);
+        $firsts = [];
+        if ($cur['part'] === 'd' && $got->isNotEmpty()) {
+            $topics = $ctx->mapGet('topic', $got->pluck('DiscussionID')->all());
+            $first = $topics ? Dst::db()->table('discussions')->whereIn('id', array_values($topics))->pluck('first_post_id', 'id')->all() : [];
+            foreach ($topics as $src => $did) {
+                if (! empty($first[$did])) {
+                    $firsts['d'.$src] = (int) $first[$did];
+                }
+            }
+        }
+        $rows = [];
+        foreach ($got as $k) {
+            $id = (int) $k->$col;
+            $rows[] = ['id' => $id, 'uid' => (int) $k->UserID, 'row' => [($cur['part'] === 'd' ? 'd' : '').$id, $k->UserID, (string) (int) $k->Action, ($k->DateUpdated ?? null) ? Src::ts($k->DateUpdated) : null]];
+        }
+
+        return [$rows, $firsts, $got->count() < $limit];
+    }
+
+    /**
+     * Kudos into whichever of FoF Reactions and Likes is enabled (both, if
+     * both are). Likes keeps likes only; a dislike has nowhere to go there.
+     *
+     * @return array<string,int>
+     */
+    private static function writeKudos(array $rows, array $firsts, Ctx $ctx): array
+    {
+        $rows = array_column($rows, 'row');
+        $summary = [];
+        $reactions = Reactions::enabled();
+        if ($reactions) {
+            $summary = Reactions::write('kudos', self::KUDOS, $rows, $ctx, $firsts);
+        }
+        $likes = Dst::likes();
+        if ($likes) {
+            $want = array_values(array_filter($rows, fn ($r) => $r[2] === '1'));
+            $maps = $ctx->mapMany(['post' => array_column($want, 0), 'user' => array_column($want, 1)]);
+            $insert = [];
+            $skipped = 0;
+            foreach ($want as [$post, $uid, , $at]) {
+                $postId = $maps['post'][(string) $post] ?? $firsts[(string) $post] ?? null;
+                $userId = $maps['user'][(string) $uid] ?? null;
+                if (! $postId || ! $userId) {
+                    $skipped++;
+                } else {
+                    $insert[$postId.'|'.$userId] = ['post_id' => (int) $postId, 'user_id' => (int) $userId, 'created_at' => $at ?? Carbon::now()];
+                }
+            }
+            if ($insert) {
+                // Already here: an earlier run, or the member liked it on this forum since.
+                foreach (Dst::db()->table('post_likes')->whereIn('post_id', array_unique(array_column($insert, 'post_id')))->get(['post_id', 'user_id']) as $l) {
+                    unset($insert[$l->post_id.'|'.$l->user_id]);
+                }
+                foreach (array_chunk(array_values($insert), 500) as $chunk) {
+                    Dst::db()->table('post_likes')->insert($chunk);
+                }
+            }
+            $summary += array_filter(['likes' => count($insert), 'likes_skipped' => $skipped]);
+        }
+        if (! $reactions && ! $likes) {
+            $summary['likes_unavailable'] = 1;
+        }
+
+        return $summary;
+    }
+
+    /** FoF Best Answer is enabled: where the QnA plugin's accepted answers can go. */
+    private static function bestAnswer(): bool
+    {
+        try {
+            return resolve(\Flarum\Extension\ExtensionManager::class)->isEnabled('fof-best-answer') && Dst::hasColumn('discussions', 'best_answer_post_id');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Mark each discussion's accepted answer, as FoF Best Answer does: the
+     * post, who accepted it and when, and one more best answer for its author.
+     *
+     * @param  array<int,array{0:int,1:?int,2:Carbon,3:?int}>  $accepted  discussion => [post, accepted by, when, author]
+     */
+    private static function bestAnswers(array $accepted): void
+    {
+        $db = Dst::db();
+        $count = Dst::hasColumn('users', 'best_answer_count');
+        foreach ($accepted as $did => [$postId, $by, $at, $author]) {
+            $db->table('discussions')->where('id', $did)->update(array_filter([
+                'best_answer_post_id' => $postId,
+                'best_answer_user_id' => $by,
+                'best_answer_set_at' => Dst::hasColumn('discussions', 'best_answer_set_at') ? $at : null,
+                'best_answer_notified' => true, // the old board told them long ago
+            ], fn ($v) => $v !== null));
+            if ($count && $author) {
+                $db->table('users')->where('id', $author)->increment('best_answer_count');
+            }
+        }
+    }
+
     /** Convert a Vanilla body according to its per-row Format. */
     private static function body(?string $body, ?string $format): string
     {

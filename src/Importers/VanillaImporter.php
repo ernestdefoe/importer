@@ -548,6 +548,8 @@ class VanillaImporter
         }
         switch (strtolower(trim((string) $format))) {
             case 'html':
+                // Vanilla shows a line break typed in an Html post as one (Garden.Format.ReplaceNewlines, on by default).
+                return Html::textMentions(self::htmlBreaks($body));
             case 'wysiwyg':
                 // Vanilla's Quotes plugin keeps the author in rel=: <blockquote class="Quote" rel="Kryptos">.
                 return Html::textMentions($body);
@@ -568,6 +570,33 @@ class VanillaImporter
             default: // 'text', 'textex' and anything unknown
                 return Html::textMentions(self::textToHtml($body));
         }
+    }
+
+    /**
+     * An Html-format body as Vanilla shows it: each line break a <br>, except
+     * next to a block tag (as Vanilla's own fixNl2Br leaves them) and inside
+     * <pre> or <code>. Wysiwyg bodies are left alone: their editor writes the
+     * breaks it means, and Vanilla does not add any.
+     */
+    private static function htmlBreaks(string $html): string
+    {
+        $html = trim(str_replace(["\r\n", "\r"], "\n", $html), "\n");
+        if (! str_contains($html, "\n")) {
+            return $html;
+        }
+        // <pre> is a block and keeps its own lines; <code> is inline and keeps them too.
+        $kept = [];
+        $html = preg_replace_callback('#<(pre|code)\b.*?</\1\s*>#is', function ($m) use (&$kept) {
+            $kept[] = $m[0];
+
+            return (strtolower($m[1]) === 'pre' ? "\x00" : "\x01").(count($kept) - 1)."\x01";
+        }, $html) ?? $html;
+        // The block tags Vanilla's fixNl2Br takes a break away from.
+        $block = '(?:table|thead|tfoot|caption|col|colgroup|tbody|tr|td|th|div|dl|dd|dt|ul|ol|li|pre|select|option|form|map|area|blockquote|address|math|style|p|h[1-6]|hr|fieldset|legend|section|article|aside|hgroup|header|footer|nav|figure|figcaption|details|menu|summary)\b';
+        $html = preg_replace(['#[ \t]*\n\s*(?=</?'.$block.'|\x00)#i', '#(</?'.$block.'[^>]*>|\x00\d+\x01)[ \t]*\n\s*#i'], ['', '$1'], $html) ?? $html;
+        $html = str_replace("\n", "<br>\n", $html);
+
+        return preg_replace_callback('#[\x00\x01](\d+)\x01#', fn ($m) => $kept[(int) $m[1]], $html) ?? $html;
     }
 
     private static function textToHtml(string $text): string

@@ -601,9 +601,7 @@ final class Writer
     private function inline(DOMNode $n): string
     {
         if ($n instanceof DOMText) {
-            $s = str_replace("\n", "<br/>", str_replace("\r\n", "\n", $n->data));
-            $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
-            $s = str_replace("<br/>", "\n", $s);
+            $s = preg_replace('/\s+/u', ' ', $n->data) ?? $n->data;
             if ($s === '' || ($this->lineStart && trim($s) === '')) {
                 return '';
             }

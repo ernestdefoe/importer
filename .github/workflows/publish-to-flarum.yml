@@ -385,6 +385,21 @@ jobs:
             s{(<pre.*?</pre>)|\n+}{ defined $1 ? $1 : " " }ges;
           ')
 
+          # 🚨 A rerun of this job must not post the release twice. If one of
+          # the thread's latest posts already opens with this release's
+          # heading, there is nothing left to do here.
+          seen=$(curl -fsS --max-time 20 -G "${FLARUM_FORUM_URL%/}/api/posts" \
+              -H "Authorization: Token ${FLARUM_API_KEY}" \
+              --data-urlencode "filter[discussion]=${FLARUM_DISCUSSION_ID}" \
+              --data-urlencode "sort=-createdAt" --data-urlencode "page[limit]=20" \
+            | jq -r --arg tag "$RELEASE_TAG" '[.data[]? | (.attributes.contentHtml // "") | (capture("^\\s*<h2[^>]*>(?<t>[^<]*)</h2>").t)? | split(" ") | select(index($tag) or index($tag | ltrimstr("v")))] | length' 2>/dev/null) || seen=""
+          if [ -z "$seen" ]; then
+            echo "::warning::Could not read the support discussion to check for an earlier post of $RELEASE_TAG, so posting it."
+          elif [ "$seen" -gt 0 ]; then
+            echo "::notice::$RELEASE_TAG is already in the support discussion, so it is not posted again."
+            exit 0
+          fi
+
           PAYLOAD=$(jq -n \
             --arg content "$CONTENT" \
             --arg did "$FLARUM_DISCUSSION_ID" \
@@ -486,25 +501,48 @@ jobs:
             }')
           CONTENT=$(printf '## %s\n\n%s\n\n[Release on GitHub](%s)\n\n☕ If you like the things I have built, consider [buying me a coffee](https://buymeacoffee.com/ernestdefoe).\n' "$heading" "$notes" "$RELEASE_URL")
 
+          # 🚨 A rerun of this job must not post the release twice. If one of
+          # the thread's latest posts already opens with this release's
+          # heading, there is nothing left to do here.
+          seen=$(curl -fsS --max-time 20 -G "${DISCUSS_URL%/}/api/posts" \
+              -H "Authorization: Token ${DISCUSS_FLARUM_TOKEN}" \
+              --data-urlencode "filter[discussion]=${DISCUSS_DISCUSSION_ID}" \
+              --data-urlencode "sort=-createdAt" --data-urlencode "page[limit]=20" \
+            | jq -r --arg tag "$RELEASE_TAG" '[.data[]? | (.attributes.contentHtml // "") | (capture("^\\s*<h2[^>]*>(?<t>[^<]*)</h2>").t)? | split(" ") | select(index($tag) or index($tag | ltrimstr("v")))] | length' 2>/dev/null) || seen=""
+          if [ -z "$seen" ]; then
+            echo "::warning::Could not read the discuss.flarum.org thread to check for an earlier post of $RELEASE_TAG, so posting it."
+          elif [ "$seen" -gt 0 ]; then
+            echo "::notice::$RELEASE_TAG is already in the discuss.flarum.org thread, so it is not posted again."
+            exit 0
+          fi
+
           PAYLOAD=$(jq -n \
             --arg content "$CONTENT" \
             --arg did "$DISCUSS_DISCUSSION_ID" \
             '{data:{type:"posts",attributes:{content:$content},relationships:{discussion:{data:{type:"discussions",id:$did}}}}}')
 
-          # Flarum throttles posting, so a burst of releases can meet a 429:
-          # one wait and one retry covers it.
-          for attempt in 1 2; do
-            HTTP_CODE=$(curl -sS -o /tmp/discuss-resp.json -w '%{http_code}' \
+          # Several repos released together all reach Discuss at once: spread
+          # them out a little before the first try.
+          sleep $((RANDOM % 61))
+
+          # Flarum throttles posting, and a burst of releases can meet a 429
+          # more than once (Garage 1.2.2 gave up after one 35 s wait). Back off
+          # 60, 120, 240 s, or what Retry-After asks (at most 240 s a wait),
+          # and give up after about 8 minutes of waiting.
+          waited=0
+          for backoff in 60 120 240 0; do
+            HTTP_CODE=$(curl -sS -D /tmp/discuss-headers.txt -o /tmp/discuss-resp.json -w '%{http_code}' \
               -X POST "${DISCUSS_URL%/}/api/posts" \
               -H "Authorization: Token ${DISCUSS_FLARUM_TOKEN}" \
               -H "Content-Type: application/json" \
               -d "$PAYLOAD")
-            if [ "$HTTP_CODE" = "429" ] && [ "$attempt" = "1" ]; then
-              echo "Throttled; trying again in 35 seconds."
-              sleep 35
-              continue
-            fi
-            break
+            if [ "$HTTP_CODE" != "429" ] || [ "$backoff" = "0" ]; then break; fi
+            after=$(tr -d '\r' < /tmp/discuss-headers.txt | awk -F': *' 'tolower($1) == "retry-after" { v = $2 } END { print v }')
+            case "$after" in ''|*[!0-9]*) ;; *) backoff=$(( after < 1 ? 1 : (after > 240 ? 240 : after) )) ;; esac
+            if [ $((waited + backoff)) -gt 480 ]; then break; fi
+            echo "Throttled; trying again in $backoff seconds."
+            sleep "$backoff"
+            waited=$((waited + backoff))
           done
 
           echo "discuss.flarum.org responded with HTTP $HTTP_CODE"

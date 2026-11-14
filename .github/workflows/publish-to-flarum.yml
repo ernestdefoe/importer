@@ -397,7 +397,14 @@ jobs:
             -d "$PAYLOAD")
 
           echo "Flarum responded with HTTP $HTTP_CODE"
-          cat /tmp/flarum-resp.json
+          # 🚨 Never print the response body. The key is an admin's, so the
+          # body carries admin-only fields (the bot account's email), and the
+          # log of a public repository is readable by anyone.
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            jq -c '{post: .data.id, number: .data.attributes.number, approved: .data.attributes.isApproved}' /tmp/flarum-resp.json 2>/dev/null || true
+          else
+            jq -c '[.errors[]? | {status, code, detail}]' /tmp/flarum-resp.json 2>/dev/null || echo "The response was not JSON."
+          fi
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             exit 1
           fi
@@ -501,8 +508,12 @@ jobs:
           done
 
           echo "discuss.flarum.org responded with HTTP $HTTP_CODE"
-          jq -c '{post: .data.id, number: .data.attributes.number, approved: .data.attributes.isApproved, errors}' /tmp/discuss-resp.json 2>/dev/null \
-            || head -c 500 /tmp/discuss-resp.json
+          # Never the body: a summary, or the errors alone.
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            jq -c '{post: .data.id, number: .data.attributes.number, approved: .data.attributes.isApproved}' /tmp/discuss-resp.json 2>/dev/null || true
+          else
+            jq -c '[.errors[]? | {status, code, detail}]' /tmp/discuss-resp.json 2>/dev/null || echo "The response was not JSON."
+          fi
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             exit 1
           fi
